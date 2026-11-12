@@ -8,11 +8,11 @@ struct AndOnMacApp: App {
     var body: some Scene {
         WindowGroup {
             MainWindowView(appState: appState)
-                .frame(minWidth: 800, minHeight: 680)
+                .frame(minWidth: 380, minHeight: 720)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
-        .defaultSize(width: 950, height: 720)
+        .defaultSize(width: 420, height: 760)
         .commands {
             // macOS Sequoia iPhone Mirroring Menu & Shortcuts
             CommandMenu("Дисплей телефона") {

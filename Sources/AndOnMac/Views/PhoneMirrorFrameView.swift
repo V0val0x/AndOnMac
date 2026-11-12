@@ -5,22 +5,21 @@ public struct PhoneMirrorFrameView: View {
     @ObservedObject var appState: AppState
     @State private var isHoveringTop: Bool = false
     @State private var isHoveringHome: Bool = false
-    @State private var isDropTargeted: Bool = false
     @State private var dragOffset: CGFloat = 0
+    @State private var pulseAnimation: Bool = false
     
     public init(appState: AppState) {
         self.appState = appState
     }
     
-    private var baseWidth: CGFloat { 330 * appState.windowScale.multiplier }
-    private var baseHeight: CGFloat { 680 * appState.windowScale.multiplier }
+    private var baseWidth: CGFloat { 340 * appState.windowScale.multiplier }
+    private var baseHeight: CGFloat { 700 * appState.windowScale.multiplier }
     
     public var body: some View {
         VStack(spacing: 0) {
-            // Main Smartphone Body
             ZStack {
-                // Outer Titanium / Aluminum Chassis
-                RoundedRectangle(cornerRadius: 48, style: .continuous)
+                // Outer Titanium / Aluminum Phone Chassis
+                RoundedRectangle(cornerRadius: 50, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -32,31 +31,31 @@ public struct PhoneMirrorFrameView: View {
                         )
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 48, style: .continuous)
+                        RoundedRectangle(cornerRadius: 50, style: .continuous)
                             .stroke(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(0.25),
-                                        Color.black.opacity(0.3)
+                                        Color.white.opacity(0.3),
+                                        Color.black.opacity(0.4)
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 ),
-                                lineWidth: 2.5
+                                lineWidth: 3
                             )
                     )
-                    .shadow(color: Color.black.opacity(0.35), radius: 25, x: 0, y: 12)
+                    .shadow(color: Color.black.opacity(0.4), radius: 30, x: 0, y: 15)
                 
                 // Inner Screen Border & Display
-                RoundedRectangle(cornerRadius: 42, style: .continuous)
+                RoundedRectangle(cornerRadius: 44, style: .continuous)
                     .fill(Color.black)
-                    .padding(5)
+                    .padding(6)
                     .overlay(
                         VStack(spacing: 0) {
                             // Top Bar & Camera Cutout
                             topHeaderView
-                                .padding(.horizontal, 20)
-                                .padding(.top, 10)
+                                .padding(.horizontal, 22)
+                                .padding(.top, 12)
                             
                             Spacer()
                             
@@ -71,37 +70,16 @@ public struct PhoneMirrorFrameView: View {
                         }
                         .padding(4)
                     )
-                
-                // Drag & Drop visual overlay
-                if isDropTargeted {
-                    RoundedRectangle(cornerRadius: 42, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.3))
-                        .padding(5)
-                        .overlay(
-                            VStack(spacing: 12) {
-                                Image(systemName: "arrow.down.doc.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundColor(.white)
-                                Text("Отпустите для передачи на телефон")
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                            }
-                        )
-                }
             }
             .frame(width: baseWidth, height: baseHeight)
-            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                handleFileDrop(providers: providers)
-                return true
-            }
         }
-        .padding()
+        .padding(20)
     }
     
     // MARK: - Top Header (Sequoia-style hover controls)
     private var topHeaderView: some View {
         HStack {
-            // Left: Status / Traffic Lights on Hover
+            // Left: Status or Traffic Lights on Hover
             if isHoveringTop {
                 HStack(spacing: 6) {
                     Circle()
@@ -118,7 +96,6 @@ public struct PhoneMirrorFrameView: View {
                 }
                 .transition(.opacity)
             } else {
-                // Normal Status: Wi-Fi or Time
                 if let device = appState.selectedDevice {
                     Text(device.connectionType.rawValue)
                         .font(.system(size: 11, weight: .bold))
@@ -126,37 +103,26 @@ public struct PhoneMirrorFrameView: View {
                 } else {
                     Text("AndOnMac")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.white.opacity(0.5))
                 }
             }
             
             Spacer()
             
-            // Center: Pixel Camera Punch-Hole or Dynamic Island
-            if appState.frameStyle == .pixel {
-                Circle()
-                    .fill(Color.black)
-                    .frame(width: 13, height: 13)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
-            } else {
-                Capsule()
-                    .fill(Color.black)
-                    .frame(width: 70, height: 18)
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
-            }
+            // Pixel Camera Punch-Hole
+            Circle()
+                .fill(Color.black)
+                .frame(width: 12, height: 12)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                )
             
             Spacer()
             
-            // Right: Sequoia Action Buttons on Hover (App Switcher, Home, Notifications)
+            // Right: Sequoia Action Buttons on Hover
             if isHoveringTop {
-                HStack(spacing: 8) {
-                    // App Switcher button (two rectangles)
+                HStack(spacing: 10) {
                     Button {
                         appState.triggerAppSwitch()
                     } label: {
@@ -167,7 +133,6 @@ public struct PhoneMirrorFrameView: View {
                     .buttonStyle(.plain)
                     .help("Недавние приложения (Cmd+2)")
                     
-                    // Home Screen button
                     Button {
                         appState.triggerHome()
                     } label: {
@@ -178,7 +143,6 @@ public struct PhoneMirrorFrameView: View {
                     .buttonStyle(.plain)
                     .help("Домой (Cmd+1)")
                     
-                    // Notification Center button
                     Button {
                         appState.triggerNotifications()
                     } label: {
@@ -187,24 +151,23 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(.white)
                     }
                     .buttonStyle(.plain)
-                    .help("Шторка уведомлений (Cmd+3)")
+                    .help("Уведомления (Cmd+3)")
                 }
                 .transition(.opacity)
             } else {
-                // Battery status
-                HStack(spacing: 4) {
-                    if let level = appState.selectedDevice?.batteryLevel {
-                        Text("\(level)%")
+                if let battery = appState.selectedDevice?.batteryLevel {
+                    HStack(spacing: 4) {
+                        Text("\(battery)%")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white.opacity(0.8))
                         Image(systemName: appState.selectedDevice?.isCharging == true ? "battery.100.bolt" : "battery.100")
                             .font(.system(size: 12))
                             .foregroundColor(.white.opacity(0.8))
-                    } else {
-                        Image(systemName: "wifi")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.7))
                     }
+                } else {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
                 }
             }
         }
@@ -217,40 +180,39 @@ public struct PhoneMirrorFrameView: View {
         }
     }
     
-    // MARK: - Center Content View
+    // MARK: - Center Content View (Zero-Friction UX)
     @ViewBuilder
     private var centerContentView: some View {
         if appState.isMirroring {
-            // Live Mirroring Info / Floating Controller
+            // Live Mirroring Screen (Mirror is active in SDL window or controller)
             VStack(spacing: 16) {
                 ZStack {
                     Circle()
                         .fill(Color.green.opacity(0.2))
-                        .frame(width: 72, height: 72)
+                        .frame(width: 76, height: 76)
                     Image(systemName: "tv.and.mediabox")
-                        .font(.system(size: 32))
+                        .font(.system(size: 34))
                         .foregroundColor(.green)
                 }
                 
                 VStack(spacing: 4) {
-                    Text("Экран транслируется")
+                    Text("Экран активен на Mac")
                         .font(.title3.bold())
                         .foregroundColor(.white)
-                    Text("Телефон в режиме экономии энергии")
+                    Text("Дисплей телефона выключен для экономии заряда")
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
                 }
                 
-                // Quick Controls Bar
-                HStack(spacing: 16) {
+                // Quick Controls
+                HStack(spacing: 14) {
                     Button {
                         appState.triggerBack()
                     } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: "chevron.backward")
-                            Text("Назад")
-                                .font(.caption2)
-                        }
+                        Label("Назад", systemImage: "chevron.backward")
+                            .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .tint(.white)
@@ -258,11 +220,8 @@ public struct PhoneMirrorFrameView: View {
                     Button {
                         appState.triggerHome()
                     } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: "house.fill")
-                            Text("Домой")
-                                .font(.caption2)
-                        }
+                        Label("Домой", systemImage: "house.fill")
+                            .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .tint(.white)
@@ -270,11 +229,8 @@ public struct PhoneMirrorFrameView: View {
                     Button {
                         appState.triggerAppSwitch()
                     } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: "square.stack.fill")
-                            Text("Обзор")
-                                .font(.caption2)
-                        }
+                        Label("Обзор", systemImage: "square.stack.fill")
+                            .font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .tint(.white)
@@ -284,33 +240,61 @@ public struct PhoneMirrorFrameView: View {
                 Button(role: .destructive) {
                     appState.toggleMirroring()
                 } label: {
-                    Label("Завершить сессию", systemImage: "xmark.circle.fill")
+                    Label("Завершить", systemImage: "xmark.circle.fill")
                         .font(.subheadline.bold())
+                        .frame(minWidth: 120)
                 }
                 .buttonStyle(.borderedProminent)
-                .padding(.top, 12)
+                .padding(.top, 8)
+            }
+        } else if let unauthDevice = appState.devices.first(where: { $0.state == .unauthorized }) {
+            // 1-Click Action: User plugged in cable, just tap "Allow" on phone!
+            VStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(Color.orange.opacity(0.2))
+                        .frame(width: 80, height: 80)
+                    Image(systemName: "hand.tap.fill")
+                        .font(.system(size: 38))
+                        .foregroundColor(.orange)
+                }
+                
+                VStack(spacing: 6) {
+                    Text("Подтвердите на телефоне")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("Разблокируйте **\(unauthDevice.displayName)** и нажмите **«Разрешить»** на экране.")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.horizontal, 20)
+                }
+                
+                ProgressView()
+                    .controlSize(.small)
+                Text("Ожидание подтверждения...")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.5))
             }
         } else if let device = appState.selectedDevice {
-            // Lock Screen / Standby View (1-in-1 with Apple Lock Screen)
-            VStack(spacing: 18) {
-                // Clock
+            // Device Ready!
+            VStack(spacing: 20) {
                 VStack(spacing: 2) {
                     Text(Date(), style: .time)
-                        .font(.system(size: 46, weight: .semibold, design: .rounded))
+                        .font(.system(size: 48, weight: .semibold, design: .rounded))
                         .foregroundColor(.white)
                     Text(Date(), style: .date)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white.opacity(0.7))
                 }
-                .padding(.top, 20)
+                .padding(.top, 10)
                 
-                // Device Icon
                 ZStack {
                     Circle()
                         .fill(Color.white.opacity(0.12))
                         .frame(width: 80, height: 80)
                     Image(systemName: device.isPixel ? "g.circle.fill" : "smartphone")
-                        .font(.system(size: 44))
+                        .font(.system(size: 42))
                         .foregroundColor(.white)
                 }
                 
@@ -318,101 +302,93 @@ public struct PhoneMirrorFrameView: View {
                     Text(device.displayName)
                         .font(.headline)
                         .foregroundColor(.white)
-                    Text(device.connectionType == .wifi ? "Беспроводное подключение" : "Подключено по кабелю")
+                    Text(device.connectionType == .wifi ? "Готов к беспроводной работе" : "Подключен по Type-C")
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.6))
                 }
                 
-                // Main Start Button (Sequoia style)
                 Button {
                     appState.toggleMirroring()
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "play.fill")
-                        Text("Начать зеркалирование")
+                        Text("Открыть экран")
                     }
                     .font(.headline)
-                    .frame(minWidth: 180)
-                    .padding(.vertical, 8)
+                    .frame(minWidth: 160)
+                    .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .tint(.accentColor)
-                
-                // Quick Action Apps
-                HStack(spacing: 16) {
-                    quickAppButton(icon: "message.fill", color: .green, name: "Сообщения", pkg: "com.google.android.apps.messaging")
-                    quickAppButton(icon: "safari.fill", color: .blue, name: "Chrome", pkg: "com.android.chrome")
-                    quickAppButton(icon: "paperplane.fill", color: .cyan, name: "Telegram", pkg: "org.telegram.messenger")
-                    quickAppButton(icon: "gearshape.fill", color: .gray, name: "Настройки", pkg: "com.android.settings")
-                }
-                .padding(.top, 8)
             }
         } else {
-            // No device connected view
-            VStack(spacing: 16) {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 42))
-                    .foregroundColor(.white.opacity(0.5))
-                
-                Text("Устройство не найдено")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                
-                Text("Подключите ваш Pixel кабелем или нажмите «Добавить по Wi-Fi» для беспроводного соединения.")
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.white.opacity(0.6))
-                    .padding(.horizontal, 20)
-                
-                Button {
-                    appState.showPairingSheet = true
-                } label: {
-                    Label("Добавить по Wi-Fi", systemImage: "wifi.badge.plus")
-                }
-                .buttonStyle(.borderedProminent)
-                
-                Button {
-                    appState.isDemoMode.toggle()
-                } label: {
-                    Text(appState.isDemoMode ? "Выйти из Демо" : "Запустить Демо-режим")
-                        .font(.caption)
+            // ZERO-COMPLICATION ONBOARDING SCREEN
+            VStack(spacing: 22) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(pulseAnimation ? 0.25 : 0.1))
+                        .frame(width: 90, height: 90)
+                        .scaleEffect(pulseAnimation ? 1.08 : 0.96)
+                        .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulseAnimation)
+                    
+                    Image(systemName: "cable.connector.horizontal")
+                        .font(.system(size: 40))
                         .foregroundColor(.accentColor)
                 }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-    
-    // Quick app launcher icon
-    private func quickAppButton(icon: String, color: Color, name: String, pkg: String) -> some View {
-        Button {
-            guard let device = appState.selectedDevice else { return }
-            Task {
-                try? await ADBService.shared.launchApp(serial: device.id, packageName: pkg)
-                if !appState.isMirroring {
-                    appState.toggleMirroring()
+                .onAppear {
+                    pulseAnimation = true
                 }
-            }
-        } label: {
-            VStack(spacing: 4) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(color)
-                        .frame(width: 42, height: 42)
-                    Image(systemName: icon)
-                        .font(.system(size: 20))
+                
+                VStack(spacing: 6) {
+                    Text("Подключите телефон кабелем")
+                        .font(.title3.bold())
                         .foregroundColor(.white)
+                    
+                    Text("Вставьте кабель Type-C от телефона в Mac всего на пару секунд. Приложение само всё настроит.")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 24)
                 }
-                Text(name)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.7))
+                
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "1.circle.fill")
+                            .foregroundColor(.accentColor)
+                        Text("Вставьте кабель в MacBook")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                    HStack(spacing: 10) {
+                        Image(systemName: "2.circle.fill")
+                            .foregroundColor(.accentColor)
+                        Text("Нажмите «Разрешить» на экране телефона")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                    HStack(spacing: 10) {
+                        Image(systemName: "3.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Экран смартфона сразу появится на Mac!")
+                            .font(.caption.bold())
+                            .foregroundColor(.green)
+                    }
+                }
+                .padding(14)
+                .background(Color.white.opacity(0.06))
+                .cornerRadius(12)
+                
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Поиск подключенных устройств...")
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.5))
+                }
             }
         }
-        .buttonStyle(.plain)
     }
     
-    // MARK: - Bottom Home Bar (1-in-1 with iPhone / Android Home Indicator)
+    // MARK: - Bottom Home Bar
     private var bottomHomeBarView: some View {
         VStack {
             Capsule()
@@ -424,12 +400,12 @@ public struct PhoneMirrorFrameView: View {
                     DragGesture(minimumDistance: 5)
                         .onChanged { value in
                             if value.translation.height < 0 {
-                                dragOffset = max(value.translation.height, -60)
+                                dragOffset = max(value.translation.height, -50)
                             }
                         }
                         .onEnded { value in
                             withAnimation(.spring()) {
-                                if value.translation.height < -40 {
+                                if value.translation.height < -30 {
                                     appState.triggerHome()
                                 }
                                 dragOffset = 0
@@ -444,22 +420,7 @@ public struct PhoneMirrorFrameView: View {
                         isHoveringHome = hovering
                     }
                 }
-                .help("Нажмите или смахните вверх для перехода Домой (Cmd+1)")
         }
         .frame(height: 20)
-    }
-    
-    // MARK: - File Drop Handler
-    private func handleFileDrop(providers: [NSItemProvider]) {
-        guard let device = appState.selectedDevice else { return }
-        for provider in providers {
-            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                Task {
-                    _ = try? await ADBService.shared.pushFile(serial: device.id, localPath: url.path)
-                }
-            }
-        }
     }
 }
