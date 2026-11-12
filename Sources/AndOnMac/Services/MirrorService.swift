@@ -50,6 +50,9 @@ public final class MirrorService: @unchecked Sendable {
             "--window-title", "AndOnMac — \(device.displayName)",
             "--max-fps", String(maxFps),
             "--video-bit-rate", String(bitRate),
+            "--shortcut-mod", "lsuper",
+            "--power-off-on-close",
+            "--push-target", "/sdcard/Download/",
             "--prefer-text"
         ]
         

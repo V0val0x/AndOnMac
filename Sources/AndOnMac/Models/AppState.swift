@@ -10,18 +10,36 @@ public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum PhoneWindowScale: String, CaseIterable, Identifiable, Sendable {
+    case smaller = "Smaller (75%)"
+    case standard = "Standard (100%)"
+    case larger = "Larger (125%)"
+    
+    public var id: String { rawValue }
+    
+    public var multiplier: CGFloat {
+        switch self {
+        case .smaller: return 0.8
+        case .standard: return 1.0
+        case .larger: return 1.2
+        }
+    }
+}
+
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var devices: [Device] = []
     @Published public var selectedDeviceId: String?
     @Published public var isMirroring: Bool = false
     @Published public var notifications: [NotificationItem] = []
+    @Published public var isDemoMode: Bool = false
     
     // Preferences
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
     @AppStorage("forwardAudio") public var forwardAudio: Bool = true
     @AppStorage("stayAwake") public var stayAwake: Bool = true
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .pixel
+    @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 60
     
     @Published public var statusMessage: String = "Ready"
@@ -37,6 +55,19 @@ public final class AppState: ObservableObject {
     }
     
     public var selectedDevice: Device? {
+        if isDemoMode {
+            return Device(
+                id: "demo-pixel-9-pro",
+                model: "Pixel 9 Pro",
+                manufacturer: "Google",
+                androidVersion: "15",
+                batteryLevel: 94,
+                isCharging: true,
+                connectionType: .wifi,
+                state: .ready,
+                ipAddress: "192.168.1.55"
+            )
+        }
         if let id = selectedDeviceId {
             return devices.first(where: { $0.id == id })
         }
@@ -74,6 +105,50 @@ public final class AppState: ObservableObject {
             }
             self.isMirroring = MirrorService.shared.isMirroring
             isScanning = false
+        }
+    }
+    
+    // MARK: - Actions (1-in-1 with iPhone Mirroring in macOS Sequoia)
+    
+    public func triggerHome() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.sendHome(serial: device.id)
+        }
+    }
+    
+    public func triggerBack() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.sendBack(serial: device.id)
+        }
+    }
+    
+    public func triggerAppSwitch() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.sendAppSwitch(serial: device.id)
+        }
+    }
+    
+    public func triggerNotifications() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.sendNotifications(serial: device.id)
+        }
+    }
+    
+    public func triggerPower() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.sendPower(serial: device.id)
+        }
+    }
+    
+    public func triggerUnlock() {
+        guard let device = selectedDevice else { return }
+        Task {
+            await ADBService.shared.unlockScreen(serial: device.id)
         }
     }
     

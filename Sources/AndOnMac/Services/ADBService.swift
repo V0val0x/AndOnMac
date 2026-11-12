@@ -200,4 +200,45 @@ public final class ADBService: @unchecked Sendable {
     public func launchApp(serial: String, packageName: String) async throws {
         _ = try await execute(arguments: ["-s", serial, "shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1"])
     }
+    
+    // MARK: - Navigation & Gesture Actions (1-in-1 with macOS Sequoia iPhone Mirroring)
+    
+    /// Trigger Home (Cmd+1 / Click on Home Bar)
+    public func sendHome(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_HOME"])
+    }
+    
+    /// Trigger Back (Cmd+Backspace / Esc / Right-click)
+    public func sendBack(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_BACK"])
+    }
+    
+    /// Trigger App Switcher / Recent Apps (Cmd+2 / Swipe up and hold)
+    public func sendAppSwitch(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_APP_SWITCH"])
+    }
+    
+    /// Expand Notification Shade (Cmd+3)
+    public func sendNotifications(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "cmd", "statusbar", "expand-notifications"])
+    }
+    
+    /// Toggle Power / Sleep / Wake
+    public func sendPower(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_POWER"])
+    }
+    
+    /// Unlock screen (swipe up from lockscreen)
+    public func unlockScreen(serial: String) async {
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "swipe", "500", "1800", "500", "400", "200"])
+    }
+    
+    /// Simulate swipe gesture
+    public func sendSwipe(serial: String, fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Int = 250) async {
+        _ = try? await execute(arguments: [
+            "-s", serial, "shell", "input", "swipe",
+            String(fromX), String(fromY), String(toX), String(toY), String(durationMs)
+        ])
+    }
 }
