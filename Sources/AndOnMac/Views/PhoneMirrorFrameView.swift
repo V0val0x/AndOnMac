@@ -384,6 +384,16 @@ public struct PhoneMirrorFrameView: View {
                         .font(.caption2)
                         .foregroundColor(.white.opacity(0.5))
                 }
+                
+                Button {
+                    appState.showPairingSheet = true
+                } label: {
+                    Label("Подключить без кабеля (QR-код)", systemImage: "qrcode")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+                .padding(.top, 4)
             }
         }
     }

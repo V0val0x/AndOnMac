@@ -27,6 +27,16 @@ public struct MainWindowView: View {
                     
                     Spacer()
                     
+                    // Wireless / QR pairing button
+                    Button {
+                        appState.showPairingSheet = true
+                    } label: {
+                        Label("QR / Wi-Fi", systemImage: "qrcode")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    
                     // Device status pill
                     if let device = appState.selectedDevice {
                         HStack(spacing: 6) {
@@ -55,6 +65,9 @@ public struct MainWindowView: View {
                 PhoneMirrorFrameView(appState: appState)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .sheet(isPresented: $appState.showPairingSheet) {
+            WirelessPairingView(appState: appState)
         }
     }
 }
