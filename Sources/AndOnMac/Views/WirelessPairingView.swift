@@ -1,9 +1,9 @@
 import SwiftUI
 
 public enum PairingTab: String, CaseIterable, Identifiable {
-    case qrCode = "QR-код"
-    case autoDiscovery = "Автопоиск в сети"
-    case manual = "Ввод IP вручную"
+    case cameraQR = "Камера (QR)"
+    case usbSetup = "Кабель за 3 сек"
+    case devCode = "Код из настроек"
     
     public var id: String { rawValue }
 }
@@ -12,11 +12,7 @@ public struct WirelessPairingView: View {
     @ObservedObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     
-    @State private var selectedTab: PairingTab = .qrCode
-    
-    // QR Code State
-    @State private var qrServiceName: String = "AndOnMac-\(Int.random(in: 1000...9999))"
-    @State private var qrPassword: String = String(Int.random(in: 100000...999999))
+    @State private var selectedTab: PairingTab = .cameraQR
     
     // Auto-discovery state
     @State private var discoveredServices: [DiscoveredService] = []
@@ -35,8 +31,12 @@ public struct WirelessPairingView: View {
         self.appState = appState
     }
     
+    private var macLocalIP: String {
+        ADBService.shared.getMacLocalIP()
+    }
+    
     private var qrPayload: String {
-        "WIFI:T:ADB;S:\(qrServiceName);P:\(qrPassword);;"
+        "http://\(macLocalIP):58241"
     }
     
     public var body: some View {
@@ -47,9 +47,9 @@ public struct WirelessPairingView: View {
                     .font(.title2)
                     .foregroundColor(.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Беспроводное сопряжение")
+                    Text("Быстрое подключение")
                         .font(.headline)
-                    Text("Подключение телефона без кабелей по Wi-Fi")
+                    Text("Выберите самый удобный способ")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -76,18 +76,18 @@ public struct WirelessPairingView: View {
             
             // Tab Contents
             switch selectedTab {
-            case .qrCode:
-                qrCodeTab
-            case .autoDiscovery:
-                autoDiscoveryTab
-            case .manual:
-                manualTab
+            case .cameraQR:
+                cameraQRTab
+            case .usbSetup:
+                usbSetupTab
+            case .devCode:
+                devCodeTab
             }
             
             if let result = resultMessage {
                 Text(result)
                     .font(.caption.bold())
-                    .foregroundColor(result.contains("успешно") || result.contains("success") ? .green : .red)
+                    .foregroundColor(result.contains("успешно") || result.contains("success") || result.contains("Готово") ? .green : .red)
                     .padding(.top, 4)
             }
             
@@ -95,37 +95,25 @@ public struct WirelessPairingView: View {
             
             // Bottom Bar
             HStack {
-                Button("Отмена") {
+                Button("Закрыть") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 
                 Spacer()
                 
-                if selectedTab == .manual {
+                if selectedTab == .devCode {
                     Button {
-                        submitManualPairing()
+                        submitDevCodePairing()
                     } label: {
                         if isProcessing {
                             ProgressView().controlSize(.small)
                         } else {
-                            Text("Сопрячь")
+                            Text("Подключить по коду")
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(ipAddress.isEmpty || portString.isEmpty || pairingCode.isEmpty || isProcessing)
-                } else if selectedTab == .autoDiscovery {
-                    Button {
-                        submitAutoPairing()
-                    } label: {
-                        if isProcessing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Подключить выбранное")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(selectedService == nil || autoPairingCode.isEmpty || isProcessing)
+                    .disabled(pairingCode.isEmpty || isProcessing)
                 }
             }
         }
@@ -136,108 +124,125 @@ public struct WirelessPairingView: View {
         }
     }
     
-    // MARK: - Tab 1: QR Code
-    private var qrCodeTab: some View {
+    // MARK: - Tab 1: Standard Camera QR Code (No Developer Settings Needed!)
+    private var cameraQRTab: some View {
         VStack(spacing: 14) {
             QRCodeView(payload: qrPayload, size: 180)
             
             VStack(spacing: 6) {
-                Text("Как подключить через QR:")
+                Text("Сканируйте обычной камерой смартфона:")
                     .font(.subheadline.bold())
-                Text("1. Откройте на телефоне: **Настройки → Для разработчиков → Беспроводная отладка**.")
+                Text("1. Откройте **стандартную камеру** на телефоне (не нужно заходить в настройки!).")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("2. Нажмите **«Подключить с помощью QR-кода»** и наведите камеру на экран Mac.")
+                Text("2. Наведите камеру на QR-код и нажмите появившуюся желтую ссылку.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("3. Готово! Телефон сразу спарится и запомнит этот Mac навсегда.")
-                    .font(.caption)
+                Text("3. Mac мгновенно определит ваш телефон и включит трансляцию экрана.")
+                    .font(.caption.bold())
                     .foregroundColor(.accentColor)
             }
             .multilineTextAlignment(.center)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
         }
     }
     
-    // MARK: - Tab 2: Auto Discovery (No IP typing)
-    private var autoDiscoveryTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Устройства в локальной Wi-Fi сети:")
-                    .font(.subheadline.bold())
-                Spacer()
-                Button {
-                    scanForDevices()
-                } label: {
-                    Label("Обновить", systemImage: "arrow.clockwise")
-                        .font(.caption)
+    // MARK: - Tab 2: USB One-Time Setup (Zero-Touch Future)
+    private var usbSetupTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.12))
+                        .frame(width: 50, height: 50)
+                    Image(systemName: "cable.connector")
+                        .font(.title2)
+                        .foregroundColor(.accentColor)
                 }
-                .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Подключение кабелем за 3 секунды")
+                        .font(.headline)
+                    Text("Кабель нужен всего один раз — дальше работает по воздуху!")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text("1.")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                    Text("Подключите телефон к Mac комплектным кабелем на пару секунд.")
+                        .font(.subheadline)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    Text("2.")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                    Text("AndOnMac сам активирует беспроводной режим и сохранит ваш телефон.")
+                        .font(.subheadline)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    Text("3.")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                    Text("Отсоедините кабель. Теперь телефон будет подключаться **полностью автоматически** при нахождении в одной Wi-Fi сети.")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.green)
+                }
+            }
+            .padding(16)
+            .background(Color.secondary.opacity(0.06))
+            .cornerRadius(12)
+        }
+        .padding(.top, 10)
+    }
+    
+    // MARK: - Tab 3: Developer Settings 6-digit PIN
+    private var devCodeTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Беспроводная отладка Android (ADB PIN)")
+                .font(.subheadline.bold())
+            
+            Text("Если вы включили «Беспроводную отладку» в телефоне, выберите телефон из списка и введите 6-значный код (таймаут 6 сек, без зависаний):")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
             if discoveredServices.isEmpty {
-                VStack(spacing: 10) {
+                HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
-                    Text("Поиск Android-устройств в сети...")
+                    Text("Поиск устройств в Wi-Fi сети...")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("Убедитесь, что на телефоне открыт экран «Беспроводная отладка».")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 120)
-                .background(Color.secondary.opacity(0.06))
-                .cornerRadius(10)
+                .padding(10)
             } else {
                 List(discoveredServices, selection: $selectedService) { service in
                     HStack {
                         Image(systemName: "smartphone")
                             .foregroundColor(.accentColor)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(service.name)
-                                .font(.subheadline.bold())
-                            Text("\(service.host):\(service.port)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
+                        Text(service.name)
+                            .font(.subheadline.bold())
                         Spacer()
-                        Text(service.type == .pairing ? "Готов к коду" : "Готов к подключению")
-                            .font(.caption2)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
-                            .cornerRadius(6)
+                        Text("\(service.host):\(service.port)")
+                            .font(.caption2.monospaced())
+                            .foregroundColor(.secondary)
                     }
                     .tag(service)
                 }
-                .frame(height: 120)
+                .frame(height: 80)
             }
-            
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Введите 6-значный код сопряжения с экрана телефона:")
-                    .font(.caption.bold())
-                TextField("Например, 849201", text: $autoPairingCode)
-                    .textFieldStyle(.roundedBorder)
-            }
-        }
-    }
-    
-    // MARK: - Tab 3: Manual Input
-    private var manualTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Ручной ввод адреса и порта")
-                .font(.subheadline.bold())
             
             HStack(spacing: 10) {
-                TextField("IP-адрес телефона", text: $ipAddress)
+                TextField("IP (если не найден)", text: $ipAddress)
                     .textFieldStyle(.roundedBorder)
                 TextField("Порт", text: $portString)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 80)
             }
             
-            TextField("6-значный код", text: $pairingCode)
+            TextField("6-значный код сопряжения", text: $pairingCode)
                 .textFieldStyle(.roundedBorder)
         }
     }
@@ -249,42 +254,31 @@ public struct WirelessPairingView: View {
                 self.discoveredServices = found
                 if selectedService == nil {
                     self.selectedService = found.first
+                    if let first = found.first {
+                        self.ipAddress = first.host
+                        self.portString = String(first.port)
+                    }
                 }
             }
         }
     }
     
-    private func submitAutoPairing() {
-        guard let service = selectedService else { return }
-        isProcessing = true
-        resultMessage = nil
-        
-        Task {
-            let success = await appState.pairDevice(host: service.host, port: service.port, code: autoPairingCode)
-            isProcessing = false
-            if success {
-                resultMessage = "Устройство успешно подключено!"
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                dismiss()
-            } else {
-                resultMessage = appState.statusMessage
-            }
-        }
-    }
-    
-    private func submitManualPairing() {
-        guard let port = Int(portString) else {
-            resultMessage = "Некорректный порт"
+    private func submitDevCodePairing() {
+        let host = selectedService?.host ?? ipAddress
+        let port = selectedService?.port ?? Int(portString) ?? 0
+        guard !host.isEmpty, port > 0 else {
+            resultMessage = "Укажите корректный IP и порт"
             return
         }
+        
         isProcessing = true
         resultMessage = nil
         
         Task {
-            let success = await appState.pairDevice(host: ipAddress, port: port, code: pairingCode)
+            let success = await appState.pairDevice(host: host, port: port, code: pairingCode)
             isProcessing = false
             if success {
-                resultMessage = "Успешно сопряжено!"
+                resultMessage = "Успешно подключено!"
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
                 dismiss()
             } else {

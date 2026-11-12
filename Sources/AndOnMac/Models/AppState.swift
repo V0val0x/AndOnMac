@@ -147,6 +147,12 @@ public final class AppState: ObservableObject {
                 }
             }
         }
+        NotificationService.shared.onDeviceDiscoveredViaQR = { [weak self] clientIP in
+            Task { @MainActor in
+                self?.statusMessage = "Устройство найдено через QR (\(clientIP)), подключаем..."
+                _ = await self?.connectWireless(host: clientIP, port: 5555)
+            }
+        }
         NotificationService.shared.startServer()
     }
     

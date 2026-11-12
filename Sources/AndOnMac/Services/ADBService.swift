@@ -25,16 +25,15 @@ public final class ADBService: @unchecked Sendable {
     
     private init() {}
     
-    /// Executes an ADB command asynchronously and returns stdout
+    /// Executes an ADB command asynchronously with a strict timeout to prevent indefinite hangs
     @discardableResult
-    public func execute(arguments: [String]) async throws -> String {
+    public func execute(arguments: [String], timeoutSeconds: Double = 6.0) async throws -> String {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: self.adbPath)
                 process.arguments = arguments
                 
-                // Add standard paths to environment
                 var env = ProcessInfo.processInfo.environment
                 let existingPath = env["PATH"] ?? ""
                 env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
@@ -45,26 +44,62 @@ public final class ADBService: @unchecked Sendable {
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
                 
+                let lock = NSLock()
+                var hasResumed = false
+                
+                // Watchdog timer
+                let timer = DispatchSource.makeTimerSource(queue: .global())
+                timer.schedule(deadline: .now() + timeoutSeconds)
+                timer.setEventHandler {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    if !hasResumed {
+                        hasResumed = true
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                        continuation.resume(throwing: NSError(
+                            domain: "ADBService",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "Устройство не ответило вовремя (таймаут \(Int(timeoutSeconds)) сек). Проверьте экран телефона."]
+                        ))
+                    }
+                }
+                timer.resume()
+                
                 do {
                     try process.run()
                     process.waitUntilExit()
                     
-                    let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
+                    lock.lock()
+                    defer { lock.unlock() }
+                    timer.cancel()
                     
-                    if process.terminationStatus == 0 {
-                        continuation.resume(returning: output)
-                    } else {
-                        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                        let errStr = String(data: errData, encoding: .utf8) ?? ""
-                        continuation.resume(throwing: NSError(
-                            domain: "ADBService",
-                            code: Int(process.terminationStatus),
-                            userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? output : errStr]
-                        ))
+                    if !hasResumed {
+                        hasResumed = true
+                        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        let output = String(data: data, encoding: .utf8) ?? ""
+                        
+                        if process.terminationStatus == 0 {
+                            continuation.resume(returning: output)
+                        } else {
+                            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                            let errStr = String(data: errData, encoding: .utf8) ?? ""
+                            continuation.resume(throwing: NSError(
+                                domain: "ADBService",
+                                code: Int(process.terminationStatus),
+                                userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? output : errStr]
+                            ))
+                        }
                     }
                 } catch {
-                    continuation.resume(throwing: error)
+                    lock.lock()
+                    defer { lock.unlock() }
+                    timer.cancel()
+                    if !hasResumed {
+                        hasResumed = true
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
         }
@@ -194,6 +229,31 @@ public final class ADBService: @unchecked Sendable {
     /// Push a local file to the device's Downloads directory (Drag and Drop support)
     public func pushFile(serial: String, localPath: String, remoteDir: String = "/sdcard/Download/") async throws -> String {
         return try await execute(arguments: ["-s", serial, "push", localPath, remoteDir])
+    }
+    
+    /// Returns Mac's current Wi-Fi IP address in the local network
+    public func getMacLocalIP() -> String {
+        var address: String = "127.0.0.1"
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return address }
+        
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" || name == "en1" {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                                &hostname, socklen_t(hostname.count),
+                                nil, socklen_t(0), NI_NUMERICHOST)
+                    address = String(cString: hostname)
+                    break
+                }
+            }
+        }
+        freeifaddrs(ifaddr)
+        return address
     }
     
     /// Launch an application by package name (e.g. when user clicks a notification)

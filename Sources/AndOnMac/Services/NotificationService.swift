@@ -9,6 +9,7 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
     private var listener: NWListener?
     private let port: NWEndpoint.Port = 58241
     public var onNotificationReceived: (@Sendable (NotificationItem) -> Void)?
+    public var onDeviceDiscoveredViaQR: (@Sendable (String) -> Void)?
     
     private override init() {
         super.init()
@@ -68,10 +69,69 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
     private func receiveData(from connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, error in
             if let data = content, !data.isEmpty {
-                self?.processIncomingNotificationData(data)
+                if let str = String(data: data, encoding: .utf8), str.starts(with: "GET ") {
+                    self?.handleHTTPQRCodeRequest(from: connection, request: str)
+                } else {
+                    self?.processIncomingNotificationData(data)
+                }
             }
             if error == nil && !isComplete {
                 self?.receiveData(from: connection)
+            }
+        }
+    }
+    
+    private func handleHTTPQRCodeRequest(from connection: NWConnection, request: String) {
+        // Extract client IP address from connection endpoint
+        var clientIP: String? = nil
+        if case .hostPort(let host, _) = connection.endpoint {
+            switch host {
+            case .ipv4(let ip):
+                clientIP = "\(ip)"
+            default:
+                break
+            }
+        }
+        
+        let html = """
+        HTTP/1.1 200 OK\r
+        Content-Type: text/html; charset=UTF-8\r
+        Connection: close\r
+        \r
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>AndOnMac</title>
+            <style>
+                body { font-family: -apple-system, system-ui, sans-serif; background: #000; color: #fff; text-align: center; padding: 40px 20px; }
+                .card { background: #1c1c1e; border-radius: 28px; padding: 32px 24px; max-width: 380px; margin: 40px auto; box-shadow: 0 12px 40px rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.1); }
+                .icon { font-size: 54px; margin-bottom: 12px; }
+                h2 { margin: 0 0 8px 0; font-size: 22px; font-weight: 700; }
+                p { color: rgba(255,255,255,0.7); font-size: 15px; line-height: 1.4; margin: 0 0 20px 0; }
+                .badge { display: inline-block; background: #30d158; color: #000; font-weight: 700; font-size: 13px; padding: 6px 14px; border-radius: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="icon">✨</div>
+                <div class="badge">MacBook подключен</div>
+                <h2>Телефон успешно обнаружен!</h2>
+                <p>Ваше устройство связано с Mac. Экран трансляции открывается автоматически.</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        if let respData = html.data(using: .utf8) {
+            connection.send(content: respData, completion: .contentProcessed({ _ in
+                connection.cancel()
+            }))
+        }
+        
+        if let ip = clientIP {
+            DispatchQueue.main.async {
+                self.onDeviceDiscoveredViaQR?(ip)
             }
         }
     }
