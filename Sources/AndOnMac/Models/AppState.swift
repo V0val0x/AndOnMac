@@ -44,7 +44,9 @@ public final class AppState: ObservableObject {
     @AppStorage("autoConnect") public var autoConnect: Bool = true
     @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
+    @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
     
+    @Published public var knownDevices: [KnownDevice] = []
     @Published public var statusMessage: String = "Готов к работе"
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
@@ -56,10 +58,38 @@ public final class AppState: ObservableObject {
     private var hasAutoConnectedThisSession: Bool = false
     
     public init() {
+        loadKnownDevices()
         checkSystemDependencies()
         startNotificationListener()
         refreshDevices()
         startPeriodicPoll()
+    }
+    
+    private func loadKnownDevices() {
+        if let decoded = try? JSONDecoder().decode([KnownDevice].self, from: knownDevicesData) {
+            self.knownDevices = decoded
+        }
+    }
+    
+    private func persistKnownDevice(_ device: Device) {
+        guard let ip = device.ipAddress, !ip.isEmpty else { return }
+        if let index = knownDevices.firstIndex(where: { $0.ipAddress == ip || $0.id == device.id }) {
+            knownDevices[index].lastConnected = Date()
+            knownDevices[index].name = device.displayName
+        } else {
+            let newKnown = KnownDevice(
+                id: device.id,
+                name: device.displayName,
+                ipAddress: ip,
+                port: 5555,
+                lastConnected: Date(),
+                autoConnect: true
+            )
+            knownDevices.append(newKnown)
+        }
+        if let encoded = try? JSONEncoder().encode(knownDevices) {
+            knownDevicesData = encoded
+        }
     }
     
     public func checkSystemDependencies() {
@@ -148,17 +178,29 @@ public final class AppState: ObservableObject {
     
     private func handleAutomation(devices: [Device]) {
         guard let device = devices.first(where: { $0.state == .ready }) else {
-            // If no active device, check if we have saved wireless IPs to auto-reconnect
-            if !isMirroring && !savedWirelessIPs.isEmpty {
-                let ips = savedWirelessIPs.components(separatedBy: ",").filter { !$0.isEmpty }
-                for ip in ips {
+            // Background Auto-Reconnection to known devices
+            if !isMirroring {
+                // Try all known devices
+                for known in knownDevices where known.autoConnect {
                     Task {
-                        _ = await connectWireless(host: ip, port: 5555)
+                        _ = await connectWireless(host: known.ipAddress, port: known.port)
+                    }
+                }
+                // Also try saved wireless IPs
+                if !savedWirelessIPs.isEmpty {
+                    let ips = savedWirelessIPs.components(separatedBy: ",").filter { !$0.isEmpty }
+                    for ip in ips {
+                        Task {
+                            _ = await connectWireless(host: ip, port: 5555)
+                        }
                     }
                 }
             }
             return
         }
+        
+        // Save to persistent known devices registry
+        persistKnownDevice(device)
         
         // 1. Auto-Wireless Promotion: If device is USB connected and has IP, enable TCP/IP mode and remember it
         if autoWirelessPromote && device.connectionType == .usb, let ip = device.ipAddress, !ip.isEmpty {

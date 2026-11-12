@@ -82,10 +82,37 @@ public struct MainWindowView: View {
                         }
                         
                         if appState.devices.isEmpty {
-                            Text("Устройства не найдены")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(.vertical, 8)
+                            if appState.knownDevices.isEmpty {
+                                Text("Устройства не найдены")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .padding(.vertical, 8)
+                            } else {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Сохраненные устройства:")
+                                        .font(.caption2.bold())
+                                        .foregroundColor(.secondary)
+                                    ForEach(appState.knownDevices) { known in
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "wifi")
+                                                .foregroundColor(.secondary)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(known.name)
+                                                    .font(.caption.bold())
+                                                Text("Автоподключение...")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Spacer()
+                                            ProgressView().controlSize(.mini)
+                                        }
+                                        .padding(6)
+                                        .background(Color.secondary.opacity(0.06))
+                                        .cornerRadius(6)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
                         } else {
                             ForEach(appState.devices) { device in
                                 HStack {
