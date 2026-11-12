@@ -41,17 +41,51 @@ public final class AppState: ObservableObject {
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .pixel
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 60
+    @AppStorage("autoConnect") public var autoConnect: Bool = true
+    @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = true
+    @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     
-    @Published public var statusMessage: String = "Ready"
+    @Published public var statusMessage: String = "Готов к работе"
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
+    @Published public var dependencyStatus: DependencyStatus?
+    @Published public var isInstallingDependencies: Bool = false
+    @Published public var installerLogs: String = ""
     
     private var timer: Timer?
+    private var hasAutoConnectedThisSession: Bool = false
     
     public init() {
+        checkSystemDependencies()
         startNotificationListener()
         refreshDevices()
         startPeriodicPoll()
+    }
+    
+    public func checkSystemDependencies() {
+        self.dependencyStatus = DependencyService.shared.checkDependencies()
+    }
+    
+    public func runAutoInstaller() {
+        isInstallingDependencies = true
+        installerLogs = "==> Начинаем автоматическую установку компонентов...\n"
+        Task {
+            let success = await DependencyService.shared.autoInstallDependencies { output in
+                Task { @MainActor in
+                    self.installerLogs += output
+                }
+            }
+            Task { @MainActor in
+                self.isInstallingDependencies = false
+                self.checkSystemDependencies()
+                if success {
+                    self.statusMessage = "Компоненты успешно установлены!"
+                    self.refreshDevices()
+                } else {
+                    self.statusMessage = "Ошибка авто-установки. Проверьте подключение к сети."
+                }
+            }
+        }
     }
     
     public var selectedDevice: Device? {
@@ -88,7 +122,8 @@ public final class AppState: ObservableObject {
     
     public func startPeriodicPoll() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        // Fast 1.5s interval for instant plug-and-play response
+        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshDevices()
             }
@@ -105,6 +140,43 @@ public final class AppState: ObservableObject {
             }
             self.isMirroring = MirrorService.shared.isMirroring
             isScanning = false
+            
+            // Automatic seamless features
+            handleAutomation(devices: list)
+        }
+    }
+    
+    private func handleAutomation(devices: [Device]) {
+        guard let device = devices.first(where: { $0.state == .ready }) else {
+            // If no active device, check if we have saved wireless IPs to auto-reconnect
+            if !isMirroring && !savedWirelessIPs.isEmpty {
+                let ips = savedWirelessIPs.components(separatedBy: ",").filter { !$0.isEmpty }
+                for ip in ips {
+                    Task {
+                        _ = await connectWireless(host: ip, port: 5555)
+                    }
+                }
+            }
+            return
+        }
+        
+        // 1. Auto-Wireless Promotion: If device is USB connected and has IP, enable TCP/IP mode and remember it
+        if autoWirelessPromote && device.connectionType == .usb, let ip = device.ipAddress, !ip.isEmpty {
+            if !savedWirelessIPs.contains(ip) {
+                var ips = savedWirelessIPs.components(separatedBy: ",").filter { !$0.isEmpty }
+                ips.append(ip)
+                savedWirelessIPs = ips.joined(separator: ",")
+                
+                Task {
+                    _ = try? await ADBService.shared.enableTcpIp(serial: device.id, port: 5555)
+                }
+            }
+        }
+        
+        // 2. Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
+        if autoConnect && !isMirroring && !hasAutoConnectedThisSession {
+            hasAutoConnectedThisSession = true
+            toggleMirroring()
         }
     }
     

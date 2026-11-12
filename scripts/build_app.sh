@@ -21,7 +21,13 @@ mkdir -p "${RESOURCES_DIR}"
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
-# Generate Info.plist
+# Copy AppIcon.icns
+if [ -f "Sources/AndOnMac/Resources/AppIcon.icns" ]; then
+    echo "==> Bundling AppIcon.icns..."
+    cp "Sources/AndOnMac/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+
+# Generate Info.plist with Icon and metadata
 cat <<EOF > "${CONTENTS_DIR}/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,6 +35,8 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
 <dict>
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.andonmac.app</string>
     <key>CFBundleName</key>
@@ -36,9 +44,9 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -49,11 +57,19 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
 </plist>
 EOF
 
-# Copy scrcpy-server if available in system
+# Copy scrcpy-server if available
 SCRCPY_SERVER=$(find /opt/homebrew/Cellar/scrcpy -name "scrcpy-server" 2>/dev/null | head -n 1 || true)
 if [ -n "${SCRCPY_SERVER}" ] && [ -f "${SCRCPY_SERVER}" ]; then
     echo "==> Bundling scrcpy-server from ${SCRCPY_SERVER}..."
     cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/"
+fi
+
+# Copy adb if available
+ADB_BIN=$(which adb 2>/dev/null || true)
+if [ -n "${ADB_BIN}" ] && [ -x "${ADB_BIN}" ]; then
+    echo "==> Bundling adb binary from ${ADB_BIN}..."
+    cp "${ADB_BIN}" "${RESOURCES_DIR}/adb"
+    chmod +x "${RESOURCES_DIR}/adb"
 fi
 
 echo "✅ App bundle successfully created at ${APP_BUNDLE}"
