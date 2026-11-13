@@ -357,7 +357,7 @@ public struct PhoneMirrorFrameView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "wifi")
                             .font(.system(size: 13, weight: .bold))
-                        Text("Подключить по Wi-Fi (Код / QR)")
+                        Text("Подключить по Wi-Fi (Код сопряжения)")
                             .font(.system(size: 13, weight: .bold))
                     }
                     .padding(.horizontal, 18)

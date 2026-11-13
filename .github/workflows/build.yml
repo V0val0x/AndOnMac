@@ -26,7 +26,7 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar
-          key: ${{ runner.os }}-brew-${{ hashFiles('**/Formula/*') }}
+          key: ${{ runner.os }}-brew-v2
           restore-keys: |
             ${{ runner.os }}-brew-
 
@@ -34,11 +34,6 @@ jobs:
         run: |
           which scrcpy || brew install scrcpy
           which adb || brew install android-platform-tools
-          pip3 install pillow
-
-      - name: Generate High-Resolution Icons
-        run: |
-          python3 scripts/generate_icon.py
 
       - name: Run Test Suite
         run: |

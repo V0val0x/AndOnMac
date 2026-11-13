@@ -303,17 +303,30 @@ public final class AppState: ObservableObject {
         }
     }
     
-    public func pairDevice(host: String, port: Int, code: String) async -> Bool {
-        do {
-            statusMessage = "Pairing with \(host):\(port)..."
-            let output = try await ADBService.shared.pairDevice(host: host, port: port, code: code)
-            statusMessage = output.contains("Successfully") ? "Paired successfully!" : output
-            refreshDevices()
-            return true
-        } catch {
-            statusMessage = "Pairing failed: \(error.localizedDescription)"
-            return false
+    public func removeKnownDevice(id: String) {
+        knownDevices.removeAll { $0.id == id }
+        if let encoded = try? JSONEncoder().encode(knownDevices) {
+            knownDevicesData = encoded
         }
+    }
+    
+    public func pairAndConnect(host: String, pairingPort: Int, code: String, connectPort: Int? = nil) async -> (Bool, String) {
+        do {
+            statusMessage = "Сопряжение с \(host):\(pairingPort)..."
+            let res = try await ADBService.shared.pairAndConnect(host: host, pairingPort: pairingPort, code: code, userConnectPort: connectPort)
+            statusMessage = res.message
+            refreshDevices()
+            return (res.success, res.message)
+        } catch {
+            let msg = "Ошибка: \(error.localizedDescription)"
+            statusMessage = msg
+            return (false, msg)
+        }
+    }
+    
+    public func pairDevice(host: String, port: Int, code: String) async -> Bool {
+        let (success, _) = await pairAndConnect(host: host, pairingPort: port, code: code, connectPort: nil)
+        return success
     }
     
     public func connectWireless(host: String, port: Int = 5555) async -> Bool {

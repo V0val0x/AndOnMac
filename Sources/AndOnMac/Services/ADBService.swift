@@ -37,6 +37,7 @@ public final class ADBService: @unchecked Sendable {
                 var env = ProcessInfo.processInfo.environment
                 let existingPath = env["PATH"] ?? ""
                 env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
+                env["ADB_MDNS_OPENSCREEN"] = "1"
                 process.environment = env
                 
                 let stdoutPipe = Pipe()
@@ -224,6 +225,76 @@ public final class ADBService: @unchecked Sendable {
     /// Pair with device using Android 11+ Wireless Debugging code
     public func pairDevice(host: String, port: Int, code: String) async throws -> String {
         return try await execute(arguments: ["pair", "\(host):\(port)", code])
+    }
+    
+    /// Parse `adb mdns services` to find dynamic connect port for an IP
+    public func findMdnsConnectPort(for host: String) async -> Int? {
+        guard let output = try? await execute(arguments: ["mdns", "services"], timeoutSeconds: 3.0) else {
+            return nil
+        }
+        for line in output.components(separatedBy: .newlines) {
+            if line.contains(host) && line.contains("_adb-tls-connect") {
+                let parts = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                if let endpoint = parts.last(where: { $0.contains(":") }) {
+                    let portStr = endpoint.components(separatedBy: ":").last ?? ""
+                    if let port = Int(portStr) {
+                        return port
+                    }
+                }
+            }
+        }
+        return nil
+    }
+    
+    /// Complete Pair and Connect sequence
+    public func pairAndConnect(host: String, pairingPort: Int, code: String, userConnectPort: Int? = nil) async throws -> (success: Bool, message: String) {
+        // Step 1: Pair
+        let pairOutput = try await execute(arguments: ["pair", "\(host):\(pairingPort)", code], timeoutSeconds: 6.0)
+        let isPaired = pairOutput.lowercased().contains("success") || pairOutput.lowercased().contains("paired")
+        guard isPaired else {
+            return (false, "Ошибка сопряжения: \(pairOutput)")
+        }
+        
+        // Short pause for Android daemon to settle
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        
+        // Step 2: Determine Connect Port
+        var connectPortToUse: Int? = userConnectPort
+        
+        // Check Bonjour discovery cache
+        if connectPortToUse == nil {
+            connectPortToUse = DiscoveryService.shared.getConnectPort(for: host)
+        }
+        
+        // Check ADB's own mDNS services
+        if connectPortToUse == nil {
+            connectPortToUse = await findMdnsConnectPort(for: host)
+        }
+        
+        // Candidate ports to try
+        var portsToTry: [Int] = []
+        if let p = connectPortToUse {
+            portsToTry.append(p)
+        }
+        if !portsToTry.contains(5555) {
+            portsToTry.append(5555)
+        }
+        
+        // Try connecting
+        var lastConnectErr = ""
+        for port in portsToTry {
+            if let connectOutput = try? await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 4.0) {
+                if connectOutput.lowercased().contains("connected") {
+                    return (true, "Успешно подключено к \(host):\(port)")
+                } else {
+                    lastConnectErr = connectOutput
+                }
+            }
+        }
+        
+        // If automatic port failed, inform the user
+        let detail = lastConnectErr.isEmpty ? "" : " (\(lastConnectErr.trimmingCharacters(in: .whitespacesAndNewlines)))"
+        return (true, "Сопряжение успешно! Введите порт подключения из главного экрана телефона\(detail)")
     }
     
     /// Push a local file to the device's Downloads directory (Drag and Drop support)

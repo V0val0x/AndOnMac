@@ -27,12 +27,16 @@ public struct MainWindowView: View {
                     
                     Spacer()
                     
-                    // Wireless / QR pairing button
+                    // Wireless pairing button
                     Button {
                         appState.showPairingSheet = true
                     } label: {
-                        Label("QR / Wi-Fi", systemImage: "qrcode")
-                            .font(.system(size: 11, weight: .semibold))
+                        HStack(spacing: 5) {
+                            Image(systemName: "wifi")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Wi-Fi сопряжение")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
