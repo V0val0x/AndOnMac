@@ -138,4 +138,10 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(map["ru"], -1807566855)
         XCTAssertEqual(map["de"], 979167277)
     }
+    
+    @MainActor
+    func testSendOnEnterPreference() {
+        let appState = AppState()
+        XCTAssertTrue(appState.sendOnEnter)
+    }
 }

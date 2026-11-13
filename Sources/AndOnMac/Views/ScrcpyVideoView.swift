@@ -211,6 +211,9 @@ public final class ScrcpyDisplayNSView: NSView {
                 // Inject Ctrl+A via text/key combinations
                 ScrcpyClient.shared.sendKeycode(29) // KEYCODE_A
                 return
+            case "\r", "\n": // Cmd + Return -> Send message
+                ScrcpyClient.shared.sendKeycode(66, metaState: 0x3000)
+                return
             default:
                 // Let other Command shortcuts (Cmd+1/2/3/4/0/+/-/P/W/Q) pass to the macOS Menu Bar!
                 super.keyDown(with: event)
@@ -220,8 +223,18 @@ public final class ScrcpyDisplayNSView: NSView {
         
         // Special Keycode mapping
         switch event.keyCode {
-        case 36: // Enter / Return
-            ScrcpyClient.shared.sendKeycode(66) // KEYCODE_ENTER
+        case 36, 76: // Enter / Return or Numpad Enter
+            if event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option) {
+                // Shift+Enter or Option+Enter -> Newline in chat / multiline
+                ScrcpyClient.shared.sendKeycode(66, metaState: 0)
+            } else {
+                // Plain Enter -> Send message in messengers (Ctrl+Enter in Android)
+                if AppState.shared?.sendOnEnter != false {
+                    ScrcpyClient.shared.sendKeycode(66, metaState: 0x3000) // AMETA_CTRL_ON | AMETA_CTRL_LEFT_ON
+                } else {
+                    ScrcpyClient.shared.sendKeycode(66, metaState: 0)
+                }
+            }
         case 51: // Backspace / Delete
             ScrcpyClient.shared.sendKeycode(67) // KEYCODE_DEL
         case 53: // Escape -> Back

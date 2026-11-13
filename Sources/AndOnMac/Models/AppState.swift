@@ -46,6 +46,7 @@ public final class AppState: ObservableObject {
     @AppStorage("maxFps") public var maxFps: Int = 60
     @AppStorage("autoConnect") public var autoConnect: Bool = true
     @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
+    @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
     

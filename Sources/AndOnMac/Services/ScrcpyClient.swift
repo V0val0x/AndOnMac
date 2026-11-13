@@ -549,14 +549,14 @@ public final class ScrcpyClient: @unchecked Sendable {
         sendControlMessage(msg)
     }
     
-    /// Injects Keycode (e.g. Back, Home, App Switch)
-    public func sendKeycode(_ keycode: UInt32, action: UInt8 = 0) {
+    /// Injects Keycode with optional modifier state (e.g. Back, Home, App Switch, or Ctrl+Enter for sending messages)
+    public func sendKeycode(_ keycode: UInt32, action: UInt8 = 0, metaState: UInt32 = 0) {
         var msg = Data()
         msg.append(0) // TYPE_INJECT_KEYCODE
         msg.append(action) // 0=down, 1=up
         var kc = keycode.bigEndian
         var repeatCount: UInt32 = 0
-        var meta: UInt32 = 0
+        var meta = metaState.bigEndian
         msg.append(Data(bytes: &kc, count: 4))
         msg.append(Data(bytes: &repeatCount, count: 4))
         msg.append(Data(bytes: &meta, count: 4))
