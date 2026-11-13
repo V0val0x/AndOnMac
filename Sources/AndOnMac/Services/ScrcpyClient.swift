@@ -41,7 +41,9 @@ public final class ScrcpyClient: @unchecked Sendable {
         turnScreenOff: Bool = true,
         stayAwake: Bool = true
     ) async throws {
-        stop()
+        if isRunning {
+            stop()
+        }
         
         // 1. Wake up screen on start so user doesn't see a black locked screen
         _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
@@ -134,6 +136,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Stops the embedded session and cleans up sockets
     public func stop() {
+        let wasRunning = isRunning
         isRunning = false
         DispatchQueue.main.async { [weak self] in
             self?.stopClipboardSync()
@@ -157,7 +160,9 @@ public final class ScrcpyClient: @unchecked Sendable {
         }
         formatDescription = nil
         
-        onSessionStateChanged?(false)
+        if wasRunning {
+            onSessionStateChanged?(false)
+        }
     }
     
     // MARK: - Socket Helper

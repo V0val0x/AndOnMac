@@ -198,4 +198,39 @@ final class AndOnMacTests: XCTestCase {
         appState.frameStyle = .nothing
         XCTAssertEqual(appState.effectiveFrameStyle, .nothing)
     }
+    
+    func testPairingTabNames() {
+        XCTAssertEqual(PairingTab.wifiPin.rawValue, "Wi-Fi")
+        XCTAssertEqual(PairingTab.usbSetup.rawValue, "Кабель USB")
+        XCTAssertEqual(PairingTab.savedDevices.rawValue, "История")
+    }
+    
+    func testDiscoveryServiceAdbMdnsParsing() {
+        let sampleOutput = """
+        List of discovered mdns services
+        adb-phone1-xyz    _adb-tls-connect._tcp    10.36.201.171:38195
+        adb-phone1-abc    _adb-tls-pairing._tcp    10.36.201.171:41893
+        """
+        
+        let discovery = DiscoveryService.shared
+        discovery.parseAdbMdnsOutput(sampleOutput)
+        
+        XCTAssertEqual(discovery.getConnectPort(for: "10.36.201.171"), 38195)
+    }
+    
+    func testScrcpyClientStopWhenNotRunningDoesNotEmitStateFalse() {
+        final class StateBox: @unchecked Sendable {
+            var emitted = false
+        }
+        let box = StateBox()
+        let client = ScrcpyClient.shared
+        client.stop()
+        
+        client.onSessionStateChanged = { _ in
+            box.emitted = true
+        }
+        
+        client.stop()
+        XCTAssertFalse(box.emitted, "stop() when not running must not emit onSessionStateChanged(false)")
+    }
 }

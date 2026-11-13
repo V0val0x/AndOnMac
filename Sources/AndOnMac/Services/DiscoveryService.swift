@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import Combine
 
 public struct DiscoveredService: Identifiable, Hashable, Sendable {
@@ -15,7 +14,7 @@ public struct DiscoveredService: Identifiable, Hashable, Sendable {
     }
 }
 
-public final class DiscoveryService: ObservableObject, @unchecked Sendable {
+public final class DiscoveryService: NSObject, ObservableObject, @unchecked Sendable {
     public static let shared = DiscoveryService()
     
     // Discovered state for UI
@@ -28,70 +27,66 @@ public final class DiscoveryService: ObservableObject, @unchecked Sendable {
     // Internal cache of host -> connect port
     public private(set) var hostConnectPorts: [String: Int] = [:]
     
-    private var pairingBrowser: NWBrowser?
-    private var connectBrowser: NWBrowser?
+    private var pairingBrowser: NetServiceBrowser?
+    private var connectBrowser: NetServiceBrowser?
+    private var activeResolvers: [NetService] = []
+    private var pollTimer: Timer?
     private let queue = DispatchQueue(label: "com.andonmac.discovery", qos: .userInitiated)
     
     public var onPairingFound: (@Sendable (String, Int, String) -> Void)?
     public var onConnectFound: (@Sendable (String, Int, String) -> Void)?
     
-    private init() {}
+    private override init() {
+        super.init()
+    }
     
-    /// Starts Bonjour discovery for both ADB pairing and connection services
+    /// Starts Bonjour discovery for both ADB pairing and connection services without TCP intrusive probes
     public func startBrowsing() {
-        queue.async { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isBrowsing else { return }
+            self.isBrowsing = true
             
-            DispatchQueue.main.async {
-                self.isBrowsing = true
-            }
-            
-            // 1. Browse for pairing service (_adb-tls-pairing._tcp)
-            let pairingDesc = NWBrowser.Descriptor.bonjour(type: "_adb-tls-pairing._tcp", domain: "local.")
-            let pairingParams = NWParameters()
-            pairingParams.includePeerToPeer = true
-            let pBrowser = NWBrowser(for: pairingDesc, using: pairingParams)
-            
-            pBrowser.browseResultsChangedHandler = { [weak self] results, _ in
-                for result in results {
-                    if case .service(let name, _, _, _) = result.endpoint {
-                        self?.resolveEndpoint(result.endpoint, name: name, isPairing: true)
-                    }
-                }
-            }
-            pBrowser.start(queue: self.queue)
+            // 1. Browse for pairing service (_adb-tls-pairing._tcp.) via system mDNS
+            let pBrowser = NetServiceBrowser()
+            pBrowser.delegate = self
+            pBrowser.schedule(in: .main, forMode: .common)
+            pBrowser.searchForServices(ofType: "_adb-tls-pairing._tcp.", inDomain: "")
             self.pairingBrowser = pBrowser
             
-            // 2. Browse for connect service (_adb-tls-connect._tcp)
-            let connectDesc = NWBrowser.Descriptor.bonjour(type: "_adb-tls-connect._tcp", domain: "local.")
-            let connectParams = NWParameters()
-            connectParams.includePeerToPeer = true
-            let cBrowser = NWBrowser(for: connectDesc, using: connectParams)
-            
-            cBrowser.browseResultsChangedHandler = { [weak self] results, _ in
-                for result in results {
-                    if case .service(let name, _, _, _) = result.endpoint {
-                        self?.resolveEndpoint(result.endpoint, name: name, isPairing: false)
-                    }
-                }
-            }
-            cBrowser.start(queue: self.queue)
+            // 2. Browse for connect service (_adb-tls-connect._tcp.) via system mDNS
+            let cBrowser = NetServiceBrowser()
+            cBrowser.delegate = self
+            cBrowser.schedule(in: .main, forMode: .common)
+            cBrowser.searchForServices(ofType: "_adb-tls-connect._tcp.", inDomain: "")
             self.connectBrowser = cBrowser
+            
+            // 3. Supplemental check via official 'adb mdns services'
+            self.startPeriodicAdbMdnsPoll()
         }
     }
     
-    /// Stops all Bonjour browsers
+    /// Stops all Bonjour browsers and resolvers
     public func stopBrowsing() {
-        queue.async { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.pairingBrowser?.cancel()
+            self.pollTimer?.invalidate()
+            self.pollTimer = nil
+            
+            self.pairingBrowser?.stop()
+            self.pairingBrowser?.delegate = nil
             self.pairingBrowser = nil
-            self.connectBrowser?.cancel()
+            
+            self.connectBrowser?.stop()
+            self.connectBrowser?.delegate = nil
             self.connectBrowser = nil
             
-            DispatchQueue.main.async {
-                self.isBrowsing = false
+            for s in self.activeResolvers {
+                s.stop()
+                s.delegate = nil
             }
+            self.activeResolvers.removeAll()
+            
+            self.isBrowsing = false
         }
     }
     
@@ -106,52 +101,114 @@ public final class DiscoveryService: ObservableObject, @unchecked Sendable {
     
     /// Returns the cached connect port for a given IP host
     public func getConnectPort(for host: String) -> Int? {
-        return hostConnectPorts[host]
+        return queue.sync {
+            self.hostConnectPorts[host]
+        }
     }
     
-    private func resolveEndpoint(_ endpoint: NWEndpoint, name: String, isPairing: Bool) {
-        let connection = NWConnection(to: endpoint, using: .tcp)
-        connection.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-            switch state {
-            case .ready:
-                if let path = connection.currentPath,
-                   let remoteEndpoint = path.remoteEndpoint,
-                   case .hostPort(let host, let port) = remoteEndpoint {
-                    var ip = ""
-                    switch host {
-                    case .ipv4(let ipv4): ip = "\(ipv4)"
-                    case .ipv6(let ipv6): ip = "\(ipv6)"
-                    default: break
-                    }
-                    
-                    let resolvedPort = Int(port.rawValue)
-                    if !ip.isEmpty {
-                        if isPairing {
-                            DispatchQueue.main.async {
-                                self.detectedPairingHost = ip
-                                self.detectedPairingPort = resolvedPort
-                                self.detectedDeviceName = name
-                            }
-                            self.onPairingFound?(ip, resolvedPort, name)
-                        } else {
-                            self.queue.async {
-                                self.hostConnectPorts[ip] = resolvedPort
-                            }
-                            DispatchQueue.main.async {
-                                self.detectedConnectPort = resolvedPort
-                            }
-                            self.onConnectFound?(ip, resolvedPort, name)
-                        }
-                    }
+    // MARK: - ADB mDNS Fallback / Sync
+    private func startPeriodicAdbMdnsPoll() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
+            Task {
+                await self?.pollAdbMdns()
+            }
+        }
+        Task {
+            await pollAdbMdns()
+        }
+    }
+    
+    public func pollAdbMdns() async {
+        guard let output = try? await ADBService.shared.execute(arguments: ["mdns", "services"], timeoutSeconds: 2.0) else { return }
+        parseAdbMdnsOutput(output)
+    }
+    
+    public func parseAdbMdnsOutput(_ output: String) {
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines {
+            let parts = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard parts.count >= 3 else { continue }
+            let name = parts[0]
+            let serviceType = parts[1]
+            let hostAndPort = parts[2]
+            
+            let hpParts = hostAndPort.components(separatedBy: ":")
+            guard hpParts.count == 2, let port = Int(hpParts[1]) else { continue }
+            let ip = hpParts[0]
+            guard !ip.isEmpty && ip != "127.0.0.1" else { continue }
+            
+            if serviceType.contains("_adb-tls-pairing") {
+                DispatchQueue.main.async {
+                    self.detectedPairingHost = ip
+                    self.detectedPairingPort = port
+                    self.detectedDeviceName = name
                 }
-                connection.cancel()
-            case .failed, .cancelled:
-                break
-            default:
+                self.onPairingFound?(ip, port, name)
+            } else if serviceType.contains("_adb-tls-connect") {
+                self.queue.async {
+                    self.hostConnectPorts[ip] = port
+                }
+                DispatchQueue.main.async {
+                    self.detectedConnectPort = port
+                }
+                self.onConnectFound?(ip, port, name)
+            }
+        }
+    }
+}
+
+// MARK: - NetServiceBrowserDelegate & NetServiceDelegate
+extension DiscoveryService: NetServiceBrowserDelegate, NetServiceDelegate {
+    public func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        service.delegate = self
+        service.schedule(in: .main, forMode: .common)
+        activeResolvers.append(service)
+        // Resolve SRV and address records via system mDNS (UDP 5353) - NEVER opens a TCP connection!
+        service.resolve(withTimeout: 5.0)
+    }
+    
+    public func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        activeResolvers.removeAll(where: { $0 == service })
+    }
+    
+    public func netServiceDidResolveAddress(_ sender: NetService) {
+        let port = sender.port
+        guard port > 0 else { return }
+        let isPairing = sender.type.contains("pairing")
+        
+        guard let addresses = sender.addresses else { return }
+        for data in addresses {
+            var storage = sockaddr_storage()
+            guard data.count >= MemoryLayout<sockaddr_in>.size else { continue }
+            (data as NSData).getBytes(&storage, length: min(data.count, MemoryLayout<sockaddr_storage>.size))
+            if Int32(storage.ss_family) == AF_INET {
+                var addr4 = sockaddr_in()
+                (data as NSData).getBytes(&addr4, length: MemoryLayout<sockaddr_in>.size)
+                var ipBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                inet_ntop(AF_INET, &addr4.sin_addr, &ipBuf, socklen_t(INET_ADDRSTRLEN))
+                let ip = String(cString: ipBuf)
+                guard !ip.isEmpty && ip != "0.0.0.0" else { continue }
+                
+                if isPairing {
+                    self.detectedPairingHost = ip
+                    self.detectedPairingPort = port
+                    self.detectedDeviceName = sender.name
+                    self.onPairingFound?(ip, port, sender.name)
+                } else {
+                    self.queue.async {
+                        self.hostConnectPorts[ip] = port
+                    }
+                    self.detectedConnectPort = port
+                    self.onConnectFound?(ip, port, sender.name)
+                }
                 break
             }
         }
-        connection.start(queue: queue)
+    }
+    
+    public func netService(_ sender: NetService, didNotResolve errorDict: [String : NSNumber]) {
+        activeResolvers.removeAll(where: { $0 == sender })
     }
 }
+

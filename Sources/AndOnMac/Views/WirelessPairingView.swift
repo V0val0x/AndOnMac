@@ -3,7 +3,7 @@ import SwiftUI
 public enum PairingTab: String, CaseIterable, Identifiable {
     case wifiPin = "Wi-Fi"
     case usbSetup = "Кабель USB"
-    case savedDevices = "Сохранённые"
+    case savedDevices = "История"
     
     public var id: String { rawValue }
 }
@@ -91,6 +91,8 @@ public struct WirelessPairingView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
                 .padding(.bottom, 10)
+                .contentShape(Rectangle())
+                .makeWindowDraggable()
                 
                 // Live Device Status Alert (if connected via USB or pending authorization)
                 if appState.devices.contains(where: { $0.state == .unauthorized }) {
@@ -181,6 +183,8 @@ public struct WirelessPairingView: View {
                                 }
                                 Text(tab.rawValue)
                                     .font(.system(size: 11, weight: selectedTab == tab ? .bold : .medium))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                             }
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity)
@@ -249,6 +253,25 @@ public struct WirelessPairingView: View {
         }
         .onDisappear {
             discovery.stopBrowsing()
+        }
+        .onChange(of: discovery.detectedPairingHost) { _, newHost in
+            if let host = newHost, !host.isEmpty {
+                if pairedIP.isEmpty || pairedIP.hasSuffix(".") {
+                    pairedIP = host
+                }
+                if let port = discovery.detectedPairingPort {
+                    if addressAndPort.isEmpty || addressAndPort.hasSuffix(".") || addressAndPort.hasSuffix(":") {
+                        addressAndPort = "\(host):\(port)"
+                    }
+                }
+            }
+        }
+        .onChange(of: discovery.detectedConnectPort) { _, newPort in
+            if let port = newPort {
+                if pairedPort.isEmpty || pairedPort == "5555" {
+                    pairedPort = String(port)
+                }
+            }
         }
     }
     
@@ -362,7 +385,7 @@ public struct WirelessPairingView: View {
                 Text("IP-АДРЕС")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundColor(.white.opacity(0.45))
-                TextField("10.36.196.xxx", text: $pairedIP)
+                TextField("10.36.xxx.xxx", text: $pairedIP)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11, design: .monospaced))
                     .focused($focusedField, equals: .pairedIP)
@@ -450,7 +473,7 @@ public struct WirelessPairingView: View {
                 Text("IP-АДРЕС И ПОРТ СОПРЯЖЕНИЯ")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundColor(.white.opacity(0.45))
-                TextField("например: 192.168.1.45:41893", text: $addressAndPort)
+                TextField("например: 10.36.201.171:41893", text: $addressAndPort)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11, design: .monospaced))
                     .focused($focusedField, equals: .addressPort)
@@ -650,14 +673,23 @@ public struct WirelessPairingView: View {
             } else {
                 VStack(spacing: 6) {
                     ForEach(appState.knownDevices) { known in
+                        let dynamicPort = DiscoveryService.shared.getConnectPort(for: known.ipAddress)
+                        let effectivePort = dynamicPort ?? known.port
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(known.name)
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundColor(.white)
-                                Text("\(known.ipAddress):\(known.port)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.5))
+                                HStack(spacing: 4) {
+                                    Text("\(known.ipAddress):\(effectivePort)")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.5))
+                                    if dynamicPort != nil {
+                                        Text("• активен")
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundColor(.green)
+                                    }
+                                }
                             }
                             
                             Spacer()
@@ -665,7 +697,8 @@ public struct WirelessPairingView: View {
                             Button {
                                 Task {
                                     isProcessing = true
-                                    let success = await appState.connectWireless(host: known.ipAddress, port: known.port)
+                                    let portToUse = DiscoveryService.shared.getConnectPort(for: known.ipAddress) ?? known.port
+                                    let success = await appState.connectWireless(host: known.ipAddress, port: portToUse)
                                     isProcessing = false
                                     if success {
                                         isSuccess = true
@@ -674,7 +707,7 @@ public struct WirelessPairingView: View {
                                         closePairing()
                                     } else {
                                         isSuccess = false
-                                        resultMessage = "Не удалось подключиться к \(known.ipAddress)"
+                                        resultMessage = "Не удалось подключиться к \(known.ipAddress):\(portToUse)"
                                     }
                                 }
                             } label: {
@@ -710,17 +743,16 @@ public struct WirelessPairingView: View {
     // MARK: - Actions
     private func prefillSubnet() {
         if pairedIP.isEmpty {
-            if let last = appState.lastKnownWifiIP, !last.isEmpty {
+            if let host = discovery.detectedPairingHost, !host.isEmpty {
+                pairedIP = host
+            } else if let last = appState.lastKnownWifiIP, !last.isEmpty {
                 pairedIP = last
-            } else if let saved = appState.knownDevices.first?.ipAddress {
+            } else if let saved = appState.knownDevices.first?.ipAddress, !saved.isEmpty {
                 pairedIP = saved
             } else {
-                let macIP = ADBService.shared.getMacLocalIP()
-                if macIP != "127.0.0.1" {
-                    let parts = macIP.components(separatedBy: ".")
-                    if parts.count == 4 {
-                        pairedIP = "\(parts[0]).\(parts[1]).\(parts[2])."
-                    }
+                let netInfo = ADBService.shared.getMacNetworkInfo()
+                if netInfo.ip != "127.0.0.1" {
+                    pairedIP = netInfo.prefix
                 }
             }
         }
@@ -733,11 +765,16 @@ public struct WirelessPairingView: View {
             }
         }
         
-        let macIP = ADBService.shared.getMacLocalIP()
-        if macIP != "127.0.0.1" && addressAndPort.isEmpty {
-            let parts = macIP.components(separatedBy: ".")
-            if parts.count == 4 {
-                self.addressAndPort = "\(parts[0]).\(parts[1]).\(parts[2])."
+        if addressAndPort.isEmpty {
+            if let host = discovery.detectedPairingHost, let port = discovery.detectedPairingPort {
+                addressAndPort = "\(host):\(port)"
+            } else if let last = appState.lastKnownWifiIP, !last.isEmpty {
+                addressAndPort = "\(last):"
+            } else {
+                let netInfo = ADBService.shared.getMacNetworkInfo()
+                if netInfo.ip != "127.0.0.1" {
+                    self.addressAndPort = netInfo.prefix
+                }
             }
         }
     }

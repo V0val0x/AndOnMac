@@ -364,9 +364,18 @@ public final class ADBService: @unchecked Sendable {
     
     /// Returns Mac's current Wi-Fi IP address in the local network
     public func getMacLocalIP() -> String {
-        var address: String = "127.0.0.1"
+        return getMacNetworkInfo().ip
+    }
+    
+    /// Returns Mac's Wi-Fi network information (IP, netmask, and subnet prefix)
+    public func getMacNetworkInfo() -> (ip: String, netmask: String, prefix: String) {
+        var ip = "127.0.0.1"
+        var netmask = "255.255.255.0"
+        var prefix = "10.36."
+        
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return address }
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return (ip, netmask, prefix) }
+        defer { freeifaddrs(ifaddr) }
         
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let interface = ptr.pointee
@@ -378,13 +387,29 @@ public final class ADBService: @unchecked Sendable {
                     getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
                                 &hostname, socklen_t(hostname.count),
                                 nil, socklen_t(0), NI_NUMERICHOST)
-                    address = String(cString: hostname)
+                    ip = String(cString: hostname)
+                    
+                    if let netmaskPtr = interface.ifa_netmask {
+                        var maskname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                        getnameinfo(netmaskPtr, socklen_t(netmaskPtr.pointee.sa_len),
+                                    &maskname, socklen_t(maskname.count),
+                                    nil, socklen_t(0), NI_NUMERICHOST)
+                        netmask = String(cString: maskname)
+                    }
+                    
+                    let parts = ip.components(separatedBy: ".")
+                    if parts.count >= 2 {
+                        if netmask == "255.255.255.0" && parts.count == 4 {
+                            prefix = "\(parts[0]).\(parts[1]).\(parts[2])."
+                        } else {
+                            prefix = "\(parts[0]).\(parts[1])."
+                        }
+                    }
                     break
                 }
             }
         }
-        freeifaddrs(ifaddr)
-        return address
+        return (ip, netmask, prefix)
     }
     
     /// Launch an application by package name (e.g. when user clicks a notification)

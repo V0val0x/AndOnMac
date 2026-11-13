@@ -69,6 +69,7 @@ public struct PhoneMirrorFrameView: View {
                     }
                 )
                 .shadow(color: Color.black.opacity(0.48), radius: 26, x: 0, y: 12)
+                .makeWindowDraggable()
             
             // Inner Screen Border & Display
             RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
@@ -325,6 +326,8 @@ public struct PhoneMirrorFrameView: View {
             .cornerRadius(8)
         }
         .frame(height: 28)
+        .contentShape(Rectangle())
+        .makeWindowDraggable()
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHoveringTop = hovering
@@ -381,6 +384,8 @@ public struct PhoneMirrorFrameView: View {
             }
             .padding(.horizontal, 20)
             .padding(.top, 8)
+            .contentShape(Rectangle())
+            .makeWindowDraggable()
             
             Spacer()
             
