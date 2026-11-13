@@ -17,14 +17,15 @@ A modern macOS native application crafted with Apple & Spotify design aesthetics
 
 ## ✨ Features
 
-* 📱 **1-in-1 Apple iPhone Mirroring Design**: Photorealistic floating smartphone bezel with titanium curved edges, dynamic camera punch-hole, and native Home bar gestures.
+* 📱 **1-in-1 Apple iPhone Mirroring Design**: Photorealistic floating smartphone bezel with titanium curved edges, dynamic camera punch-hole, and native Home bar gestures — rendering live 60 FPS Android display embedded natively with Apple VideoToolbox.
+* 🖼 **Bidirectional Photo & Media Transfer**: Pull recent camera photos and screenshots from your phone to Mac via drag-and-drop (`Cmd+4`), and drop images/videos from Mac into Android Gallery with automatic media indexing.
 * ⚡️ **Zero-Friction Setup**:
   * **Method 1 (3-Second USB Setup)**: Plug in USB-C cable once, tap "Allow" on phone — Mac automatically promotes the device to Wi-Fi mode and remembers it permanently.
   * **Method 2 (Wireless Pairing Code)**: Connect wirelessly using Android 11+ Wireless Debugging with Apple Bonjour auto-discovery.
 * 🔒 **Screen Off While Mirroring**: Keep phone physical display off to preserve battery life and privacy while working on your Mac.
 * 🔊 **Audio Forwarding**: Stream internal Android system audio and video sound directly to your Mac speakers.
 * 🔔 **macOS Notification Integration**: Push notifications from Android apps appear natively in macOS Notification Center.
-* ⌨️ **Native Shortcuts & Gestures**: Swipe up on Home bar, trackpad gestures, and keyboard shortcuts (`Cmd+1` Home, `Cmd+2` App Switcher, `Cmd+3` Notifications).
+* ⌨️ **Native Shortcuts & Gestures**: Swipe up on Home bar, smooth two-finger trackpad scrolling, universal clipboard (`Cmd+C`/`Cmd+V`), and keyboard shortcuts (`Cmd+1` Home, `Cmd+2` App Switcher, `Cmd+3` Notifications, `Cmd+4` Photos Drawer).
 * 📁 **Drag & Drop Transfers**: Drag photos, APKs, and documents from Mac Finder directly onto your phone screen.
 
 ---
@@ -59,7 +60,8 @@ brew install scrcpy android-platform-tools
 | `Cmd + 1` / Swipe up on Home bar | Home Screen |
 | `Cmd + 2` / Swipe up and hold | App Switcher (Recent Apps) |
 | `Cmd + 3` | Notification Shade |
-| `Cmd + Backspace` / `Esc` | Back |
+| `Cmd + 4` | Phone Photos & Screenshots Drawer (Drag & Drop to Mac) |
+| `Cmd + Backspace` / `Esc` / Right-Click | Back |
 | `Cmd + P` | Power / Lock / Wake Display |
 | `Cmd + 0` / `Cmd + +` / `Cmd + -` | Window Scaling (100%, 125%, 75%) |
 

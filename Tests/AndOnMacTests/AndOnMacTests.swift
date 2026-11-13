@@ -35,4 +35,60 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertFalse(samsungDevice.isPixel)
         XCTAssertEqual(samsungDevice.connectionType, .usb)
     }
+    
+    func testPhotoItemModel() {
+        let photo = PhotoItem(
+            id: "/sdcard/DCIM/Camera/IMG_20261113.jpg",
+            name: "IMG_20261113.jpg",
+            remotePath: "/sdcard/DCIM/Camera/IMG_20261113.jpg",
+            isScreenshot: false
+        )
+        XCTAssertEqual(photo.id, "/sdcard/DCIM/Camera/IMG_20261113.jpg")
+        XCTAssertEqual(photo.name, "IMG_20261113.jpg")
+        XCTAssertFalse(photo.isScreenshot)
+        XCTAssertNil(photo.localURL)
+        
+        let screenshot = PhotoItem(
+            id: "/sdcard/Pictures/Screenshots/Screenshot_01.png",
+            name: "Screenshot_01.png",
+            remotePath: "/sdcard/Pictures/Screenshots/Screenshot_01.png",
+            isScreenshot: true
+        )
+        XCTAssertTrue(screenshot.isScreenshot)
+        
+        // Uppercase extension tests (typical Samsung / Xiaomi / Pixel naming)
+        let uppercasePhoto = PhotoItem(
+            id: "/sdcard/DCIM/Camera/IMG_20261113.JPG",
+            name: "IMG_20261113.JPG",
+            remotePath: "/sdcard/DCIM/Camera/IMG_20261113.JPG",
+            isScreenshot: false
+        )
+        XCTAssertEqual(uppercasePhoto.name, "IMG_20261113.JPG")
+        XCTAssertTrue(uppercasePhoto.name.lowercased().hasSuffix(".jpg"))
+    }
+    
+    func testDeviceAspectRatioCalculation() {
+        // Pixel / modern phone ~20:9
+        let h20_9 = 2400.0 / 1080.0
+        XCTAssertGreaterThan(h20_9, 2.0)
+        XCTAssertLessThan(h20_9, 2.3)
+        
+        // Samsung 19.5:9
+        let h19_5_9 = 2340.0 / 1080.0
+        XCTAssertGreaterThan(h19_5_9, 2.1)
+    }
+    
+    func testWindowScaleMultipliers() {
+        XCTAssertEqual(PhoneWindowScale.smaller.multiplier, 0.8)
+        XCTAssertEqual(PhoneWindowScale.standard.multiplier, 1.0)
+        XCTAssertEqual(PhoneWindowScale.larger.multiplier, 1.2)
+    }
+    
+    @MainActor
+    func testAppStateInitialState() {
+        let appState = AppState()
+        XCTAssertFalse(appState.showPhotoDrawer)
+        XCTAssertNil(appState.photoTransferNotice)
+        XCTAssertFalse(appState.isMirroring)
+    }
 }

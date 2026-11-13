@@ -50,6 +50,8 @@ public final class AppState: ObservableObject {
     @Published public var statusMessage: String = "Готов к работе"
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
+    @Published public var showPhotoDrawer: Bool = false
+    @Published public var photoTransferNotice: String? = nil
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
@@ -221,6 +223,10 @@ public final class AppState: ObservableObject {
     // MARK: - Actions (1-in-1 with iPhone Mirroring in macOS Sequoia)
     
     public func triggerHome() {
+        if ScrcpyClient.shared.isConnected {
+            ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+            return
+        }
         guard let device = selectedDevice else { return }
         Task {
             await ADBService.shared.sendHome(serial: device.id)
@@ -228,6 +234,10 @@ public final class AppState: ObservableObject {
     }
     
     public func triggerBack() {
+        if ScrcpyClient.shared.isConnected {
+            ScrcpyClient.shared.sendBackOrScreenOn()
+            return
+        }
         guard let device = selectedDevice else { return }
         Task {
             await ADBService.shared.sendBack(serial: device.id)
@@ -235,6 +245,10 @@ public final class AppState: ObservableObject {
     }
     
     public func triggerAppSwitch() {
+        if ScrcpyClient.shared.isConnected {
+            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            return
+        }
         guard let device = selectedDevice else { return }
         Task {
             await ADBService.shared.sendAppSwitch(serial: device.id)
@@ -242,6 +256,10 @@ public final class AppState: ObservableObject {
     }
     
     public func triggerNotifications() {
+        if ScrcpyClient.shared.isConnected {
+            ScrcpyClient.shared.sendKeycode(83) // KEYCODE_NOTIFICATION
+            return
+        }
         guard let device = selectedDevice else { return }
         Task {
             await ADBService.shared.sendNotifications(serial: device.id)
@@ -249,6 +267,10 @@ public final class AppState: ObservableObject {
     }
     
     public func triggerPower() {
+        if ScrcpyClient.shared.isConnected {
+            ScrcpyClient.shared.sendKeycode(26) // KEYCODE_POWER
+            return
+        }
         guard let device = selectedDevice else { return }
         Task {
             await ADBService.shared.sendPower(serial: device.id)

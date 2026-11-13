@@ -9,85 +9,85 @@ public struct MainWindowView: View {
     }
     
     public var body: some View {
-        ZStack {
-            // Background blur / macOS native material
-            VisualEffectView(material: .sidebar, blendingMode: .behindWindow)
-                .ignoresSafeArea()
+        HStack(alignment: .top, spacing: 16) {
+            // Main Phone Chassis (Frameless Sequoia Floating Smartphone)
+            PhoneMirrorFrameView(appState: appState)
             
-            VStack(spacing: 0) {
-                // Top subtle header
-                HStack {
-                    HStack(spacing: 8) {
-                        Image(systemName: "iphone.gen3")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.accentColor)
-                        Text("AndOnMac")
-                            .font(.system(size: 13, weight: .bold))
-                    }
-                    
-                    Spacer()
-                    
-                    // Wireless pairing button
-                    Button {
-                        appState.showPairingSheet = true
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: "wifi")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("Wi-Fi сопряжение")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    
-                    // Device status pill
-                    if let device = appState.selectedDevice {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(appState.isMirroring ? Color.green : Color.orange)
-                                .frame(width: 7, height: 7)
-                            Text(device.displayName)
-                                .font(.system(size: 12, weight: .medium))
-                            if let battery = device.batteryLevel {
-                                Text("\(battery)%")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.primary.opacity(0.06))
-                        .cornerRadius(12)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-                
-                // Main Device View (Phone Frame)
-                PhoneMirrorFrameView(appState: appState)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Photo & File Transfer Side Drawer
+            if appState.showPhotoDrawer {
+                PhotoTransferDrawerView(appState: appState)
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        )
+                    )
             }
         }
+        .padding(20)
+        .background(
+            WindowConfigurator(
+                showDrawer: appState.showPhotoDrawer,
+                scale: appState.windowScale
+            ) { window in
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                window.hasShadow = false // PhoneMirrorFrameView provides realistic shadow
+                window.titlebarAppearsTransparent = true
+                window.titleVisibility = .hidden
+                window.isMovableByWindowBackground = true
+                window.standardWindowButton(.closeButton)?.isHidden = true
+                window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+                window.standardWindowButton(.zoomButton)?.isHidden = true
+            }
+        )
         .sheet(isPresented: $appState.showPairingSheet) {
             WirelessPairingView(appState: appState)
         }
     }
 }
 
-// Native macOS visual effect helper
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
+// Configures the parent NSWindow to be transparent, floating, and dynamically sized
+private struct WindowConfigurator: NSViewRepresentable {
+    let showDrawer: Bool
+    let scale: PhoneWindowScale
+    let configure: (NSWindow) -> Void
     
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                configure(window)
+                updateWindowSize(window: window, animated: false)
+            }
+        }
         return view
     }
     
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window {
+            configure(window)
+            updateWindowSize(window: window, animated: true)
+        }
+    }
+    
+    private func updateWindowSize(window: NSWindow, animated: Bool) {
+        let phoneWidth = 360 * scale.multiplier
+        let aspect = CGFloat(ScrcpyClient.shared.deviceHeight) / CGFloat(max(1, ScrcpyClient.shared.deviceWidth))
+        let effectiveAspect = (aspect >= 1.3 && aspect <= 2.4) ? aspect : (20.0 / 9.0)
+        let phoneHeight = (360.0 * effectiveAspect) * scale.multiplier
+        
+        let targetWidth = (phoneWidth + 40) + (showDrawer ? 290 + 16 : 0)
+        let targetHeight = phoneHeight + 40
+        
+        let currentFrame = window.frame
+        let deltaW = targetWidth - currentFrame.width
+        let deltaH = targetHeight - currentFrame.height
+        
+        if abs(deltaW) > 2 || abs(deltaH) > 2 {
+            let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.origin.y - deltaH)
+            let newFrame = NSRect(origin: newOrigin, size: NSSize(width: targetWidth, height: targetHeight))
+            window.setFrame(newFrame, display: true, animate: animated)
+        }
+    }
 }

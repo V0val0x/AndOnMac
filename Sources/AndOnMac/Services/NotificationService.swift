@@ -17,6 +17,7 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
     }
     
     private func setupNotificationCenter() {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in

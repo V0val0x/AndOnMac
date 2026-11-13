@@ -3,19 +3,17 @@ import Foundation
 public final class MirrorService: @unchecked Sendable {
     public static let shared = MirrorService()
     
-    private var currentProcess: Process?
+    private var audioProcess: Process?
     private var activeDeviceSerial: String?
     
     public var isMirroring: Bool {
-        return currentProcess?.isRunning == true
+        return ScrcpyClient.shared.isConnected
     }
     
     public var scrcpyPath: String {
-        // 1. Check embedded bundle resource
         if let bundled = Bundle.main.path(forResource: "scrcpy", ofType: nil) {
             return bundled
         }
-        // 2. Check Homebrew or standard locations
         let candidates = [
             "/opt/homebrew/bin/scrcpy",
             "/usr/local/bin/scrcpy"
@@ -30,7 +28,7 @@ public final class MirrorService: @unchecked Sendable {
     
     private init() {}
     
-    /// Starts mirroring with native Apple-like flags
+    /// Starts embedded native mirroring inside AndOnMac window
     public func startMirroring(
         for device: Device,
         turnScreenOff: Bool = true,
@@ -41,58 +39,75 @@ public final class MirrorService: @unchecked Sendable {
         onTermination: (@Sendable () -> Void)? = nil
     ) throws {
         stopMirroring()
+        self.activeDeviceSerial = device.id
         
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: scrcpyPath)
-        
-        var args = [
-            "-s", device.id,
-            "--window-title", "AndOnMac — \(device.displayName)",
-            "--max-fps", String(maxFps),
-            "--video-bit-rate", String(bitRate),
-            "--shortcut-mod", "lsuper",
-            "--power-off-on-close",
-            "--push-target", "/sdcard/Download/",
-            "--prefer-text"
-        ]
-        
-        if turnScreenOff {
-            args.append("--turn-screen-off")
-        }
-        if stayAwake {
-            args.append("--stay-awake")
-        }
-        if !forwardAudio {
-            args.append("--no-audio")
-        }
-        
-        // Environment with adb path
-        var env = ProcessInfo.processInfo.environment
-        let existingPath = env["PATH"] ?? ""
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
-        env["ADB"] = ADBService.shared.adbPath
-        process.environment = env
-        process.arguments = args
-        
-        process.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.activeDeviceSerial = nil
-                self?.currentProcess = nil
-                onTermination?()
+        ScrcpyClient.shared.onSessionStateChanged = { active in
+            if !active {
+                DispatchQueue.main.async {
+                    onTermination?()
+                }
             }
         }
         
-        try process.run()
-        self.currentProcess = process
-        self.activeDeviceSerial = device.id
+        Task {
+            do {
+                try await ScrcpyClient.shared.start(
+                    serial: device.id,
+                    maxSize: 1440,
+                    maxFps: maxFps,
+                    bitRate: bitRate
+                )
+            } catch {
+                print("Failed to start ScrcpyClient: \(error)")
+                DispatchQueue.main.async {
+                    onTermination?()
+                }
+            }
+        }
+        
+        // Background headless audio forwarder if audio enabled
+        if forwardAudio {
+            startBackgroundAudio(serial: device.id)
+        }
     }
     
     /// Stops the active mirroring session
     public func stopMirroring() {
-        if let process = currentProcess, process.isRunning {
-            process.terminate()
-        }
-        currentProcess = nil
+        ScrcpyClient.shared.stop()
+        stopBackgroundAudio()
         activeDeviceSerial = nil
+    }
+    
+    private func startBackgroundAudio(serial: String) {
+        let binary = scrcpyPath
+        guard FileManager.default.isExecutableFile(atPath: binary) else { return }
+        
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: binary)
+        proc.arguments = [
+            "-s", serial,
+            "--no-video",
+            "--no-control",
+            "--audio-buffer=40"
+        ]
+        
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+        env["ADB"] = ADBService.shared.adbPath
+        proc.environment = env
+        
+        // Suppress stdout/stderr
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        
+        try? proc.run()
+        self.audioProcess = proc
+    }
+    
+    private func stopBackgroundAudio() {
+        if let proc = audioProcess, proc.isRunning {
+            proc.terminate()
+        }
+        audioProcess = nil
     }
 }

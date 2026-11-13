@@ -12,11 +12,11 @@ struct AndOnMacApp: App {
     var body: some Scene {
         WindowGroup {
             MainWindowView(appState: appState)
-                .frame(minWidth: 380, minHeight: 720)
         }
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified)
-        .defaultSize(width: 420, height: 760)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 420, height: 820)
         .commands {
             // macOS Sequoia iPhone Mirroring Menu & Shortcuts
             CommandMenu("Дисплей телефона") {
@@ -34,6 +34,11 @@ struct AndOnMacApp: App {
                     appState.triggerNotifications()
                 }
                 .keyboardShortcut("3", modifiers: .command)
+                
+                Button("Медиатека и перенос фото") {
+                    appState.showPhotoDrawer.toggle()
+                }
+                .keyboardShortcut("4", modifiers: .command)
                 
                 Divider()
                 
