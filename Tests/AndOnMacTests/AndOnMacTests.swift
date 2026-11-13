@@ -108,4 +108,21 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertFalse(ADBService.isConnectSuccess("cannot connect to 192.168.1.55:5555: Connection refused"))
         XCTAssertFalse(ADBService.isConnectSuccess("Connection timed out"))
     }
+    
+    func testAnnexBNALUnitParsing() {
+        // Typical scrcpy config packet: 4-byte start code + SPS (0x67...), 4-byte start code + PPS (0x68...)
+        var stream = Data([0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x28, 0xDA]) // SPS (nalType = 7)
+        stream.append(contentsOf: [0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80]) // PPS (nalType = 8)
+        
+        let nals = ScrcpyClient.parseAnnexBNALUnits(from: stream)
+        XCTAssertEqual(nals.count, 2)
+        XCTAssertEqual(nals[0][0] & 0x1F, 7) // SPS
+        XCTAssertEqual(nals[1][0] & 0x1F, 8) // PPS
+        
+        // 3-byte start code test
+        let stream3Byte = Data([0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00]) // IDR (nalType = 5)
+        let nals3 = ScrcpyClient.parseAnnexBNALUnits(from: stream3Byte)
+        XCTAssertEqual(nals3.count, 1)
+        XCTAssertEqual(nals3[0][0] & 0x1F, 5) // IDR Slice
+    }
 }

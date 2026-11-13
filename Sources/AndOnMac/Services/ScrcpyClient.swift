@@ -188,30 +188,19 @@ public final class ScrcpyClient: @unchecked Sendable {
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
             while isRunning && buffer.count >= 12 {
-                // Check if buffer looks like a valid 12-byte frame header
                 let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
                     rawPtr.load(fromByteOffset: 8, as: UInt32.self).bigEndian
                 }
                 
-                // Reasonable upper bound for a single 1080p/4K frame (10MB)
                 if packetSize > 0 && packetSize < 10_000_000 {
                     let totalFrameSize = 12 + Int(packetSize)
                     if buffer.count >= totalFrameSize {
-                        let ptsAndFlags = buffer.withUnsafeBytes { rawPtr -> UInt64 in
-                            rawPtr.load(fromByteOffset: 0, as: UInt64.self).bigEndian
-                        }
-                        let isConfig = (ptsAndFlags & 0x8000_0000_0000_0000) != 0
                         let payload = buffer.subdata(in: 12..<totalFrameSize)
                         buffer.removeSubrange(0..<totalFrameSize)
                         
-                        if isConfig {
-                            handleConfigPacket(payload, sps: &sps, pps: &pps)
-                        } else {
-                            handleMediaPacket(payload)
-                        }
+                        processPacketPayload(payload, sps: &sps, pps: &pps)
                         continue
                     } else {
-                        // Incomplete packet in buffer; wait for next recv
                         break
                     }
                 } else {
@@ -231,52 +220,80 @@ public final class ScrcpyClient: @unchecked Sendable {
         }
     }
     
-    /// Parses SPS and PPS from config packet payload
-    private func handleConfigPacket(_ payload: Data, sps: inout Data?, pps: inout Data?) {
+    /// Parses all NAL units in packet payload, extracts SPS/PPS, and submits AVCC frame to VideoToolbox
+    private func processPacketPayload(_ payload: Data, sps: inout Data?, pps: inout Data?) {
+        guard !payload.isEmpty else { return }
+        
+        let nals = Self.parseAnnexBNALUnits(from: payload)
+        var avccBuffer = Data()
+        
+        if nals.isEmpty {
+            // Raw single NAL without start code
+            let nalType = payload[0] & 0x1F
+            if nalType == 7 {
+                sps = payload
+                createDecompressionSessionIfReady(sps: sps, pps: pps)
+            } else if nalType == 8 {
+                pps = payload
+                createDecompressionSessionIfReady(sps: sps, pps: pps)
+            } else {
+                var len = UInt32(payload.count).bigEndian
+                avccBuffer.append(Data(bytes: &len, count: 4))
+                avccBuffer.append(payload)
+            }
+        } else {
+            for nal in nals {
+                guard !nal.isEmpty else { continue }
+                let nalType = nal[0] & 0x1F
+                if nalType == 7 { // SPS
+                    sps = nal
+                    createDecompressionSessionIfReady(sps: sps, pps: pps)
+                } else if nalType == 8 { // PPS
+                    pps = nal
+                    createDecompressionSessionIfReady(sps: sps, pps: pps)
+                } else if nalType == 1 || nalType == 5 || nalType == 6 {
+                    // Non-IDR Slice, IDR Keyframe Slice, or SEI
+                    var len = UInt32(nal.count).bigEndian
+                    avccBuffer.append(Data(bytes: &len, count: 4))
+                    avccBuffer.append(nal)
+                }
+            }
+        }
+        
+        if !avccBuffer.isEmpty {
+            decodeAVCCBlock(avccBuffer)
+        }
+    }
+    
+    static func parseAnnexBNALUnits(from data: Data) -> [Data] {
+        var nals: [Data] = []
         var offset = 0
-        while let start = findStartCode(in: payload, startingAt: offset) {
+        while let start = findStartCode(in: data, startingAt: offset) {
             let nStart = start.index + start.length
             let nEnd: Int
-            if let nextStart = findStartCode(in: payload, startingAt: nStart) {
+            if let nextStart = findStartCode(in: data, startingAt: nStart) {
                 nEnd = nextStart.index
             } else {
-                nEnd = payload.count
+                nEnd = data.count
             }
-            guard nEnd > nStart else { break }
-            let nal = payload.subdata(in: nStart..<nEnd)
-            let nalType = nal[0] & 0x1F
-            if nalType == 7 {
-                sps = nal
-            } else if nalType == 8 {
-                pps = nal
+            if nEnd > nStart {
+                let nal = data.subdata(in: nStart..<nEnd)
+                nals.append(nal)
             }
             offset = nEnd
         }
-        createDecompressionSessionIfReady(sps: sps, pps: pps)
-    }
-    
-    /// Converts Annex-B media packet to AVCC and submits immediately to VideoToolbox
-    private func handleMediaPacket(_ payload: Data) {
-        guard !payload.isEmpty else { return }
-        
-        // Strip leading start code (0x00000001 or 0x000001)
-        var nalData = payload
-        if let start = findStartCode(in: payload, startingAt: 0), start.index == 0 {
-            nalData = payload.subdata(in: start.length..<payload.count)
-        }
-        
-        decodeSlice(nal: nalData)
+        return nals
     }
     
     private func extractNextNAL(from data: Data) -> (Data, Int)? {
         guard data.count > 4 else { return nil }
         
         // Find first start code
-        guard let firstStart = findStartCode(in: data, startingAt: 0) else { return nil }
+        guard let firstStart = Self.findStartCode(in: data, startingAt: 0) else { return nil }
         let payloadStart = firstStart.index + firstStart.length
         
         // Find second start code (end of current NAL)
-        guard let nextStart = findStartCode(in: data, startingAt: payloadStart) else {
+        guard let nextStart = Self.findStartCode(in: data, startingAt: payloadStart) else {
             return nil
         }
         
@@ -284,7 +301,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         return (nalPayload, nextStart.index)
     }
     
-    private func findStartCode(in data: Data, startingAt offset: Int) -> (index: Int, length: Int)? {
+    static func findStartCode(in data: Data, startingAt offset: Int) -> (index: Int, length: Int)? {
         guard offset + 3 <= data.count else { return nil }
         
         return data.withUnsafeBytes { rawBuffer -> (Int, Int)? in
@@ -390,16 +407,18 @@ public final class ScrcpyClient: @unchecked Sendable {
     }
     
     private func decodeSlice(nal: Data) {
-        guard let session = decompressionSession, let format = formatDescription else { return }
-        
-        // Prepend 4-byte length prefix (AVCC format)
         var length = UInt32(nal.count).bigEndian
         var packetData = Data(bytes: &length, count: 4)
         packetData.append(nal)
+        decodeAVCCBlock(packetData)
+    }
+    
+    private func decodeAVCCBlock(_ avccData: Data) {
+        guard let session = decompressionSession, let format = formatDescription else { return }
         
-        let count = packetData.count
+        let count = avccData.count
         guard let memoryBlock = malloc(count) else { return }
-        packetData.copyBytes(to: memoryBlock.assumingMemoryBound(to: UInt8.self), count: count)
+        avccData.copyBytes(to: memoryBlock.assumingMemoryBound(to: UInt8.self), count: count)
         
         var blockBuffer: CMBlockBuffer?
         let status = CMBlockBufferCreateWithMemoryBlock(

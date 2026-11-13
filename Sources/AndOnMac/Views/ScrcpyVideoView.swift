@@ -1,32 +1,42 @@
 import SwiftUI
 import AppKit
 import CoreVideo
+import VideoToolbox
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
     public var onFileDrop: (([URL]) -> Void)?
+    public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     
-    public init(serial: String?, onFileDrop: (([URL]) -> Void)? = nil) {
+    public init(
+        serial: String?,
+        onFileDrop: (([URL]) -> Void)? = nil,
+        onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil
+    ) {
         self.serial = serial
         self.onFileDrop = onFileDrop
+        self.onHoverZonesChanged = onHoverZonesChanged
     }
     
     public func makeNSView(context: Context) -> ScrcpyDisplayNSView {
         let view = ScrcpyDisplayNSView()
         view.serial = serial
         view.onFileDrop = onFileDrop
+        view.onHoverZonesChanged = onHoverZonesChanged
         return view
     }
     
     public func updateNSView(_ nsView: ScrcpyDisplayNSView, context: Context) {
         nsView.serial = serial
         nsView.onFileDrop = onFileDrop
+        nsView.onHoverZonesChanged = onHoverZonesChanged
     }
 }
 
 public final class ScrcpyDisplayNSView: NSView {
     public var serial: String?
     public var onFileDrop: (([URL]) -> Void)?
+    public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     
     override public var isFlipped: Bool { true }
     override public var acceptsFirstResponder: Bool { true }
@@ -46,7 +56,7 @@ public final class ScrcpyDisplayNSView: NSView {
     private func setupView() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        layer?.cornerRadius = 42
+        layer?.cornerRadius = 38
         layer?.masksToBounds = true
         layer?.contentsGravity = .resizeAspect
         
@@ -74,14 +84,29 @@ public final class ScrcpyDisplayNSView: NSView {
     }
     
     private func renderFrame(_ pixelBuffer: CVPixelBuffer) {
+        var cgImage: CGImage?
+        VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+        let contents = (cgImage as AnyObject?) ?? (CVPixelBufferGetIOSurface(pixelBuffer) as AnyObject?)
+        
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer?.contents = pixelBuffer
+        layer?.contents = contents
         CATransaction.commit()
     }
     
     override public func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         return true
+    }
+    
+    override public func mouseMoved(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        let isTop = loc.y >= 0 && loc.y <= 42
+        let isBottom = loc.y >= bounds.height - 38 && loc.y <= bounds.height
+        onHoverZonesChanged?(isTop, isBottom)
+    }
+    
+    override public func mouseExited(with event: NSEvent) {
+        onHoverZonesChanged?(false, false)
     }
     
     // MARK: - Video Display Rect Calculator (Handles Letterbox & Pillarbox)

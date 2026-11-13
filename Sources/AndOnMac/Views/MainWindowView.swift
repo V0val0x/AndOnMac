@@ -76,12 +76,12 @@ private struct WindowConfigurator: NSViewRepresentable {
         let phoneWidth: CGFloat
         let phoneHeight: CGFloat
         if isLandscape {
-            let h = 360.0 * scale.multiplier
+            let h = 320.0 * scale.multiplier
             phoneWidth = h * aspect
             phoneHeight = h
         } else {
-            phoneWidth = 360 * scale.multiplier
-            phoneHeight = (360.0 * aspect) * scale.multiplier
+            phoneWidth = 320.0 * scale.multiplier
+            phoneHeight = (320.0 * aspect) * scale.multiplier
         }
         
         let targetWidth = (phoneWidth + 40) + (showDrawer ? 290 + 16 : 0)

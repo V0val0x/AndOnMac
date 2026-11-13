@@ -14,56 +14,56 @@ public struct PhoneMirrorFrameView: View {
     
     private var baseWidth: CGFloat {
         if appState.isLandscape {
-            let h = 360.0 * appState.windowScale.multiplier
+            let h = 320.0 * appState.windowScale.multiplier
             return h * appState.effectiveAspect
         } else {
-            return 360 * appState.windowScale.multiplier
+            return 320.0 * appState.windowScale.multiplier
         }
     }
     
     private var baseHeight: CGFloat {
         if appState.isLandscape {
-            return 360 * appState.windowScale.multiplier
+            return 320.0 * appState.windowScale.multiplier
         } else {
-            return (360.0 * appState.effectiveAspect) * appState.windowScale.multiplier
+            return (320.0 * appState.effectiveAspect) * appState.windowScale.multiplier
         }
     }
     
     public var body: some View {
         ZStack {
             // Outer Titanium / Aluminum Phone Chassis (1-in-1 with Sequoia iPhone Mirroring)
-            RoundedRectangle(cornerRadius: 52, style: .continuous)
+            RoundedRectangle(cornerRadius: 44, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(nsColor: .darkGray).opacity(0.6),
-                            Color(nsColor: .black).opacity(0.9)
+                            Color(white: 0.16),
+                            Color(white: 0.08)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 52, style: .continuous)
+                    RoundedRectangle(cornerRadius: 44, style: .continuous)
                         .stroke(
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(0.35),
+                                    Color.white.opacity(0.32),
                                     Color.white.opacity(0.08),
                                     Color.black.opacity(0.7)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
-                            lineWidth: 3
+                            lineWidth: 1.5
                         )
                 )
-                .shadow(color: Color.black.opacity(0.55), radius: 35, x: 0, y: 18)
+                .shadow(color: Color.black.opacity(0.45), radius: 26, x: 0, y: 12)
             
-            // Inner Screen Border & Display
-            RoundedRectangle(cornerRadius: 44, style: .continuous)
+            // Inner Screen Border & Display (3pt ultra-thin micro-bezel)
+            RoundedRectangle(cornerRadius: 40, style: .continuous)
                 .fill(Color.black)
-                .padding(6)
+                .padding(3)
                 .overlay(
                     Group {
                         if appState.isMirroring {
@@ -82,8 +82,7 @@ public struct PhoneMirrorFrameView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 42, style: .continuous))
-                    .padding(6)
+                    .clipShape(RoundedRectangle(cornerRadius: 38, style: .continuous))
                 )
         }
         .frame(width: baseWidth, height: baseHeight)
@@ -93,49 +92,46 @@ public struct PhoneMirrorFrameView: View {
     private var liveScreenView: some View {
         ZStack {
             // Live Video Stream decoded via VideoToolbox
-            ScrcpyVideoView(serial: appState.selectedDevice?.id) { urls in
-                Task {
-                    if let serial = appState.selectedDevice?.id {
-                        let res = await PhotoTransferService.shared.pushFiles(urls: urls, serial: serial)
-                        await MainActor.run {
-                            appState.photoTransferNotice = res.message
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                appState.photoTransferNotice = nil
+            ScrcpyVideoView(
+                serial: appState.selectedDevice?.id,
+                onFileDrop: { urls in
+                    Task {
+                        if let serial = appState.selectedDevice?.id {
+                            let res = await PhotoTransferService.shared.pushFiles(urls: urls, serial: serial)
+                            await MainActor.run {
+                                appState.photoTransferNotice = res.message
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    appState.photoTransferNotice = nil
+                                }
                             }
                         }
                     }
+                },
+                onHoverZonesChanged: { isTop, isBottom in
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        self.isHoveringTop = isTop
+                        self.isHoveringHome = isBottom
+                    }
                 }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 42, style: .continuous))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 38, style: .continuous))
             
-            // Camera Punch Hole / Dynamic Island
-            VStack {
-                HStack {
-                    Spacer()
-                    Circle()
-                        .fill(Color.black)
-                        .frame(width: 12, height: 12)
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                        )
-                    Spacer()
-                }
-                .padding(.top, 10)
-                Spacer()
-            }
-            .allowsHitTesting(false)
-            
-            // Sequoia Top Hover HUD & Home Bar
+            // Sequoia Top Hover HUD & Home Bar (Fades in smoothly only when hovering near top/bottom)
             VStack {
                 topHoverHUDView
-                    .padding(.horizontal, 14)
-                    .padding(.top, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                    .opacity(isHoveringTop ? 1.0 : 0.0)
+                    .allowsHitTesting(isHoveringTop)
+                    .animation(.easeInOut(duration: 0.15), value: isHoveringTop)
                 
                 Spacer()
                 
                 bottomHomeBarView
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 6)
+                    .opacity(isHoveringHome ? 1.0 : 0.0)
+                    .allowsHitTesting(isHoveringHome)
+                    .animation(.easeInOut(duration: 0.15), value: isHoveringHome)
             }
             
             // Photo Transfer Toast Alert
@@ -300,11 +296,6 @@ public struct PhoneMirrorFrameView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white.opacity(0.6))
                     .padding(.leading, 4)
-                Spacer()
-                Circle()
-                    .fill(Color.black)
-                    .frame(width: 12, height: 12)
-                    .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
                 Spacer()
                 if let battery = appState.selectedDevice?.batteryLevel {
                     Text("\(battery)%")
