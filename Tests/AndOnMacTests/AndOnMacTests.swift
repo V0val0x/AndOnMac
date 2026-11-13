@@ -144,4 +144,58 @@ final class AndOnMacTests: XCTestCase {
         let appState = AppState()
         XCTAssertTrue(appState.sendOnEnter)
     }
+    
+    func testPhoneFrameStyleDetection() {
+        // Pixel
+        let pixel = Device(id: "1", model: "Pixel 9 Pro", manufacturer: "Google")
+        XCTAssertEqual(PhoneFrameStyle.detect(for: pixel), .pixel)
+        XCTAssertEqual(PhoneFrameStyle.pixel.cornerRadius, 44)
+        XCTAssertTrue(PhoneFrameStyle.pixel.hasPunchHole)
+        
+        // Samsung Ultra
+        let ultra1 = Device(id: "2", model: "SM-S928B", manufacturer: "Samsung") // S24 Ultra
+        XCTAssertEqual(PhoneFrameStyle.detect(for: ultra1), .samsungUltra)
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.cornerRadius, 12) // Sharp signature Ultra corners
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.baseWidthMultiplier, 1.03)
+        
+        let ultra2 = Device(id: "3", model: "Galaxy S25 Ultra", manufacturer: "Samsung")
+        XCTAssertEqual(PhoneFrameStyle.detect(for: ultra2), .samsungUltra)
+        
+        // Samsung Standard
+        let s24 = Device(id: "4", model: "SM-S921B", manufacturer: "Samsung") // S24 Base
+        XCTAssertEqual(PhoneFrameStyle.detect(for: s24), .samsung)
+        XCTAssertEqual(PhoneFrameStyle.samsung.cornerRadius, 36)
+        
+        // Xiaomi
+        let xiaomi = Device(id: "5", model: "Xiaomi 14", manufacturer: "Xiaomi")
+        XCTAssertEqual(PhoneFrameStyle.detect(for: xiaomi), .xiaomi)
+        XCTAssertEqual(PhoneFrameStyle.xiaomi.cornerRadius, 38)
+        
+        // Nothing Phone
+        let nothing = Device(id: "6", model: "Phone (2)", manufacturer: "Nothing")
+        XCTAssertEqual(PhoneFrameStyle.detect(for: nothing), .nothing)
+        XCTAssertEqual(PhoneFrameStyle.nothing.cornerRadius, 40)
+        
+        // OnePlus
+        let oneplus = Device(id: "7", model: "CPH2581", manufacturer: "OnePlus")
+        XCTAssertEqual(PhoneFrameStyle.detect(for: oneplus), .oneplus)
+        XCTAssertEqual(PhoneFrameStyle.oneplus.cornerRadius, 38)
+    }
+    
+    @MainActor
+    func testEffectiveFrameStyleAutoResolution() {
+        let appState = AppState()
+        appState.frameStyle = .auto
+        
+        // With demo device (Pixel 9 Pro)
+        appState.isDemoMode = true
+        XCTAssertEqual(appState.effectiveFrameStyle, .pixel)
+        
+        // Manual override
+        appState.frameStyle = .samsungUltra
+        XCTAssertEqual(appState.effectiveFrameStyle, .samsungUltra)
+        
+        appState.frameStyle = .nothing
+        XCTAssertEqual(appState.effectiveFrameStyle, .nothing)
+    }
 }

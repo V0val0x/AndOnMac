@@ -29,6 +29,7 @@ public struct MainWindowView: View {
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,
                 scale: appState.windowScale,
+                style: appState.effectiveFrameStyle,
                 isLandscape: appState.isLandscape,
                 aspect: appState.effectiveAspect
             ) { window in
@@ -50,6 +51,7 @@ public struct MainWindowView: View {
 private struct WindowConfigurator: NSViewRepresentable {
     let showDrawer: Bool
     let scale: PhoneWindowScale
+    let style: PhoneFrameStyle
     let isLandscape: Bool
     let aspect: CGFloat
     let configure: (NSWindow) -> Void
@@ -73,14 +75,15 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
     
     private func updateWindowSize(window: NSWindow, animated: Bool) {
+        let mult = style.baseWidthMultiplier
         let phoneWidth: CGFloat
         let phoneHeight: CGFloat
         if isLandscape {
             let h = 320.0 * scale.multiplier
-            phoneWidth = h * aspect
+            phoneWidth = h * aspect * mult
             phoneHeight = h
         } else {
-            phoneWidth = 320.0 * scale.multiplier
+            phoneWidth = 320.0 * scale.multiplier * mult
             phoneHeight = (320.0 * aspect) * scale.multiplier
         }
         
