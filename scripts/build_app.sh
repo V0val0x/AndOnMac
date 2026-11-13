@@ -58,7 +58,16 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
 EOF
 
 # Copy scrcpy-server if available
-SCRCPY_SERVER=$(find /opt/homebrew/Cellar/scrcpy -name "scrcpy-server" 2>/dev/null | head -n 1 || true)
+SCRCPY_SERVER=""
+if command -v brew >/dev/null 2>&1; then
+    BREW_PREFIX=$(brew --prefix scrcpy 2>/dev/null || true)
+    if [ -n "${BREW_PREFIX}" ] && [ -d "${BREW_PREFIX}" ]; then
+        SCRCPY_SERVER=$(find "${BREW_PREFIX}" -name "scrcpy-server" 2>/dev/null | head -n 1 || true)
+    fi
+fi
+if [ -z "${SCRCPY_SERVER}" ]; then
+    SCRCPY_SERVER=$(find /opt/homebrew/Cellar/scrcpy /usr/local/Cellar/scrcpy -name "scrcpy-server" 2>/dev/null | head -n 1 || true)
+fi
 if [ -n "${SCRCPY_SERVER}" ] && [ -f "${SCRCPY_SERVER}" ]; then
     echo "==> Bundling scrcpy-server from ${SCRCPY_SERVER}..."
     cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/"
