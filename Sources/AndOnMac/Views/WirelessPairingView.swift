@@ -263,225 +263,234 @@ public struct WirelessPairingView: View {
     // MARK: - Tab 1: Wi-Fi PIN Code & Direct Connect
     private var wifiPinTab: some View {
         VStack(spacing: 14) {
-            // 1. Auto-detected Device Banner (if Bonjour discovered an advertising phone)
-            if let host = discovery.detectedPairingHost ?? discovery.detectedConnectPort.map({ _ in pairedIP }),
-               let port = discovery.detectedConnectPort ?? discovery.detectedPairingPort, !showManualInputs {
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                            .overlay(Circle().stroke(Color.green.opacity(0.5), lineWidth: 3))
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Обнаружен телефон в локальной сети")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
-                            Text("\(discovery.detectedDeviceName ?? "Android") • \(host):\(port)")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(.cyan)
-                        }
-                        
-                        Spacer()
-                        
-                        Button {
-                            connectDirect(ip: host, portStr: String(port))
-                        } label: {
-                            Text("Подключить")
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Color.green)
-                                .foregroundColor(.black)
-                                .cornerRadius(6)
-                        }
-                        .buttonStyle(.plain)
+            autoDetectedBanner
+            alreadyPairedCard
+            firstTimePairingDisclosure
+        }
+    }
+    
+    @ViewBuilder
+    private var autoDetectedBanner: some View {
+        let detectedHost = discovery.detectedPairingHost ?? (discovery.detectedConnectPort != nil ? pairedIP : nil)
+        let detectedPort = discovery.detectedConnectPort ?? discovery.detectedPairingPort
+        if let host = detectedHost, let port = detectedPort, !showManualInputs {
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                        .overlay(Circle().stroke(Color.green.opacity(0.5), lineWidth: 3))
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Обнаружен телефон в локальной сети")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("\(discovery.detectedDeviceName ?? "Android") • \(host):\(port)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.cyan)
                     }
+                    
+                    Spacer()
+                    
+                    Button {
+                        connectDirect(ip: host, portStr: String(port))
+                    } label: {
+                        Text("Подключить")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.green)
+                            .foregroundColor(.black)
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(10)
-                .background(Color.green.opacity(0.12))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.green.opacity(0.3), lineWidth: 1)
-                )
+            }
+            .padding(10)
+            .background(Color.green.opacity(0.12))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.green.opacity(0.3), lineWidth: 1)
+            )
+        }
+    }
+    
+    private var alreadyPairedCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundColor(.cyan)
+                    .font(.system(size: 13))
+                Text("Устройство уже сопряжено")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
             }
             
-            // 2. Primary Card: Connect Already-Paired Device (Android 11+ Wireless Debugging / TCP/IP)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundColor(.cyan)
-                        .font(.system(size: 13))
-                    Text("Устройство уже сопряжено")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
+            Text("Если в меню телефона «Беспроводная отладка» уже видно «MacBook Pro», просто введите порт из верхней строки телефона:")
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.7))
+                .lineSpacing(1.5)
+            
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("IP-АДРЕС")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white.opacity(0.45))
+                    
+                    TextField("10.36.196.xxx", text: $pairedIP)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .focused($focusedField, equals: .pairedIP)
+                        .padding(7)
+                        .background(Color.white.opacity(0.07))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(focusedField == .pairedIP ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
+                        )
                 }
+                .frame(maxWidth: .infinity)
                 
-                Text("Если в меню телефона «Беспроводная отладка» уже видно «MacBook Pro», просто введите порт из верхней строки телефона:")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineSpacing(1.5)
-                
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("IP-АДРЕС")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.45))
-                        
-                        TextField("10.36.196.xxx", text: $pairedIP)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 11, design: .monospaced))
-                            .focused($focusedField, equals: .pairedIP)
-                            .padding(7)
-                            .background(Color.white.opacity(0.07))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(focusedField == .pairedIP ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
-                            )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("ПОРТ")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white.opacity(0.45))
+                    
+                    TextField("38195 или 5555", text: $pairedPort)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .focused($focusedField, equals: .pairedPort)
+                        .padding(7)
+                        .background(Color.white.opacity(0.07))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(focusedField == .pairedPort ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                }
+                .frame(width: 100)
+            }
+            
+            Button {
+                connectDirect(ip: pairedIP, portStr: pairedPort)
+            } label: {
+                HStack(spacing: 6) {
+                    if isProcessing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "bolt.fill")
+                        Text("Подключить телефон")
+                            .font(.system(size: 11, weight: .bold))
                     }
-                    .frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(
+                    LinearGradient(
+                        colors: [Color.blue, Color.cyan],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .foregroundColor(.white)
+                .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            .disabled(pairedIP.isEmpty || pairedPort.isEmpty || isProcessing)
+            .opacity(pairedIP.isEmpty || pairedPort.isEmpty ? 0.45 : 1.0)
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+    
+    private var firstTimePairingDisclosure: some View {
+        DisclosureGroup(
+            isExpanded: $showFirstTimePairing,
+            content: {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Где открыть на телефоне:")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("Настройки → Для разработчиков → Беспроводная отладка → **«Подключить с помощью кода сопряжения»**.")
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
                     
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("ПОРТ")
+                        Text("IP-АДРЕС И ПОРТ СОПРЯЖЕНИЯ")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white.opacity(0.45))
                         
-                        TextField("38195 или 5555", text: $pairedPort)
+                        TextField("например: 192.168.1.45:41893", text: $addressAndPort)
                             .textFieldStyle(.plain)
                             .font(.system(size: 11, design: .monospaced))
-                            .focused($focusedField, equals: .pairedPort)
+                            .focused($focusedField, equals: .addressPort)
                             .padding(7)
                             .background(Color.white.opacity(0.07))
                             .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(focusedField == .pairedPort ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
-                            )
                     }
-                    .frame(width: 100)
-                }
-                
-                Button {
-                    connectDirect(ip: pairedIP, portStr: pairedPort)
-                } label: {
-                    HStack(spacing: 6) {
-                        if isProcessing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "bolt.fill")
-                            Text("Подключить телефон")
+                    
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("6-ЗНАЧНЫЙ КОД СОПРЯЖЕНИЯ")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.45))
+                        
+                        TextField("123456", text: $pinCode)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .focused($focusedField, equals: .pinCode)
+                            .padding(7)
+                            .background(Color.white.opacity(0.07))
+                            .cornerRadius(8)
+                            .onChange(of: pinCode) { _, newValue in
+                                let filtered = String(newValue.filter { $0.isNumber }.prefix(6))
+                                if filtered != newValue {
+                                    pinCode = filtered
+                                }
+                            }
+                    }
+                    
+                    Button {
+                        submitPairing()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "key.fill")
+                            Text("Выполнить сопряжение")
                                 .font(.system(size: 11, weight: .bold))
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(Color.white.opacity(0.12))
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.blue, Color.cyan],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
+                    .buttonStyle(.plain)
+                    .disabled(currentPairingHostAndPort.isEmpty || pinCode.count < 6 || isProcessing)
                 }
-                .buttonStyle(.plain)
-                .disabled(pairedIP.isEmpty || pairedPort.isEmpty || isProcessing)
-                .opacity(pairedIP.isEmpty || pairedPort.isEmpty ? 0.45 : 1.0)
+                .padding(.top, 8)
+            },
+            label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "key")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text("Первое сопряжение по 6-значному коду")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
+                }
             }
-            .padding(12)
-            .background(Color.white.opacity(0.05))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            )
-            
-            // 3. Secondary Card: First-Time Pairing (6-digit PIN code)
-            DisclosureGroup(
-                isExpanded: $showFirstTimePairing,
-                content: {
-                    VStack(alignment: .leading, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Где открыть на телефоне:")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundColor(.white)
-                            Text("Настройки → Для разработчиков → Беспроводная отладка → **«Подключить с помощью кода сопряжения»**.")
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("IP-АДРЕС И ПОРТ СОПРЯЖЕНИЯ")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white.opacity(0.45))
-                            
-                            TextField("например: 192.168.1.45:41893", text: $addressAndPort)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 11, design: .monospaced))
-                                .focused($focusedField, equals: .addressPort)
-                                .padding(7)
-                                .background(Color.white.opacity(0.07))
-                                .cornerRadius(8)
-                        }
-                        
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("6-ЗНАЧНЫЙ КОД СОПРЯЖЕНИЯ")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white.opacity(0.45))
-                            
-                            TextField("123456", text: $pinCode)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                                .focused($focusedField, equals: .pinCode)
-                                .padding(7)
-                                .background(Color.white.opacity(0.07))
-                                .cornerRadius(8)
-                                .onChange(of: pinCode) { _, newValue in
-                                    let filtered = String(newValue.filter { $0.isNumber }.prefix(6))
-                                    if filtered != newValue {
-                                        pinCode = filtered
-                                    }
-                                }
-                        }
-                        
-                        Button {
-                            submitPairing()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "key.fill")
-                                Text("Выполнить сопряжение")
-                                    .font(.system(size: 11, weight: .bold))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 7)
-                            .background(Color.white.opacity(0.12))
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(currentPairingHostAndPort.isEmpty || pinCode.count < 6 || isProcessing)
-                    }
-                    .padding(.top, 8)
-                },
-                label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "key")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.6))
-                        Text("Первое сопряжение по 6-значному коду")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.8))
-                        Spacer()
-                    }
-                }
-            )
-            .padding(10)
-            .background(Color.white.opacity(0.03))
-            .cornerRadius(10)
-        }
+        )
+        .padding(10)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(10)
     }
     
     private func isValidHostAndPort(_ str: String) -> Bool {
@@ -745,17 +754,15 @@ public struct WirelessPairingView: View {
         isProcessing = true
         resultMessage = "Подключение к \(cleanIP):\(port)..."
         
-        Task {
+        Task { @MainActor in
             let (success, message) = await appState.connectPaired(host: cleanIP, port: port)
-            await MainActor.run {
-                self.isProcessing = false
-                self.isSuccess = success
-                self.resultMessage = message
-                if success {
-                    appState.refreshDevices()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        closePairing()
-                    }
+            isProcessing = false
+            isSuccess = success
+            resultMessage = message
+            if success {
+                appState.refreshDevices()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    closePairing()
                 }
             }
         }
@@ -787,7 +794,7 @@ public struct WirelessPairingView: View {
         isProcessing = true
         resultMessage = "Сопряжение с \(host):\(pairingPort)..."
         
-        Task {
+        Task { @MainActor in
             do {
                 let (success, message) = try await ADBService.shared.pairAndConnect(
                     host: host,
@@ -796,25 +803,21 @@ public struct WirelessPairingView: View {
                     userConnectPort: userConnectPort
                 )
                 
-                await MainActor.run {
-                    self.isProcessing = false
-                    self.isSuccess = success
-                    self.resultMessage = message
-                    
-                    if success {
-                        discovery.resetPairingState()
-                        appState.refreshDevices()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                            closePairing()
-                        }
+                isProcessing = false
+                isSuccess = success
+                resultMessage = message
+                
+                if success {
+                    discovery.resetPairingState()
+                    appState.refreshDevices()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        closePairing()
                     }
                 }
             } catch {
-                await MainActor.run {
-                    self.isProcessing = false
-                    self.isSuccess = false
-                    self.resultMessage = "Ошибка сопряжения: \(error.localizedDescription)"
-                }
+                isProcessing = false
+                isSuccess = false
+                resultMessage = "Ошибка сопряжения: \(error.localizedDescription)"
             }
         }
     }
