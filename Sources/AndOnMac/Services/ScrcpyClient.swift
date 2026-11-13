@@ -71,7 +71,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         // 4. Launch server process
         // Protocol: send_frame_meta=true provides 12-byte frame packet headers (zero latency, no buffering delay)
-        var serverArgs = [
+        let serverArgs = [
             "-s", serial, "shell",
             "CLASSPATH=\(remoteJar)",
             "app_process", "/", "com.genymobile.scrcpy.Server", "5.0.1",
@@ -92,9 +92,6 @@ public final class ScrcpyClient: @unchecked Sendable {
             "stay_awake=\(stayAwake ? "true" : "false")"
         ]
         
-        if turnScreenOff {
-            serverArgs.append("turn_screen_off=true")
-        }
         
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: ADBService.shared.adbPath)
@@ -131,6 +128,12 @@ public final class ScrcpyClient: @unchecked Sendable {
         // 8. Start automatic Universal Clipboard Sync (Mac -> Phone)
         DispatchQueue.main.async { [weak self] in
             self?.startClipboardSync()
+        }
+        
+        if turnScreenOff {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.setScreenPowerMode(false)
+            }
         }
     }
     
@@ -667,6 +670,14 @@ public final class ScrcpyClient: @unchecked Sendable {
         var len = UInt32(textData.count).bigEndian
         msg.append(Data(bytes: &len, count: 4))
         msg.append(textData)
+        sendControlMessage(msg)
+    }
+    
+    /// Controls device screen power mode (false = screen off while mirroring continues, true = screen on)
+    public func setScreenPowerMode(_ on: Bool) {
+        var msg = Data()
+        msg.append(10) // TYPE_SET_SCREEN_POWER_MODE
+        msg.append(on ? 2 : 0) // 0 = POWER_MODE_OFF, 2 = POWER_MODE_NORMAL
         sendControlMessage(msg)
     }
     
