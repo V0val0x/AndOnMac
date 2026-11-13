@@ -96,6 +96,9 @@ public final class MirrorService: @unchecked Sendable {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
         env["ADB"] = ADBService.shared.adbPath
+        if let serverPath = Bundle.main.path(forResource: "scrcpy-server", ofType: nil) {
+            env["SCRCPY_SERVER_PATH"] = serverPath
+        }
         proc.environment = env
         
         // Suppress stdout/stderr
