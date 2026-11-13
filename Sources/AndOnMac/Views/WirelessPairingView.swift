@@ -45,7 +45,7 @@ public struct WirelessPairingView: View {
     
     public var body: some View {
         ZStack {
-            // Apple / Spotify Deep Obsidian Background
+            // Dark Background
             Color(red: 0.05, green: 0.06, blue: 0.08)
                 .ignoresSafeArea()
             
@@ -154,7 +154,7 @@ public struct WirelessPairingView: View {
                     .padding(.bottom, 8)
                 }
                 
-                // Spotify-Grade Segmented Pill Switcher
+                // Segmented Pill Switcher
                 HStack(spacing: 4) {
                     ForEach(PairingTab.allCases) { tab in
                         Button {

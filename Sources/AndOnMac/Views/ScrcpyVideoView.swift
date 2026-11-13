@@ -172,7 +172,22 @@ public final class ScrcpyDisplayNSView: NSView {
     }
     
     // MARK: - Keyboard Events
+    override public func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        // Immediate sync for CapsLock, Globe / Fn, or modifier-based layout toggles
+        KeyboardLanguageSyncService.shared.checkAndSyncLanguage()
+    }
+    
     override public func keyDown(with event: NSEvent) {
+        // Handle Language / Input Source Switching shortcuts (Cmd+Space, Ctrl+Space)
+        if event.keyCode == 49 && (event.modifierFlags.contains(.command) || event.modifierFlags.contains(.control)) {
+            super.keyDown(with: event)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                KeyboardLanguageSyncService.shared.checkAndSyncLanguage()
+            }
+            return
+        }
+        
         // Command key combinations
         if event.modifierFlags.contains(.command) {
             let key = event.charactersIgnoringModifiers?.lowercased() ?? ""

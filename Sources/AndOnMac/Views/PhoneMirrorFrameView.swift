@@ -244,8 +244,15 @@ public struct PhoneMirrorFrameView: View {
             
             Spacer()
             
-            // Status: Battery / Wifi
-            HStack(spacing: 4) {
+            // Status: Language / Battery / Wifi
+            HStack(spacing: 5) {
+                if !appState.currentLanguageBadge.isEmpty {
+                    Text(appState.currentLanguageBadge)
+                        .font(.system(size: 9, weight: .black, design: .rounded))
+                        .foregroundColor(.cyan)
+                        .padding(.trailing, 2)
+                }
+                
                 if let battery = appState.selectedDevice?.batteryLevel {
                     Text("\(battery)%")
                         .font(.system(size: 10, weight: .bold))
@@ -297,6 +304,12 @@ public struct PhoneMirrorFrameView: View {
                     .foregroundColor(.white.opacity(0.6))
                     .padding(.leading, 4)
                 Spacer()
+                if !appState.currentLanguageBadge.isEmpty {
+                    Text(appState.currentLanguageBadge)
+                        .font(.system(size: 9, weight: .black, design: .rounded))
+                        .foregroundColor(.cyan)
+                        .padding(.trailing, 2)
+                }
                 if let battery = appState.selectedDevice?.batteryLevel {
                     Text("\(battery)%")
                         .font(.system(size: 11, weight: .bold))

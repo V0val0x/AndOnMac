@@ -11,7 +11,7 @@
 
 > **Native open-source Apple iPhone Mirroring alternative for Android and Google Pixel on macOS.**
 
-A modern macOS native application crafted with Apple & Spotify design aesthetics, allowing you to mirror and interact with your Android smartphone screen with ultra-low latency, full trackpad/keyboard control, audio streaming, and bidirectional drag-and-drop file transfers.
+A modern native macOS application allowing you to mirror and interact with your Android smartphone with ultra-low latency, full trackpad and keyboard control, audio streaming, and bidirectional file transfers.
 
 ---
 

@@ -125,4 +125,17 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(nals3.count, 1)
         XCTAssertEqual(nals3[0][0] & 0x1F, 5) // IDR Slice
     }
+    
+    func testKeyboardSubtypeParsing() {
+        let sampleDumpsys = """
+        mSubtypeNameOverride=English (US) mSubtypeShortLabel=US mLayoutLabelNonLocalized= mPkLanguageTag= mPkLayoutType=qwerty mSubtypeId=1594443099 mSubtypeLocale=en_US mSubtypeLanguageTag=en-US mSubtypeMode=keyboard
+        mSubtypeNameOverride=Русский (Россия) mSubtypeShortLabel=РУ mLayoutLabelNonLocalized= mPkLanguageTag= mPkLayoutType= mSubtypeId=-1807566855 mSubtypeLocale=ru_RU mSubtypeLanguageTag=ru-RU mSubtypeMode=keyboard
+        mSubtypeNameOverride=Deutsch (Österreich) mSubtypeShortLabel=DE mLayoutLabelNonLocalized= mPkLanguageTag= mPkLayoutType=qwertz mSubtypeId=979167277 mSubtypeLocale=de_AT mSubtypeLanguageTag=de-AT mSubtypeMode=keyboard
+        """
+        
+        let map = KeyboardLanguageSyncService.parseSubtypes(from: sampleDumpsys)
+        XCTAssertEqual(map["en"], 1594443099)
+        XCTAssertEqual(map["ru"], -1807566855)
+        XCTAssertEqual(map["de"], 979167277)
+    }
 }

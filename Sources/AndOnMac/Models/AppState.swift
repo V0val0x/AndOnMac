@@ -28,11 +28,14 @@ public enum PhoneWindowScale: String, CaseIterable, Identifiable, Sendable {
 
 @MainActor
 public final class AppState: ObservableObject {
+    public static weak var shared: AppState?
+    
     @Published public var devices: [Device] = []
     @Published public var selectedDeviceId: String?
     @Published public var isMirroring: Bool = false
     @Published public var notifications: [NotificationItem] = []
     @Published public var isDemoMode: Bool = false
+    @Published public var currentLanguageBadge: String = ""
     
     // Preferences
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
@@ -81,6 +84,15 @@ public final class AppState: ObservableObject {
     private var isRefreshing: Bool = false
     
     public init() {
+        Self.shared = self
+        self.currentLanguageBadge = KeyboardLanguageSyncService.getCurrentMacLanguage().uppercased()
+        
+        KeyboardLanguageSyncService.shared.onLanguageChanged = { [weak self] badge in
+            Task { @MainActor in
+                self?.currentLanguageBadge = badge
+            }
+        }
+        
         loadKnownDevices()
         checkSystemDependencies()
         startNotificationListener()
@@ -321,6 +333,7 @@ public final class AppState: ObservableObject {
     public func toggleMirroring() {
         if isMirroring {
             MirrorService.shared.stopMirroring()
+            KeyboardLanguageSyncService.shared.stopSync()
             isMirroring = false
             statusMessage = "Mirroring stopped"
         } else {
@@ -339,10 +352,12 @@ public final class AppState: ObservableObject {
                     Task { @MainActor in
                         self?.isMirroring = false
                         self?.statusMessage = "Mirroring session ended"
+                        KeyboardLanguageSyncService.shared.stopSync()
                     }
                 }
                 isMirroring = true
                 statusMessage = "Mirroring \(device.displayName)..."
+                KeyboardLanguageSyncService.shared.startSync(for: device.id)
             } catch {
                 statusMessage = "Failed to start: \(error.localizedDescription)"
             }
