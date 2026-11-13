@@ -69,9 +69,17 @@ public struct PhoneMirrorFrameView: View {
                         if appState.isMirroring {
                             // Live Embedded Screen
                             liveScreenView
+                        } else if appState.showPairingSheet {
+                            // In-Phone Pairing & Wireless Setup
+                            WirelessPairingView(appState: appState)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .move(edge: .bottom).combined(with: .opacity)
+                                ))
                         } else {
                             // Standby / Onboarding Screen
                             standbyScreenView
+                                .transition(.opacity)
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 42, style: .continuous))

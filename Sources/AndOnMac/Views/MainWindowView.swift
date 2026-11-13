@@ -43,9 +43,6 @@ public struct MainWindowView: View {
                 window.standardWindowButton(.zoomButton)?.isHidden = true
             }
         )
-        .sheet(isPresented: $appState.showPairingSheet) {
-            WirelessPairingView(appState: appState)
-        }
     }
 }
 

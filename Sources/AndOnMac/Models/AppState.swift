@@ -205,9 +205,9 @@ public final class AppState: ObservableObject {
     
     public func startPeriodicPoll() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self = self, !self.showPairingSheet, !self.isRefreshing else { return }
+                guard let self = self, !self.isRefreshing else { return }
                 self.refreshDevices()
             }
         }
@@ -230,8 +230,11 @@ public final class AppState: ObservableObject {
                 self.isMirroring = mirrorActive
             }
             
-            // Automatic seamless features
-            handleAutomation(devices: list)
+            if list.isEmpty {
+                self.hasAutoConnectedThisSession = false
+            } else {
+                handleAutomation(devices: list)
+            }
         }
     }
     
@@ -246,6 +249,7 @@ public final class AppState: ObservableObject {
         // Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
         if autoConnect && !isMirroring && !hasAutoConnectedThisSession {
             hasAutoConnectedThisSession = true
+            showPairingSheet = false
             toggleMirroring()
         }
     }
