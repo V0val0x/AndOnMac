@@ -13,11 +13,12 @@ public struct PhoneMirrorFrameView: View {
     }
     
     private var baseWidth: CGFloat {
+        let mult = appState.effectiveFrameStyle.baseWidthMultiplier
         if appState.isLandscape {
             let h = 320.0 * appState.windowScale.multiplier
-            return h * appState.effectiveAspect
+            return h * appState.effectiveAspect * mult
         } else {
-            return 320.0 * appState.windowScale.multiplier
+            return 320.0 * appState.windowScale.multiplier * mult
         }
     }
     
@@ -29,41 +30,50 @@ public struct PhoneMirrorFrameView: View {
         }
     }
     
+    private var cornerRadius: CGFloat {
+        appState.effectiveFrameStyle.cornerRadius
+    }
+    
+    private var innerCornerRadius: CGFloat {
+        appState.effectiveFrameStyle.innerCornerRadius
+    }
+    
+    private var screenClipRadius: CGFloat {
+        appState.effectiveFrameStyle.screenClipRadius
+    }
+    
+    private var bezelWidth: CGFloat {
+        appState.effectiveFrameStyle.bezelWidth
+    }
+    
     public var body: some View {
         ZStack {
-            // Outer Titanium / Aluminum Phone Chassis (1-in-1 with Sequoia iPhone Mirroring)
-            RoundedRectangle(cornerRadius: 44, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(white: 0.16),
-                            Color(white: 0.08)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            // Outer Titanium / Aluminum / Glass Phone Chassis tailored per smartphone brand
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(appState.effectiveFrameStyle.chassisFill)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 44, style: .continuous)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.32),
-                                    Color.white.opacity(0.08),
-                                    Color.black.opacity(0.7)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1.5
+                            appState.effectiveFrameStyle.chassisStroke,
+                            lineWidth: appState.effectiveFrameStyle == .samsungUltra ? 2.0 : 1.5
                         )
                 )
-                .shadow(color: Color.black.opacity(0.45), radius: 26, x: 0, y: 12)
+                .overlay(
+                    // Subtle glowing Glyph outline for Nothing Phone
+                    Group {
+                        if appState.effectiveFrameStyle == .nothing {
+                            RoundedRectangle(cornerRadius: max(4, cornerRadius - 1), style: .continuous)
+                                .stroke(Color.white.opacity(0.35), lineWidth: 1.0)
+                                .padding(1.5)
+                        }
+                    }
+                )
+                .shadow(color: Color.black.opacity(0.48), radius: 26, x: 0, y: 12)
             
-            // Inner Screen Border & Display (3pt ultra-thin micro-bezel)
-            RoundedRectangle(cornerRadius: 40, style: .continuous)
+            // Inner Screen Border & Display
+            RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
                 .fill(Color.black)
-                .padding(3)
+                .padding(bezelWidth)
                 .overlay(
                     Group {
                         if appState.isMirroring {
@@ -82,10 +92,45 @@ public struct PhoneMirrorFrameView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 38, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
                 )
         }
         .frame(width: baseWidth, height: baseHeight)
+    }
+    
+    // MARK: - Front Camera Punch Hole View
+    private var frontCameraView: some View {
+        let style = appState.effectiveFrameStyle
+        let diameter = style.punchHoleDiameter
+        return ZStack {
+            // Dark outer bezel
+            Circle()
+                .fill(Color.black)
+                .frame(width: diameter + 1.2, height: diameter + 1.2)
+            
+            // Optical glass lens gradient
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.08, green: 0.12, blue: 0.22),
+                            Color(red: 0.02, green: 0.03, blue: 0.05)
+                        ],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: diameter / 2
+                    )
+                )
+                .frame(width: diameter, height: diameter)
+            
+            // Tiny glass reflection dot
+            Circle()
+                .fill(Color.white.opacity(0.65))
+                .frame(width: 1.5, height: 1.5)
+                .offset(x: -diameter * 0.22, y: -diameter * 0.22)
+        }
+        .padding(.top, style.punchHoleTopPadding)
+        .allowsHitTesting(false)
     }
     
     // MARK: - Live Embedded Screen with ScrcpyVideoView
@@ -114,7 +159,15 @@ public struct PhoneMirrorFrameView: View {
                     }
                 }
             )
-            .clipShape(RoundedRectangle(cornerRadius: 38, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
+            
+            // Front Camera Punch Hole Cutout
+            if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
+                VStack {
+                    frontCameraView
+                    Spacer()
+                }
+            }
             
             // Sequoia Top Hover HUD & Home Bar (Fades in smoothly only when hovering near top/bottom)
             VStack {
@@ -282,6 +335,12 @@ public struct PhoneMirrorFrameView: View {
     // MARK: - Standby Screen View (When not mirroring)
     private var standbyScreenView: some View {
         VStack(spacing: 0) {
+            // Front camera punch hole on standby
+            if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
+                frontCameraView
+                    .padding(.top, 2)
+            }
+            
             // Top Bar with standard macOS close traffic light
             HStack {
                 Button {
@@ -321,7 +380,7 @@ public struct PhoneMirrorFrameView: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 12)
+            .padding(.top, 8)
             
             Spacer()
             
@@ -447,6 +506,38 @@ public struct PhoneMirrorFrameView: View {
             }
             
             Spacer()
+            
+            // Frame style switcher button
+            Menu {
+                ForEach(PhoneFrameStyle.allCases) { style in
+                    Button {
+                        appState.frameStyle = style
+                    } label: {
+                        HStack {
+                            if appState.frameStyle == style {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(style.displayName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: appState.effectiveFrameStyle.iconName)
+                        .font(.system(size: 10))
+                    Text(appState.effectiveFrameStyle.displayName)
+                        .font(.system(size: 10, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8))
+                }
+                .foregroundColor(.white.opacity(0.65))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(12)
+            }
+            .menuStyle(.borderlessButton)
+            .padding(.bottom, 4)
             
             bottomHomeBarView
                 .padding(.bottom, 8)

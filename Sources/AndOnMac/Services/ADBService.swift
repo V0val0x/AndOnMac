@@ -327,20 +327,26 @@ public final class ADBService: @unchecked Sendable {
         return (true, "Сопряжение успешно! Введите порт подключения из главного экрана телефона\(detail)")
     }
     
-    /// Safely switches a USB-connected device to TCP/IP Wi-Fi mode, reverting to USB if the network blocks the connection
+    /// Switches a USB-connected device to TCP/IP Wi-Fi mode
     public func switchToWireless(serial: String, ip: String, port: Int = 5555) async -> (success: Bool, message: String) {
         _ = try? await enableTcpIp(serial: serial, port: port)
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        try? await Task.sleep(nanoseconds: 800_000_000)
         
         if let output = try? await execute(arguments: ["connect", "\(ip):\(port)"], timeoutSeconds: 4.0),
            Self.isConnectSuccess(output) {
-            return (true, "Wi-Fi режим активирован (\(ip):\(port))!")
+            return (true, "Wi-Fi режим активирован (\(ip):\(port))! Теперь можно отключить кабель.")
         }
         
-        // Router Client Isolation or firewall blocked Mac-to-phone TCP; restore USB mode immediately
-        _ = try? await execute(arguments: ["-s", serial, "usb"], timeoutSeconds: 3.0)
-        _ = try? await execute(arguments: ["usb"], timeoutSeconds: 3.0)
-        return (false, "Роутер Wi-Fi изолирует устройства (Client Isolation). Переключаем обратно на USB. Если телефон не появился — выключите и включите «Отладку по USB» на телефоне.")
+        // Even if direct connect timed out while USB cable was still attached, keep TCP/IP 5555 listening on the device!
+        return (true, "Порт Wi-Fi (5555) включён на телефоне! Отключите кабель USB, и AndOnMac подключится к \(ip):5555.")
+    }
+    
+    /// Connect to an already-paired device (Android 11+ Wireless Debugging or TCP/IP 5555)
+    public func connectPairedDevice(host: String, port: Int) async throws -> (success: Bool, message: String) {
+        let output = try await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 5.0)
+        let success = Self.isConnectSuccess(output)
+        let cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (success, success ? "Успешно подключено к \(host):\(port)" : cleaned)
     }
     
     /// Disables stale Wi-Fi connections, resets USB mode, and restarts the local ADB server

@@ -71,6 +71,18 @@ struct AndOnMacApp: App {
                 
                 Divider()
                 
+                Menu("Корпус и модель смартфона") {
+                    ForEach(PhoneFrameStyle.allCases) { style in
+                        Button(style.displayName) {
+                            appState.frameStyle = style
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Toggle("Фронтальная камера (Punch Hole)", isOn: $appState.showFrontCamera)
+                }
+                
                 Toggle("Отправка по Enter (Shift+Enter для новой строки)", isOn: $appState.sendOnEnter)
                 
                 Divider()

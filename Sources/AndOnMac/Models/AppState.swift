@@ -2,14 +2,6 @@ import Foundation
 import SwiftUI
 import Combine
 
-public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
-    case pixel = "Google Pixel"
-    case modernBezel = "Minimal Bezel"
-    case borderless = "Borderless"
-    
-    public var id: String { rawValue }
-}
-
 public enum PhoneWindowScale: String, CaseIterable, Identifiable, Sendable {
     case smaller = "Smaller (75%)"
     case standard = "Standard (100%)"
@@ -41,11 +33,12 @@ public final class AppState: ObservableObject {
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
     @AppStorage("forwardAudio") public var forwardAudio: Bool = true
     @AppStorage("stayAwake") public var stayAwake: Bool = true
-    @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .pixel
+    @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
+    @AppStorage("showFrontCamera") public var showFrontCamera: Bool = true
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 60
     @AppStorage("autoConnect") public var autoConnect: Bool = true
-    @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
+    @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = true
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
@@ -59,6 +52,15 @@ public final class AppState: ObservableObject {
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
+    @Published public var lastKnownWifiIP: String?
+    
+    /// Effective frame style resolving .auto to detected device hardware model
+    public var effectiveFrameStyle: PhoneFrameStyle {
+        if frameStyle == .auto {
+            return PhoneFrameStyle.detect(for: selectedDevice)
+        }
+        return frameStyle
+    }
     
     // Video streaming frame dimensions
     @Published public var deviceWidth: Int = 1080
@@ -98,8 +100,22 @@ public final class AppState: ObservableObject {
         checkSystemDependencies()
         startNotificationListener()
         setupScrcpyCallbacks()
+        startDiscoveryListener()
         refreshDevices()
         startPeriodicPoll()
+    }
+    
+    private func startDiscoveryListener() {
+        DiscoveryService.shared.startBrowsing()
+        DiscoveryService.shared.onConnectFound = { [weak self] ip, port, name in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.devices.isEmpty {
+                    self.statusMessage = "Обнаружен \(name) (\(ip):\(port)), подключаем..."
+                    _ = await self.connectPaired(host: ip, port: port)
+                }
+            }
+        }
     }
     
     private func setupScrcpyCallbacks() {
@@ -118,19 +134,27 @@ public final class AppState: ObservableObject {
     }
     
     private func persistKnownDevice(_ device: Device) {
-        // Only persist active Wi-Fi connections to avoid saving unreachable cellular IPs
-        guard device.connectionType == .wifi else { return }
         let ip: String
         let port: Int
-        if device.id.contains(":"), let colonIdx = device.id.lastIndex(of: ":") {
-            ip = String(device.id[..<colonIdx])
-            port = Int(device.id[device.id.index(after: colonIdx)...]) ?? 5555
-        } else if let devIp = device.ipAddress, !devIp.isEmpty {
+        if device.connectionType == .wifi {
+            if device.id.contains(":"), let colonIdx = device.id.lastIndex(of: ":") {
+                ip = String(device.id[..<colonIdx])
+                port = Int(device.id[device.id.index(after: colonIdx)...]) ?? 5555
+            } else if let devIp = device.ipAddress, !devIp.isEmpty {
+                ip = devIp
+                port = 5555
+            } else {
+                return
+            }
+        } else if device.connectionType == .usb, let devIp = device.ipAddress, !devIp.isEmpty {
             ip = devIp
             port = 5555
         } else {
             return
         }
+        
+        self.lastKnownWifiIP = ip
+        addSavedIP(ip)
         
         if let index = knownDevices.firstIndex(where: { $0.ipAddress == ip || $0.id == device.id }) {
             knownDevices[index].lastConnected = Date()
@@ -245,8 +269,64 @@ public final class AppState: ObservableObject {
             
             if list.isEmpty {
                 self.hasAutoConnectedThisSession = false
+                self.attemptAutoWifiReconnect()
             } else {
-                handleAutomation(devices: list)
+                self.handleAutomation(devices: list)
+            }
+        }
+    }
+    
+    private var isAttemptingWifiReconnect: Bool = false
+    private var lastReconnectAttemptTime: Date = .distantPast
+    
+    private func attemptAutoWifiReconnect() {
+        guard !isAttemptingWifiReconnect else { return }
+        guard Date().timeIntervalSince(lastReconnectAttemptTime) > 3.0 else { return }
+        
+        var candidateIPs: [String] = []
+        if let last = lastKnownWifiIP, !last.isEmpty {
+            candidateIPs.append(last)
+        }
+        for d in knownDevices {
+            if !candidateIPs.contains(d.ipAddress) {
+                candidateIPs.append(d.ipAddress)
+            }
+        }
+        let saved = savedWirelessIPs.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        for s in saved {
+            if !candidateIPs.contains(s) {
+                candidateIPs.append(s)
+            }
+        }
+        
+        guard !candidateIPs.isEmpty else { return }
+        isAttemptingWifiReconnect = true
+        lastReconnectAttemptTime = Date()
+        
+        Task {
+            defer { self.isAttemptingWifiReconnect = false }
+            for ip in candidateIPs.prefix(3) {
+                // 1. Try standard port 5555 (set during USB connection)
+                if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(ip):5555"], timeoutSeconds: 2.0),
+                   ADBService.isConnectSuccess(output) {
+                    await MainActor.run {
+                        self.statusMessage = "Подключено по Wi-Fi (\(ip):5555)"
+                        self.refreshDevices()
+                    }
+                    return
+                }
+                
+                // 2. Try discovered mDNS connect port if available
+                if let cachedPort = DiscoveryService.shared.getConnectPort(for: ip), cachedPort != 5555 {
+                    if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(ip):\(cachedPort)"], timeoutSeconds: 2.0),
+                       ADBService.isConnectSuccess(output) {
+                        await MainActor.run {
+                            self.statusMessage = "Подключено к \(ip):\(cachedPort)"
+                            self.refreshDevices()
+                        }
+                        return
+                    }
+                }
             }
         }
     }
@@ -256,14 +336,48 @@ public final class AppState: ObservableObject {
             return
         }
         
-        // Save to persistent known devices registry (only active Wi-Fi connections)
+        // Save to persistent known devices registry
         persistKnownDevice(device)
+        
+        // Seamless Hand-off: If connected via USB, activate TCP/IP 5555 in the background
+        // so when the user unplugs the cable, the phone continues wirelessly!
+        if device.connectionType == .usb && autoWirelessPromote {
+            Task {
+                _ = try? await ADBService.shared.enableTcpIp(serial: device.id, port: 5555)
+            }
+        }
         
         // Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
         if autoConnect && !isMirroring && !hasAutoConnectedThisSession {
             hasAutoConnectedThisSession = true
             showPairingSheet = false
             toggleMirroring()
+        }
+    }
+    
+    public func addSavedIP(_ ip: String) {
+        var list = savedWirelessIPs.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !list.contains(ip) {
+            list.append(ip)
+            savedWirelessIPs = list.joined(separator: ",")
+        }
+    }
+    
+    public func connectPaired(host: String, port: Int) async -> (Bool, String) {
+        do {
+            statusMessage = "Подключение к \(host):\(port)..."
+            let res = try await ADBService.shared.connectPairedDevice(host: host, port: port)
+            statusMessage = res.message
+            if res.success {
+                addSavedIP(host)
+                lastKnownWifiIP = host
+                refreshDevices()
+            }
+            return (res.success, res.message)
+        } catch {
+            let msg = "Ошибка: \(error.localizedDescription)"
+            statusMessage = msg
+            return (false, msg)
         }
     }
     
