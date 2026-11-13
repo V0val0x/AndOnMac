@@ -87,6 +87,13 @@ struct AndOnMacApp: App {
                 
                 Divider()
                 
+                Button("Перезапустить ADB и восстановить USB") {
+                    Task {
+                        await appState.resetUSBAndADB()
+                    }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                
                 Button("Завершить трансляцию") {
                     if appState.isMirroring {
                         appState.toggleMirroring()
@@ -126,6 +133,12 @@ struct AndOnMacApp: App {
                 Button("Подключить по Wi-Fi...") {
                     appState.showPairingSheet = true
                     NSApp.activate(ignoringOtherApps: true)
+                }
+                
+                Button("Сбросить ADB и восстановить USB") {
+                    Task {
+                        await appState.resetUSBAndADB()
+                    }
                 }
                 
                 Divider()

@@ -38,7 +38,7 @@ public final class AppState: ObservableObject {
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 60
     @AppStorage("autoConnect") public var autoConnect: Bool = true
-    @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = true
+    @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
@@ -110,10 +110,9 @@ public final class AppState: ObservableObject {
         DiscoveryService.shared.onConnectFound = { [weak self] ip, port, name in
             Task { @MainActor in
                 guard let self = self else { return }
-                if self.devices.isEmpty {
-                    self.statusMessage = "Обнаружен \(name) (\(ip):\(port)), подключаем..."
-                    _ = await self.connectPaired(host: ip, port: port)
-                }
+                self.lastKnownWifiIP = ip
+                // Do not aggressively auto-connect here in an infinite loop.
+                // Dynamic port is cached and ready for explicit connection or safe reconnection.
             }
         }
     }
@@ -281,51 +280,27 @@ public final class AppState: ObservableObject {
     
     private func attemptAutoWifiReconnect() {
         guard !isAttemptingWifiReconnect else { return }
-        guard Date().timeIntervalSince(lastReconnectAttemptTime) > 3.0 else { return }
+        guard Date().timeIntervalSince(lastReconnectAttemptTime) > 8.0 else { return }
         
-        var candidateIPs: [String] = []
-        if let last = lastKnownWifiIP, !last.isEmpty {
-            candidateIPs.append(last)
-        }
-        for d in knownDevices {
-            if !candidateIPs.contains(d.ipAddress) {
-                candidateIPs.append(d.ipAddress)
-            }
-        }
-        let saved = savedWirelessIPs.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        for s in saved {
-            if !candidateIPs.contains(s) {
-                candidateIPs.append(s)
-            }
-        }
+        let autoDevices = knownDevices.filter { $0.autoConnect }
+        guard !autoDevices.isEmpty else { return }
         
-        guard !candidateIPs.isEmpty else { return }
         isAttemptingWifiReconnect = true
         lastReconnectAttemptTime = Date()
         
         Task {
             defer { self.isAttemptingWifiReconnect = false }
-            for ip in candidateIPs.prefix(3) {
-                // 1. Try standard port 5555 (set during USB connection)
-                if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(ip):5555"], timeoutSeconds: 2.0),
+            for device in autoDevices.prefix(2) {
+                // If phone is in dynamic wireless debugging mode, prefer mDNS port over fixed 5555
+                let targetPort = DiscoveryService.shared.getConnectPort(for: device.ipAddress) ?? device.port
+                
+                if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(device.ipAddress):\(targetPort)"], timeoutSeconds: 2.0),
                    ADBService.isConnectSuccess(output) {
                     await MainActor.run {
-                        self.statusMessage = "Подключено по Wi-Fi (\(ip):5555)"
+                        self.statusMessage = "Подключено к \(device.name) (\(device.ipAddress):\(targetPort))"
                         self.refreshDevices()
                     }
                     return
-                }
-                
-                // 2. Try discovered mDNS connect port if available
-                if let cachedPort = DiscoveryService.shared.getConnectPort(for: ip), cachedPort != 5555 {
-                    if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(ip):\(cachedPort)"], timeoutSeconds: 2.0),
-                       ADBService.isConnectSuccess(output) {
-                        await MainActor.run {
-                            self.statusMessage = "Подключено к \(ip):\(cachedPort)"
-                            self.refreshDevices()
-                        }
-                        return
-                    }
                 }
             }
         }
