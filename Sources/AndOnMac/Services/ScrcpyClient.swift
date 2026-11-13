@@ -45,13 +45,15 @@ public final class ScrcpyClient: @unchecked Sendable {
         _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
         
         // 2. Ensure scrcpy-server is pushed to phone
-        let serverResourcePath: String
-        if let bundleJar = Bundle.main.path(forResource: "scrcpy-server", ofType: nil) {
-            serverResourcePath = bundleJar
-        } else if FileManager.default.fileExists(atPath: "/opt/homebrew/Cellar/scrcpy/5.0.1/share/scrcpy/scrcpy-server") {
-            serverResourcePath = "/opt/homebrew/Cellar/scrcpy/5.0.1/share/scrcpy/scrcpy-server"
-        } else {
-            throw NSError(domain: "ScrcpyClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "scrcpy-server not found"])
+        let candidates = [
+            Bundle.main.path(forResource: "scrcpy-server", ofType: nil),
+            "/opt/homebrew/share/scrcpy/scrcpy-server",
+            "/usr/local/share/scrcpy/scrcpy-server",
+            "/opt/homebrew/Cellar/scrcpy/5.0.1/share/scrcpy/scrcpy-server"
+        ].compactMap { $0 }
+        
+        guard let serverResourcePath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            throw NSError(domain: "ScrcpyClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "scrcpy-server not found in bundle or homebrew"])
         }
         
         let remoteJar = "/data/local/tmp/scrcpy-server-andonmac.jar"
