@@ -81,6 +81,7 @@ public final class MirrorService: @unchecked Sendable {
     }
     
     private func startBackgroundAudio(serial: String) {
+        stopBackgroundAudio()
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else { return }
         
