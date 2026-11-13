@@ -15,6 +15,11 @@ public struct WirelessPairingView: View {
     
     @State private var selectedTab: PairingTab = .wifiPin
     
+    private enum FocusField: Hashable {
+        case addressPort, connectPort, pinCode
+    }
+    @FocusState private var focusedField: FocusField?
+    
     // PIN Code State
     @State private var addressAndPort: String = ""
     @State private var connectPortText: String = ""
@@ -296,12 +301,13 @@ public struct WirelessPairingView: View {
                         TextField("например: 192.168.1.45:41893", text: $addressAndPort)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13, weight: .medium, design: .monospaced))
+                            .focused($focusedField, equals: .addressPort)
                             .padding(10)
                             .background(Color.white.opacity(0.07))
                             .cornerRadius(10)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                                    .stroke(focusedField == .addressPort ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
                             )
                     }
                     
@@ -319,72 +325,87 @@ public struct WirelessPairingView: View {
                         TextField("например: 38291 (если отличается)", text: $connectPortText)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13, weight: .medium, design: .monospaced))
+                            .focused($focusedField, equals: .connectPort)
                             .padding(10)
                             .background(Color.white.opacity(0.07))
                             .cornerRadius(10)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                                    .stroke(focusedField == .connectPort ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12), lineWidth: 1)
                             )
                     }
                 }
             }
             
-            // 6-digit PIN Boxes
+            // Selectable Native 6-digit PIN Field
             VStack(alignment: .leading, spacing: 8) {
-                Text("6-ЗНАЧНЫЙ КОД СОПРЯЖЕНИЯ ПО WI-FI")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-                
-                HStack(spacing: 8) {
-                    ForEach(0..<6, id: \.self) { index in
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color.white.opacity(0.07))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(
-                                            index < pinCode.count
-                                                ? Color.cyan.opacity(0.85)
-                                                : Color.white.opacity(0.12),
-                                            lineWidth: index < pinCode.count ? 1.5 : 1
-                                        )
-                                )
-                                .frame(height: 48)
-                            
-                            Text(digitAt(index: index))
-                                .font(.system(size: 22, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                        }
+                HStack {
+                    Text("6-ЗНАЧНЫЙ КОД СОПРЯЖЕНИЯ ПО WI-FI")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white.opacity(0.5))
+                    Spacer()
+                    if !pinCode.isEmpty {
+                        Text("\(pinCode.count)/6")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(pinCode.count == 6 ? .green : .cyan)
                     }
                 }
                 
-                // Invisible Text Field to capture keyboard input
-                TextField("", text: Binding(
-                    get: { pinCode },
-                    set: { val in
-                        let filtered = val.filter { $0.isNumber }
-                        pinCode = String(filtered.prefix(6))
-                        if pinCode.count == 6 && !currentPairingHostAndPort.isEmpty {
-                            submitPairing()
+                HStack(spacing: 10) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 15))
+                        .foregroundColor(focusedField == .pinCode ? .cyan : .white.opacity(0.45))
+                    
+                    TextField("Например: 123456", text: $pinCode)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .focused($focusedField, equals: .pinCode)
+                        .onChange(of: pinCode) { _, newValue in
+                            let filtered = String(newValue.filter { $0.isNumber }.prefix(6))
+                            if filtered != newValue {
+                                pinCode = filtered
+                            }
+                            if filtered.count == 6 && isValidHostAndPort(currentPairingHostAndPort) && !isProcessing {
+                                submitPairing()
+                            }
                         }
-                    }
-                ))
-                .textFieldStyle(.plain)
-                .frame(height: 1)
-                .opacity(0.01)
+                        .onSubmit {
+                            if pinCode.count == 6 && isValidHostAndPort(currentPairingHostAndPort) && !isProcessing {
+                                submitPairing()
+                            }
+                        }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(
+                            focusedField == .pinCode || pinCode.count == 6
+                                ? Color.cyan.opacity(0.85)
+                                : Color.white.opacity(0.14),
+                            lineWidth: focusedField == .pinCode ? 1.8 : 1
+                        )
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    focusedField = .pinCode
+                }
             }
             
             Spacer()
         }
     }
     
-    private func digitAt(index: Int) -> String {
-        let chars = Array(pinCode)
-        if index < chars.count {
-            return String(chars[index])
+    private func isValidHostAndPort(_ str: String) -> Bool {
+        let parts = str.components(separatedBy: ":")
+        guard parts.count == 2, let port = Int(parts[1]), (1...65535).contains(port) else {
+            return false
         }
-        return ""
+        let octets = parts[0].components(separatedBy: ".")
+        return octets.count == 4 && octets.allSatisfy { !$0.isEmpty && Int($0) != nil }
     }
     
     // MARK: - Tab 2: USB 3-Second Setup
@@ -425,12 +446,14 @@ public struct WirelessPairingView: View {
                 Button {
                     Task {
                         isProcessing = true
-                        await appState.switchSelectedToWireless()
+                        let (success, message) = await appState.switchSelectedToWireless()
                         isProcessing = false
-                        isSuccess = true
-                        resultMessage = "✅ Wi-Fi режим активирован! Кабель можно отключить."
-                        try? await Task.sleep(nanoseconds: 1_200_000_000)
-                        dismiss()
+                        isSuccess = success
+                        resultMessage = success ? "✅ \(message)" : message
+                        if success {
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            dismiss()
+                        }
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -445,6 +468,36 @@ public struct WirelessPairingView: View {
                     .cornerRadius(12)
                 }
                 .buttonStyle(.plain)
+            } else {
+                VStack(spacing: 8) {
+                    Button {
+                        Task {
+                            isProcessing = true
+                            await appState.resetUSBAndADB()
+                            isProcessing = false
+                            isSuccess = true
+                            resultMessage = "ADB перезапущен. Переподключите кабель или переключите «Отладку по USB»."
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Восстановить USB / Сбросить ADB")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.1))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Text("Если после переключения в Wi-Fi телефон перестал определяться по кабелю: нажмите «Восстановить USB / Сбросить ADB» и на телефоне выключите/включите тумблер «Отладка по USB».")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                }
             }
             
             Spacer()

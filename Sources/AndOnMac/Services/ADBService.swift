@@ -202,14 +202,28 @@ public final class ADBService: @unchecked Sendable {
             }
         }
         
-        // Parse IP from route: e.g. "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.45"
+        // Parse Wi-Fi IP only from wlan interface lines (avoid cellular rmnet_data)
         var ipAddress: String? = nil
-        if let match = ipRaw.range(of: "src ([0-9\\.]+)", options: .regularExpression) {
-            let matchedStr = String(ipRaw[match])
-            ipAddress = matchedStr.replacingOccurrences(of: "src ", with: "").trimmingCharacters(in: .whitespaces)
+        for line in ipRaw.components(separatedBy: .newlines) where line.contains("wlan") {
+            if let match = line.range(of: "src ([0-9\\.]+)", options: .regularExpression) {
+                let matchedStr = String(line[match])
+                ipAddress = matchedStr.replacingOccurrences(of: "src ", with: "").trimmingCharacters(in: .whitespaces)
+                break
+            }
         }
         
         return (mfr, ver, level, isCharging, ipAddress)
+    }
+    
+    /// Verifies `adb connect` actually succeeded rather than returning "failed to connect" / "cannot connect"
+    public static func isConnectSuccess(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return (lower.contains("connected to") || lower.contains("already connected"))
+            && !lower.contains("failed")
+            && !lower.contains("unable")
+            && !lower.contains("cannot")
+            && !lower.contains("refused")
+            && !lower.contains("timed out")
     }
     
     /// Enable TCP/IP mode for wireless connection
@@ -284,7 +298,7 @@ public final class ADBService: @unchecked Sendable {
         var lastConnectErr = ""
         for port in portsToTry {
             if let connectOutput = try? await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 4.0) {
-                if connectOutput.lowercased().contains("connected") {
+                if Self.isConnectSuccess(connectOutput) {
                     return (true, "Успешно подключено к \(host):\(port)")
                 } else {
                     lastConnectErr = connectOutput
@@ -295,6 +309,30 @@ public final class ADBService: @unchecked Sendable {
         // If automatic port failed, inform the user
         let detail = lastConnectErr.isEmpty ? "" : " (\(lastConnectErr.trimmingCharacters(in: .whitespacesAndNewlines)))"
         return (true, "Сопряжение успешно! Введите порт подключения из главного экрана телефона\(detail)")
+    }
+    
+    /// Safely switches a USB-connected device to TCP/IP Wi-Fi mode, reverting to USB if the network blocks the connection
+    public func switchToWireless(serial: String, ip: String, port: Int = 5555) async -> (success: Bool, message: String) {
+        _ = try? await enableTcpIp(serial: serial, port: port)
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        
+        if let output = try? await execute(arguments: ["connect", "\(ip):\(port)"], timeoutSeconds: 4.0),
+           Self.isConnectSuccess(output) {
+            return (true, "Wi-Fi режим активирован (\(ip):\(port))!")
+        }
+        
+        // Router Client Isolation or firewall blocked Mac-to-phone TCP; restore USB mode immediately
+        _ = try? await execute(arguments: ["-s", serial, "usb"], timeoutSeconds: 3.0)
+        _ = try? await execute(arguments: ["usb"], timeoutSeconds: 3.0)
+        return (false, "Роутер Wi-Fi изолирует устройства (Client Isolation). Переключаем обратно на USB. Если телефон не появился — выключите и включите «Отладку по USB» на телефоне.")
+    }
+    
+    /// Disables stale Wi-Fi connections, resets USB mode, and restarts the local ADB server
+    public func resetUSBAndRestartServer() async {
+        _ = try? await execute(arguments: ["disconnect"], timeoutSeconds: 3.0)
+        _ = try? await execute(arguments: ["usb"], timeoutSeconds: 3.0)
+        _ = try? await execute(arguments: ["kill-server"], timeoutSeconds: 3.0)
+        _ = try? await execute(arguments: ["start-server"], timeoutSeconds: 5.0)
     }
     
     /// Push a local file to the device's Downloads directory (Drag and Drop support)

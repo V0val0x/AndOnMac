@@ -5,6 +5,10 @@ import AppKit
 struct AndOnMacApp: App {
     @StateObject private var appState = AppState()
     
+    init() {
+        NSApplication.shared.setActivationPolicy(.regular)
+    }
+    
     var body: some Scene {
         WindowGroup {
             MainWindowView(appState: appState)

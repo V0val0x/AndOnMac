@@ -405,6 +405,26 @@ public struct PhoneMirrorFrameView: View {
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(Color.white.opacity(0.08), lineWidth: 1)
                 )
+                
+                Button {
+                    Task {
+                        await appState.resetUSBAndADB()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Восстановить USB / Сбросить ADB")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.08))
+                    .foregroundColor(.white.opacity(0.75))
+                    .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+                .help("Если после переключения в Wi-Fi телефон не виден по кабелю — нажмите сюда и переподключите «Отладку по USB» на телефоне")
             }
         }
     }

@@ -70,6 +70,7 @@ public final class MirrorService: @unchecked Sendable {
         var env = ProcessInfo.processInfo.environment
         let existingPath = env["PATH"] ?? ""
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
+        env["ADB"] = ADBService.shared.adbPath
         process.environment = env
         process.arguments = args
         
