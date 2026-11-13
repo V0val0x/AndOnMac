@@ -7,67 +7,74 @@
   <img src="https://img.shields.io/github/v/release/V0val0x/AndOnMac?style=for-the-badge&color=brightgreen" />
 </p>
 
-> **Нативный open-source аналог Apple iPhone Mirroring для Android и Google Pixel на macOS.**
+**English** | [Русская версия (Russian)](README_RU.md)
 
-Бесплатное приложение для Mac с дизайном премиального уровня (Apple / Spotify Design System), позволяющее транслировать экран вашего смартфона с минимальной задержкой, управлять им с трекпада и клавиатуры, передавать звук и зеркалировать уведомления в macOS.
+> **Native open-source Apple iPhone Mirroring alternative for Android and Google Pixel on macOS.**
 
----
-
-## ✨ Ключевые возможности
-
-* 📱 **Дизайн 1-в-1 в стиле iPhone Mirroring**: минималистичное плавающее окно смартфона с титановой рамкой, плавными скруглениями дисплея и вырезом камеры.
-* ⚡️ **Zero-Friction старт**:
-  * **Способ 1 (Кабель за 3 сек)**: вставьте кабель Type-C один раз, подтвердите на телефоне — Mac сам переключит устройство на Wi-Fi и запомнит навсегда.
-  * **Способ 2 (Wi-Fi код сопряжения)**: введите 6 цифр из настроек беспроводной отладки с мгновенным автоматическим подключением.
-* 🔒 **Phone in Use**: физический экран телефона выключен во время работы для сохранения аккумулятора и приватности.
-* 🔊 **Аудиопоток**: системные звуки Android и видео воспроизводятся через динамики вашего Mac.
-* 🔔 **Уведомления macOS**: пуши с Android поступают в Центр уведомлений Mac с переходом в приложение по клику.
-* ⌨️ **Нативные жесты и шорткаты**: свайпы по Home bar, трекпад, горячие клавиши `Cmd+1` (Домой), `Cmd+2` (Обзор), `Cmd+3` (Уведомления).
-* 📁 **Drag & Drop**: перетаскивание файлов из Finder прямо в окно смартфона.
+A modern macOS native application crafted with Apple & Spotify design aesthetics, allowing you to mirror and interact with your Android smartphone screen with ultra-low latency, full trackpad/keyboard control, audio streaming, and bidirectional drag-and-drop file transfers.
 
 ---
 
-## 🚀 Быстрый старт
+## ✨ Features
 
-### Скачать готовый установщик:
-Скачайте последний релиз: [**AndOnMac.dmg (Releases)**](https://github.com/V0val0x/AndOnMac/releases).
-Откройте образ и перетащите `AndOnMac.app` в папку `Applications` («Программы»).
+* 📱 **1-in-1 Apple iPhone Mirroring Design**: Photorealistic floating smartphone bezel with titanium curved edges, dynamic camera punch-hole, and native Home bar gestures.
+* ⚡️ **Zero-Friction Setup**:
+  * **Method 1 (3-Second USB Setup)**: Plug in USB-C cable once, tap "Allow" on phone — Mac automatically promotes the device to Wi-Fi mode and remembers it permanently.
+  * **Method 2 (Wireless Pairing Code)**: Connect wirelessly using Android 11+ Wireless Debugging with Apple Bonjour auto-discovery.
+* 🔒 **Screen Off While Mirroring**: Keep phone physical display off to preserve battery life and privacy while working on your Mac.
+* 🔊 **Audio Forwarding**: Stream internal Android system audio and video sound directly to your Mac speakers.
+* 🔔 **macOS Notification Integration**: Push notifications from Android apps appear natively in macOS Notification Center.
+* ⌨️ **Native Shortcuts & Gestures**: Swipe up on Home bar, trackpad gestures, and keyboard shortcuts (`Cmd+1` Home, `Cmd+2` App Switcher, `Cmd+3` Notifications).
+* 📁 **Drag & Drop Transfers**: Drag photos, APKs, and documents from Mac Finder directly onto your phone screen.
 
 ---
 
-## 📶 Способы подключения
+## 🚀 Quick Start
 
-| Способ | Что нужно сделать | Особенности |
+### Download Pre-built Installer
+Download the latest release disk image: [**AndOnMac.dmg (Releases)**](https://github.com/V0val0x/AndOnMac/releases).  
+Open `AndOnMac.dmg` and drag `AndOnMac.app` into your **Applications** folder.
+
+```bash
+# Optional Homebrew installation of CLI tools (also bundled inside app):
+brew install scrcpy android-platform-tools
+```
+
+---
+
+## 📶 Connection Methods
+
+| Method | Instructions | Highlights |
 | :--- | :--- | :--- |
-| **🔌 Type-C (Рекомендуется)** | 1. Вставьте кабель в Mac.<br>2. Нажмите «Разрешить» на экране телефона.<br>3. *Кабель можно отключить — дальше связь идет по Wi-Fi автоматически.* | **3 секунды**: нулевая настройка, автоматический TCP/IP режим навсегда. |
-| **⚡️ По воздуху (Wi-Fi PIN)** | 1. На телефоне: *Беспроводная отладка → «Подключить с помощью кода сопряжения»*.<br>2. На Mac: телефон определится автоматически через Apple Bonjour.<br>3. Введите 6 цифр с экрана смартфона. | **Без проводов**: AndOnMac сам находит телефон в локальной сети и выполняет сопряжение. |
-| **🕒 Сохранённые устройства** | Нажмите «Подключиться» рядом с вашим сохранённым телефоном во вкладке истории. | **1 клик**: мгновенное переподключение без повторного ввода кодов. |
+| **🔌 Type-C Cable (Recommended)** | 1. Plug USB-C cable into Mac.<br>2. Tap "Allow" on phone display.<br>3. *Unplug cable anytime — wireless continuity stays active.* | **3 seconds**: Zero manual IP configuration, automatic TCP/IP Wi-Fi promotion. |
+| **⚡️ Over Wi-Fi (Pairing PIN)** | 1. On phone: *Settings → Developer Options → Wireless Debugging → "Pair with pairing code"*.<br>2. On Mac: Phone is auto-discovered via Apple Bonjour.<br>3. Enter the 6-digit PIN. | **Wireless**: Seamless local mDNS discovery and auto-connect. |
+| **🕒 Saved Devices** | Click "Connect" next to your previously paired phone in the Saved Devices tab. | **1-click**: Instant reconnect without re-entering PIN codes. |
 
 ---
 
-## ⌨️ Горячие клавиши (Apple Mirroring Shortcuts)
+## ⌨️ Keyboard Shortcuts (Apple Mirroring Shortcuts)
 
-| Сочетание клавиш | Действие |
+| Shortcut | Action |
 | :--- | :--- |
-| `Cmd + 1` / Свайп вверх по Home bar | Домашний экран (Home) |
-| `Cmd + 2` / Свайп с удержанием | Недавние приложения (App Switcher) |
-| `Cmd + 3` | Шторка уведомлений |
-| `Cmd + Backspace` / `Esc` | Назад (Back) |
-| `Cmd + P` | Блокировка / Включение экрана |
-| `Cmd + 0` / `Cmd + +` / `Cmd + -` | Масштаб окна (100%, 125%, 75%) |
+| `Cmd + 1` / Swipe up on Home bar | Home Screen |
+| `Cmd + 2` / Swipe up and hold | App Switcher (Recent Apps) |
+| `Cmd + 3` | Notification Shade |
+| `Cmd + Backspace` / `Esc` | Back |
+| `Cmd + P` | Power / Lock / Wake Display |
+| `Cmd + 0` / `Cmd + +` / `Cmd + -` | Window Scaling (100%, 125%, 75%) |
 
 ---
 
-## 🛠 Архитектура и стек
+## 🛠 Architecture & Tech Stack
 
-* **Frontend**: Swift 6.0, SwiftUI, AppKit (macOS 14.0+).
-* **Сетевой уровень**: Apple `Network.framework` (Bonjour mDNS / NWBrowser, TCP).
-* **Ядро стриминга**: [scrcpy](https://github.com/Genymobile/scrcpy) (H.264/H.265/Opus decoding).
-* **Сборка**: Автоматический GitHub Actions CI пайплайн со сборкой универсального DMG.
+* **Frontend**: Swift 6.0, SwiftUI, AppKit (targeting macOS 14.0+ Sonoma & Sequoia).
+* **Networking**: Apple `Network.framework` (Bonjour mDNS / NWBrowser for `_adb-tls-pairing._tcp` and `_adb-tls-connect._tcp`).
+* **Streaming Engine**: [scrcpy](https://github.com/Genymobile/scrcpy) (H.264 / H.265 / Opus decoding).
+* **CI/CD Pipeline**: Automated GitHub Actions workflow on Apple Silicon runners (`macos-15`).
 
 ---
 
-## 📄 Лицензия
+## 📄 License
 
-MIT License © 2026 Zaitcev Kirill.
-Ядро зеркалирования использует открытые компоненты Genymobile scrcpy (Apache 2.0).
+MIT License © 2026 Zaitcev Kirill.  
+Screen mirroring core leverages open-source components from Genymobile scrcpy (Apache 2.0).
