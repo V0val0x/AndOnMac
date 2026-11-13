@@ -466,12 +466,16 @@ public struct PhoneMirrorFrameView: View {
                     DragGesture(minimumDistance: 5)
                         .onChanged { value in
                             if value.translation.height < 0 {
-                                dragOffset = max(value.translation.height, -50)
+                                dragOffset = max(value.translation.height, -70)
                             }
                         }
                         .onEnded { value in
                             withAnimation(.spring()) {
-                                if value.translation.height < -30 {
+                                if value.translation.height < -55 {
+                                    // High drag -> App Switcher (Recents)
+                                    appState.triggerAppSwitch()
+                                } else if value.translation.height < -20 {
+                                    // Short drag -> Home
                                     appState.triggerHome()
                                 }
                                 dragOffset = 0

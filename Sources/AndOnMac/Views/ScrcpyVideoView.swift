@@ -143,7 +143,11 @@ public final class ScrcpyDisplayNSView: NSView {
     // MARK: - Mouse Events (Forwarded to scrcpy touch protocol)
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        guard let pt = normalizedPoint(from: event, allowClamping: false) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: false) else {
+            // Drag on bezel / window margin moves the macOS window seamlessly
+            window?.performDrag(with: event)
+            return
+        }
         ScrcpyClient.shared.sendTouchEvent(action: 0, normalizedX: pt.x, normalizedY: pt.y)
     }
     
@@ -195,7 +199,7 @@ public final class ScrcpyDisplayNSView: NSView {
             case "v":
                 // Universal Clipboard Paste (Cmd+V)
                 if let string = NSPasteboard.general.string(forType: .string) {
-                    ScrcpyClient.shared.setClipboardText(string)
+                    ScrcpyClient.shared.setClipboardText(string, paste: true)
                     return
                 }
             case "c":

@@ -37,7 +37,9 @@ public final class ScrcpyClient: @unchecked Sendable {
         serial: String,
         maxSize: Int = 1440,
         maxFps: Int = 60,
-        bitRate: Int = 8_000_000
+        bitRate: Int = 8_000_000,
+        turnScreenOff: Bool = true,
+        stayAwake: Bool = true
     ) async throws {
         stop()
         
@@ -67,7 +69,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         // 4. Launch server process
         // Protocol: send_frame_meta=true provides 12-byte frame packet headers (zero latency, no buffering delay)
-        let serverArgs = [
+        var serverArgs = [
             "-s", serial, "shell",
             "CLASSPATH=\(remoteJar)",
             "app_process", "/", "com.genymobile.scrcpy.Server", "5.0.1",
@@ -77,6 +79,7 @@ public final class ScrcpyClient: @unchecked Sendable {
             "audio=false",
             "control=true",
             "video=true",
+            "clipboard_autosync=true",
             "send_device_meta=false",
             "send_dummy_byte=false",
             "send_stream_meta=false",
@@ -84,8 +87,12 @@ public final class ScrcpyClient: @unchecked Sendable {
             "max_size=\(maxSize)",
             "max_fps=\(maxFps)",
             "video_bit_rate=\(bitRate)",
-            "stay_awake=true"
+            "stay_awake=\(stayAwake ? "true" : "false")"
         ]
+        
+        if turnScreenOff {
+            serverArgs.append("turn_screen_off=true")
+        }
         
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: ADBService.shared.adbPath)
@@ -109,15 +116,28 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         onSessionStateChanged?(true)
         
-        // 6. Start reading raw video stream
+        // 6. Start reading control messages (Universal Clipboard Phone -> Mac)
+        workQueue.async { [weak self] in
+            self?.readControlMessages(socket: cSock)
+        }
+        
+        // 7. Start reading raw video stream
         workQueue.async { [weak self] in
             self?.readRawVideoStream(socket: vSock)
+        }
+        
+        // 8. Start automatic Universal Clipboard Sync (Mac -> Phone)
+        DispatchQueue.main.async { [weak self] in
+            self?.startClipboardSync()
         }
     }
     
     /// Stops the embedded session and cleans up sockets
     public func stop() {
         isRunning = false
+        DispatchQueue.main.async { [weak self] in
+            self?.stopClipboardSync()
+        }
         if videoSocket >= 0 {
             close(videoSocket)
             videoSocket = -1
@@ -217,6 +237,58 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         DispatchQueue.main.async { [weak self] in
             self?.stop()
+        }
+    }
+    
+    /// Reads control messages sent from Android device (e.g. Device Clipboard synchronization)
+    private func readControlMessages(socket: Int32) {
+        var buffer = Data()
+        let tempBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
+        defer { tempBuf.deallocate() }
+        
+        while isRunning && controlSocket == socket {
+            let bytesRead = recv(socket, tempBuf, 4096, 0)
+            guard bytesRead > 0 else { break }
+            buffer.append(tempBuf, count: bytesRead)
+            
+            // Parse DEVICE_MSG packets
+            // Protocol: 1 byte msg_type (0 = CLIPBOARD)
+            while buffer.count >= 5 {
+                let msgType = buffer[0]
+                if msgType == 0 { // DEVICE_MSG_TYPE_CLIPBOARD
+                    let textLen = buffer.withUnsafeBytes { rawPtr -> UInt32 in
+                        rawPtr.load(fromByteOffset: 1, as: UInt32.self).bigEndian
+                    }
+                    let totalLen = 1 + 4 + Int(textLen)
+                    if buffer.count >= totalLen {
+                        let textData = buffer.subdata(in: 5..<totalLen)
+                        buffer.removeSubrange(0..<totalLen)
+                        if let text = String(data: textData, encoding: .utf8), !text.isEmpty {
+                            DispatchQueue.main.async { [weak self] in
+                                if NSPasteboard.general.string(forType: .string) != text {
+                                    self?.lastSyncedClipboardText = text
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(text, forType: .string)
+                                    self?.lastPasteboardChangeCount = NSPasteboard.general.changeCount
+                                }
+                            }
+                        }
+                        continue
+                    } else {
+                        break // wait for rest of clipboard payload
+                    }
+                } else if msgType == 1 { // DEVICE_MSG_TYPE_ACK_CLIPBOARD
+                    if buffer.count >= 9 { // 1 byte type + 8 bytes sequence
+                        buffer.removeSubrange(0..<9)
+                        continue
+                    } else {
+                        break
+                    }
+                } else {
+                    // Unknown control message, drop first byte to stay aligned
+                    buffer.removeFirst()
+                }
+            }
         }
     }
     
@@ -593,14 +665,40 @@ public final class ScrcpyClient: @unchecked Sendable {
         sendControlMessage(msg)
     }
     
+    // MARK: - Universal Real-Time Clipboard Sync
+    private var clipboardTimer: Timer?
+    private var lastPasteboardChangeCount: Int = NSPasteboard.general.changeCount
+    private var lastSyncedClipboardText: String = ""
+    
+    private func startClipboardSync() {
+        stopClipboardSync()
+        lastPasteboardChangeCount = NSPasteboard.general.changeCount
+        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self = self, self.isConnected else { return }
+            let currentCount = NSPasteboard.general.changeCount
+            if currentCount != self.lastPasteboardChangeCount {
+                self.lastPasteboardChangeCount = currentCount
+                if let str = NSPasteboard.general.string(forType: .string), !str.isEmpty, str != self.lastSyncedClipboardText {
+                    self.lastSyncedClipboardText = str
+                    self.setClipboardText(str, paste: false)
+                }
+            }
+        }
+    }
+    
+    private func stopClipboardSync() {
+        clipboardTimer?.invalidate()
+        clipboardTimer = nil
+    }
+    
     /// Set clipboard content (Universal Clipboard)
-    public func setClipboardText(_ text: String) {
+    public func setClipboardText(_ text: String, paste: Bool = false) {
         guard let textData = text.data(using: .utf8) else { return }
         var msg = Data()
         msg.append(9) // TYPE_SET_CLIPBOARD
         var seq: UInt64 = 0
         msg.append(Data(bytes: &seq, count: 8))
-        msg.append(1) // paste = true
+        msg.append(paste ? 1 : 0) // paste = true/false
         var len = UInt32(textData.count).bigEndian
         msg.append(Data(bytes: &len, count: 4))
         msg.append(textData)

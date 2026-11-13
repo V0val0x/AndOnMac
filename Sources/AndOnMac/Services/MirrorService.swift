@@ -55,7 +55,9 @@ public final class MirrorService: @unchecked Sendable {
                     serial: device.id,
                     maxSize: 1440,
                     maxFps: maxFps,
-                    bitRate: bitRate
+                    bitRate: bitRate,
+                    turnScreenOff: turnScreenOff,
+                    stayAwake: stayAwake
                 )
             } catch {
                 print("Failed to start ScrcpyClient: \(error)")

@@ -68,6 +68,21 @@ struct AndOnMacApp: App {
                     appState.windowScale = .smaller
                 }
                 .keyboardShortcut("-", modifiers: .command)
+                
+                Divider()
+                
+                Toggle("Отправка по Enter (Shift+Enter для новой строки)", isOn: $appState.sendOnEnter)
+                
+                Divider()
+                
+                Button("Завершить трансляцию") {
+                    if appState.isMirroring {
+                        appState.toggleMirroring()
+                    } else {
+                        NSApp.keyWindow?.performClose(nil)
+                    }
+                }
+                .keyboardShortcut("w", modifiers: .command)
             }
         }
         
