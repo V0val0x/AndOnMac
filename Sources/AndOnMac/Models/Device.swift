@@ -51,7 +51,13 @@ public struct Device: Identifiable, Hashable, Sendable {
         if manufacturer.lowercased() == "google" || model.lowercased().contains("pixel") {
             return model.replacingOccurrences(of: "_", with: " ")
         }
-        return "\(manufacturer) \(model)".trimmingCharacters(in: .whitespaces)
+        if manufacturer.lowercased() == "unknown" || manufacturer.isEmpty {
+            return model.replacingOccurrences(of: "_", with: " ")
+        }
+        if model.lowercased().starts(with: manufacturer.lowercased()) {
+            return model.replacingOccurrences(of: "_", with: " ")
+        }
+        return "\(manufacturer) \(model)".replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespaces)
     }
     
     public var isPixel: Bool {

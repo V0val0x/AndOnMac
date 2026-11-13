@@ -84,29 +84,51 @@ public final class ScrcpyDisplayNSView: NSView {
         return true
     }
     
+    // MARK: - Video Display Rect Calculator (Handles Letterbox & Pillarbox)
+    private func videoRect() -> CGRect {
+        let dw = CGFloat(ScrcpyClient.shared.deviceWidth)
+        let dh = CGFloat(ScrcpyClient.shared.deviceHeight)
+        guard dw > 0, dh > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+        let viewAspect = bounds.width / bounds.height
+        let videoAspect = dw / dh
+        if viewAspect > videoAspect {
+            // Pillarbox (black bars left and right)
+            let videoW = bounds.height * videoAspect
+            let offsetX = (bounds.width - videoW) / 2.0
+            return CGRect(x: offsetX, y: 0, width: videoW, height: bounds.height)
+        } else {
+            // Letterbox (black bars top and bottom)
+            let videoH = bounds.width / videoAspect
+            let offsetY = (bounds.height - videoH) / 2.0
+            return CGRect(x: 0, y: offsetY, width: bounds.width, height: videoH)
+        }
+    }
+    
     // MARK: - Touch Coordinates Helper
-    private func normalizedPoint(from event: NSEvent) -> (x: CGFloat, y: CGFloat)? {
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
+    private func normalizedPoint(from event: NSEvent, allowClamping: Bool = false) -> (x: CGFloat, y: CGFloat)? {
+        let vRect = videoRect()
+        guard vRect.width > 0, vRect.height > 0 else { return nil }
         let loc = convert(event.locationInWindow, from: nil)
-        let nx = max(0.0, min(1.0, loc.x / bounds.width))
-        let ny = max(0.0, min(1.0, loc.y / bounds.height))
+        if !allowClamping && !vRect.contains(loc) { return nil }
+        let nx = max(0.0, min(1.0, (loc.x - vRect.origin.x) / vRect.width))
+        let ny = max(0.0, min(1.0, (loc.y - vRect.origin.y) / vRect.height))
         return (nx, ny)
     }
     
     // MARK: - Mouse Events (Forwarded to scrcpy touch protocol)
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        guard let pt = normalizedPoint(from: event) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: false) else { return }
         ScrcpyClient.shared.sendTouchEvent(action: 0, normalizedX: pt.x, normalizedY: pt.y)
     }
     
     override public func mouseDragged(with event: NSEvent) {
-        guard let pt = normalizedPoint(from: event) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
         ScrcpyClient.shared.sendTouchEvent(action: 2, normalizedX: pt.x, normalizedY: pt.y)
     }
     
     override public func mouseUp(with event: NSEvent) {
-        guard let pt = normalizedPoint(from: event) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
         ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
     }
     
@@ -117,7 +139,7 @@ public final class ScrcpyDisplayNSView: NSView {
     
     // MARK: - Trackpad & Mouse Scrolling
     override public func scrollWheel(with event: NSEvent) {
-        guard let pt = normalizedPoint(from: event) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
         // Scale delta for smooth scroll on Android
         let deltaH = -Float(event.scrollingDeltaX) / 100.0
         let deltaV = Float(event.scrollingDeltaY) / 100.0

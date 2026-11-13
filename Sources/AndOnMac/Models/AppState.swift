@@ -56,6 +56,26 @@ public final class AppState: ObservableObject {
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
     
+    // Video streaming frame dimensions
+    @Published public var deviceWidth: Int = 1080
+    @Published public var deviceHeight: Int = 2400
+    
+    public var isLandscape: Bool {
+        return deviceWidth > deviceHeight
+    }
+    
+    public var effectiveAspect: CGFloat {
+        let dw = max(1, deviceWidth)
+        let dh = max(1, deviceHeight)
+        if isLandscape {
+            let ratio = CGFloat(dw) / CGFloat(dh)
+            return min(2.4, max(1.3, ratio))
+        } else {
+            let ratio = CGFloat(dh) / CGFloat(dw)
+            return min(2.4, max(1.3, ratio))
+        }
+    }
+    
     private var timer: Timer?
     private var hasAutoConnectedThisSession: Bool = false
     private var isRefreshing: Bool = false
@@ -64,8 +84,18 @@ public final class AppState: ObservableObject {
         loadKnownDevices()
         checkSystemDependencies()
         startNotificationListener()
+        setupScrcpyCallbacks()
         refreshDevices()
         startPeriodicPoll()
+    }
+    
+    private func setupScrcpyCallbacks() {
+        ScrcpyClient.shared.onDeviceSizeKnown = { [weak self] w, h in
+            Task { @MainActor in
+                self?.deviceWidth = w
+                self?.deviceHeight = h
+            }
+        }
     }
     
     private func loadKnownDevices() {

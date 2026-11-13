@@ -78,8 +78,10 @@ public final class DependencyService: @unchecked Sendable {
                 do {
                     try process.run()
                     process.waitUntilExit()
+                    pipe.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(returning: process.terminationStatus == 0)
                 } catch {
+                    pipe.fileHandleForReading.readabilityHandler = nil
                     onOutput("Ошибка запуска авто-установщика: \(error.localizedDescription)\n")
                     continuation.resume(returning: false)
                 }

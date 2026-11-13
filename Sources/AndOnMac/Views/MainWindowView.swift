@@ -28,7 +28,9 @@ public struct MainWindowView: View {
         .background(
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,
-                scale: appState.windowScale
+                scale: appState.windowScale,
+                isLandscape: appState.isLandscape,
+                aspect: appState.effectiveAspect
             ) { window in
                 window.isOpaque = false
                 window.backgroundColor = .clear
@@ -51,6 +53,8 @@ public struct MainWindowView: View {
 private struct WindowConfigurator: NSViewRepresentable {
     let showDrawer: Bool
     let scale: PhoneWindowScale
+    let isLandscape: Bool
+    let aspect: CGFloat
     let configure: (NSWindow) -> Void
     
     func makeNSView(context: Context) -> NSView {
@@ -72,10 +76,16 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
     
     private func updateWindowSize(window: NSWindow, animated: Bool) {
-        let phoneWidth = 360 * scale.multiplier
-        let aspect = CGFloat(ScrcpyClient.shared.deviceHeight) / CGFloat(max(1, ScrcpyClient.shared.deviceWidth))
-        let effectiveAspect = (aspect >= 1.3 && aspect <= 2.4) ? aspect : (20.0 / 9.0)
-        let phoneHeight = (360.0 * effectiveAspect) * scale.multiplier
+        let phoneWidth: CGFloat
+        let phoneHeight: CGFloat
+        if isLandscape {
+            let h = 360.0 * scale.multiplier
+            phoneWidth = h * aspect
+            phoneHeight = h
+        } else {
+            phoneWidth = 360 * scale.multiplier
+            phoneHeight = (360.0 * aspect) * scale.multiplier
+        }
         
         let targetWidth = (phoneWidth + 40) + (showDrawer ? 290 + 16 : 0)
         let targetHeight = phoneHeight + 40

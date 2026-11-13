@@ -12,11 +12,21 @@ public struct PhoneMirrorFrameView: View {
         self.appState = appState
     }
     
-    private var baseWidth: CGFloat { 360 * appState.windowScale.multiplier }
+    private var baseWidth: CGFloat {
+        if appState.isLandscape {
+            let h = 360.0 * appState.windowScale.multiplier
+            return h * appState.effectiveAspect
+        } else {
+            return 360 * appState.windowScale.multiplier
+        }
+    }
+    
     private var baseHeight: CGFloat {
-        let aspect = CGFloat(ScrcpyClient.shared.deviceHeight) / CGFloat(max(1, ScrcpyClient.shared.deviceWidth))
-        let effectiveAspect = (aspect >= 1.3 && aspect <= 2.4) ? aspect : (20.0 / 9.0)
-        return (360.0 * effectiveAspect) * appState.windowScale.multiplier
+        if appState.isLandscape {
+            return 360 * appState.windowScale.multiplier
+        } else {
+            return (360.0 * appState.effectiveAspect) * appState.windowScale.multiplier
+        }
     }
     
     public var body: some View {

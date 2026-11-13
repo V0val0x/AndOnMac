@@ -70,7 +70,25 @@ public final class ADBService: @unchecked Sendable {
                 
                 do {
                     try process.run()
+                    
+                    var stdoutData = Data()
+                    var stderrData = Data()
+                    let readGroup = DispatchGroup()
+                    
+                    readGroup.enter()
+                    DispatchQueue.global().async {
+                        stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        readGroup.leave()
+                    }
+                    
+                    readGroup.enter()
+                    DispatchQueue.global().async {
+                        stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                        readGroup.leave()
+                    }
+                    
                     process.waitUntilExit()
+                    readGroup.wait()
                     
                     lock.lock()
                     defer { lock.unlock() }
@@ -78,14 +96,12 @@ public final class ADBService: @unchecked Sendable {
                     
                     if !hasResumed {
                         hasResumed = true
-                        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                        let output = String(data: data, encoding: .utf8) ?? ""
+                        let output = String(data: stdoutData, encoding: .utf8) ?? ""
                         
                         if process.terminationStatus == 0 {
                             continuation.resume(returning: output)
                         } else {
-                            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                            let errStr = String(data: errData, encoding: .utf8) ?? ""
+                            let errStr = String(data: stderrData, encoding: .utf8) ?? ""
                             continuation.resume(throwing: NSError(
                                 domain: "ADBService",
                                 code: Int(process.terminationStatus),

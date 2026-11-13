@@ -34,6 +34,13 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(samsungDevice.displayName, "Samsung SM-S918B")
         XCTAssertFalse(samsungDevice.isPixel)
         XCTAssertEqual(samsungDevice.connectionType, .usb)
+        
+        // Edge cases
+        let unknownMfr = Device(id: "123", model: "Pixel_10a", manufacturer: "Unknown")
+        XCTAssertEqual(unknownMfr.displayName, "Pixel 10a")
+        
+        let duplicateBrand = Device(id: "456", model: "Xiaomi_14_Pro", manufacturer: "Xiaomi")
+        XCTAssertEqual(duplicateBrand.displayName, "Xiaomi 14 Pro")
     }
     
     func testPhotoItemModel() {
@@ -90,5 +97,15 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertFalse(appState.showPhotoDrawer)
         XCTAssertNil(appState.photoTransferNotice)
         XCTAssertFalse(appState.isMirroring)
+        XCTAssertFalse(appState.isLandscape)
+        XCTAssertGreaterThan(appState.effectiveAspect, 1.3)
+    }
+    
+    func testADBConnectSuccessParsing() {
+        XCTAssertTrue(ADBService.isConnectSuccess("connected to 192.168.1.55:5555"))
+        XCTAssertTrue(ADBService.isConnectSuccess("already connected to 192.168.1.55:5555"))
+        XCTAssertFalse(ADBService.isConnectSuccess("failed to connect to 192.168.1.55:5555"))
+        XCTAssertFalse(ADBService.isConnectSuccess("cannot connect to 192.168.1.55:5555: Connection refused"))
+        XCTAssertFalse(ADBService.isConnectSuccess("Connection timed out"))
     }
 }
