@@ -27,8 +27,14 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
         }
     }
     
+    private var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+        ProcessInfo.processInfo.processName == "xctest"
+    }
+
     /// Starts the local server to receive push notifications from Android companion app
     public func startServer() {
+        guard !isRunningTests else { return }
         guard listener == nil else { return }
         
         do {
