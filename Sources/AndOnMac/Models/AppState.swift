@@ -98,6 +98,14 @@ public final class AppState: ObservableObject {
         
         loadKnownDevices()
         checkSystemDependencies()
+        // Clean up hidden scrcpy audio helpers left by a previous crash, and make sure
+        // ours never outlive the app (they would linger as stray "scrcpy" Dock icons).
+        MirrorService.shared.killOrphanAudioProcesses()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { _ in
+            MirrorService.shared.stopMirroring()
+        }
         startNotificationListener()
         setupScrcpyCallbacks()
         startDiscoveryListener()
@@ -261,7 +269,10 @@ public final class AppState: ObservableObject {
             if selectedDeviceId == nil || !list.contains(where: { $0.id == self.selectedDeviceId }) {
                 self.selectedDeviceId = list.first?.id
             }
-            let mirrorActive = MirrorService.shared.isMirroring
+            // Do not override the UI state while a session is still starting up
+            // (server push + socket handshake takes 1-3s); otherwise the screen flips back
+            // to standby and a second click spawns a duplicate session.
+            let mirrorActive = MirrorService.shared.isMirroring || MirrorService.shared.isStarting
             if self.isMirroring != mirrorActive {
                 self.isMirroring = mirrorActive
             }
@@ -275,6 +286,7 @@ public final class AppState: ObservableObject {
         }
     }
     
+    private var tcpipPromotedSerials: Set<String> = []
     private var isAttemptingWifiReconnect: Bool = false
     private var lastReconnectAttemptTime: Date = .distantPast
     
@@ -316,7 +328,11 @@ public final class AppState: ObservableObject {
         
         // Seamless Hand-off: If connected via USB, activate TCP/IP 5555 in the background
         // so when the user unplugs the cable, the phone continues wirelessly!
-        if device.connectionType == .usb && autoWirelessPromote {
+        // `adb tcpip` restarts adbd on the phone (drops Wireless Debugging and any live session),
+        // so it must run at most once per device per app session — never on every poll tick.
+        if device.connectionType == .usb && autoWirelessPromote && !isMirroring
+            && !tcpipPromotedSerials.contains(device.id) {
+            tcpipPromotedSerials.insert(device.id)
             Task {
                 _ = try? await ADBService.shared.enableTcpIp(serial: device.id, port: 5555)
             }
@@ -421,7 +437,7 @@ public final class AppState: ObservableObject {
     }
     
     public func toggleMirroring() {
-        if isMirroring {
+        if isMirroring || MirrorService.shared.isStarting {
             MirrorService.shared.stopMirroring()
             KeyboardLanguageSyncService.shared.stopSync()
             isMirroring = false

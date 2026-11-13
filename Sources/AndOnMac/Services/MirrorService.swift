@@ -38,10 +38,15 @@ public final class MirrorService: @unchecked Sendable {
         bitRate: Int = 8_000_000,
         onTermination: (@Sendable () -> Void)? = nil
     ) throws {
+        // Detach the previous session's callback first so tearing it down
+        // cannot fire a stale "session ended" into the new session.
+        ScrcpyClient.shared.onSessionStateChanged = nil
         stopMirroring()
         self.activeDeviceSerial = device.id
+        setStarting(true)
         
-        ScrcpyClient.shared.onSessionStateChanged = { active in
+        ScrcpyClient.shared.onSessionStateChanged = { [weak self] active in
+            self?.setStarting(false)
             if !active {
                 DispatchQueue.main.async {
                     onTermination?()
@@ -61,6 +66,11 @@ public final class MirrorService: @unchecked Sendable {
                 )
             } catch {
                 print("Failed to start ScrcpyClient: \(error)")
+                self.setStarting(false)
+                // Tear down the half-started server/forward so the next attempt starts clean
+                ScrcpyClient.shared.onSessionStateChanged = nil
+                ScrcpyClient.shared.stop()
+                self.stopBackgroundAudio()
                 DispatchQueue.main.async {
                     onTermination?()
                 }
@@ -75,13 +85,40 @@ public final class MirrorService: @unchecked Sendable {
     
     /// Stops the active mirroring session
     public func stopMirroring() {
+        setStarting(false)
         ScrcpyClient.shared.stop()
         stopBackgroundAudio()
         activeDeviceSerial = nil
     }
     
+    // MARK: - Starting state (thread-safe)
+    private let stateLock = NSLock()
+    private var _isStarting = false
+    
+    /// True between `startMirroring` and the first session state callback (socket handshake in progress)
+    public var isStarting: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _isStarting
+    }
+    
+    private func setStarting(_ value: Bool) {
+        stateLock.lock(); _isStarting = value; stateLock.unlock()
+    }
+    
+    /// Kills scrcpy audio forwarders left over from previous runs / crashes of AndOnMac
+    public func killOrphanAudioProcesses() {
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-f", "scrcpy .*--no-video --no-control"]
+        pkill.standardOutput = Pipe()
+        pkill.standardError = Pipe()
+        try? pkill.run()
+        pkill.waitUntilExit()
+    }
+    
     private func startBackgroundAudio(serial: String) {
         stopBackgroundAudio()
+        killOrphanAudioProcesses()
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else { return }
         
@@ -91,12 +128,16 @@ public final class MirrorService: @unchecked Sendable {
             "-s", serial,
             "--no-video",
             "--no-control",
+            "--no-window",          // never create an SDL window
             "--audio-buffer=40"
         ]
         
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
         env["ADB"] = ADBService.shared.adbPath
+        // Run SDL as a background (accessory) app: no Dock icon, no menu bar takeover
+        env["SDL_MAC_BACKGROUND_APP"] = "1"
+        env["SDL_VIDEO_MAC_BACKGROUND_APP"] = "1"
         if let serverPath = Bundle.main.path(forResource: "scrcpy-server", ofType: nil) {
             env["SCRCPY_SERVER_PATH"] = serverPath
         }
