@@ -340,60 +340,71 @@ public struct PhoneMirrorFrameView: View {
                 }
                 
                 VStack(spacing: 6) {
-                    Text("Подключите телефон кабелем")
-                        .font(.title3.bold())
+                    Text("Подключите ваш телефон")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     
-                    Text("Вставьте кабель Type-C от телефона в Mac всего на пару секунд. Приложение само всё настроит.")
-                        .font(.caption)
+                    Text("Вставьте кабель Type-C на 3 секунды для первой привязки или подключите без проводов по Wi-Fi.")
+                        .font(.system(size: 12))
                         .multilineTextAlignment(.center)
                         .foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 24)
                 }
                 
+                Button {
+                    appState.showPairingSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wifi")
+                            .font(.system(size: 13, weight: .bold))
+                        Text("Подключить по Wi-Fi (Код / QR)")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.blue, Color.cyan],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                    .shadow(color: Color.blue.opacity(0.4), radius: 10, x: 0, y: 4)
+                }
+                .buttonStyle(.plain)
+                
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         Image(systemName: "1.circle.fill")
-                            .foregroundColor(.accentColor)
-                        Text("Вставьте кабель в MacBook")
-                            .font(.caption)
+                            .foregroundColor(.cyan)
+                        Text("Или вставьте кабель Type-C в MacBook")
+                            .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.9))
                     }
                     HStack(spacing: 10) {
                         Image(systemName: "2.circle.fill")
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(.cyan)
                         Text("Нажмите «Разрешить» на экране телефона")
-                            .font(.caption)
+                            .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.9))
                     }
                     HStack(spacing: 10) {
                         Image(systemName: "3.circle.fill")
                             .foregroundColor(.green)
                         Text("Экран смартфона сразу появится на Mac!")
-                            .font(.caption.bold())
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.green)
                     }
                 }
                 .padding(14)
-                .background(Color.white.opacity(0.06))
-                .cornerRadius(12)
-                
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("Поиск подключенных устройств...")
-                        .font(.caption2)
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                
-                Button {
-                    appState.showPairingSheet = true
-                } label: {
-                    Label("Подключить без кабеля (QR-код)", systemImage: "qrcode")
-                        .font(.caption.bold())
-                }
-                .buttonStyle(.bordered)
-                .tint(.accentColor)
-                .padding(.top, 4)
+                .background(Color.white.opacity(0.05))
+                .cornerRadius(14)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
             }
         }
     }
