@@ -14,9 +14,9 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 ### Feature Demos
 
-| 60 FPS Mirroring & Shortcuts | Drag & Drop Photos to Mac Desktop (`Cmd+4`) |
-| :---: | :---: |
-| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) |
+| 60 FPS Mirroring & Shortcuts | Drag & Drop Photos to Mac Desktop (`Cmd+4`) | Universal Clipboard Sync (`macOS ↔ Android`) |
+| :---: | :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
 
 ---
 

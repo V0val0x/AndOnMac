@@ -74,9 +74,9 @@ public final class ScrcpyDisplayNSView: NSView {
         if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
             return .back
         }
-        // Bottom edge swipe up -> Home (short) or App Switcher (tall)
-        if startNormalized.y >= 0.92, dy <= -0.08, abs(dy) > abs(dx) * 1.25 {
-            return dy <= -0.24 ? .appSwitcher : .home
+        // Bottom edge swipe up -> Home (normal swipe) or App Switcher (tall swipe > 50% screen)
+        if startNormalized.y >= 0.90, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
+            return dy <= -0.50 ? .appSwitcher : .home
         }
         // Top edge swipe down -> Notification Shade
         if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {

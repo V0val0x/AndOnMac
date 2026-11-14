@@ -611,6 +611,10 @@ final class AndOnMacTests: XCTestCase {
         )
         XCTAssertEqual(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.96), endNormalized: CGPoint(x: 0.5, y: 0.65)),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.96), endNormalized: CGPoint(x: 0.5, y: 0.35)),
             .appSwitcher
         )
         XCTAssertEqual(
