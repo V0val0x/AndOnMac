@@ -141,7 +141,9 @@ If AndOnMac saves you time or makes working between macOS and Android smoother, 
 
 ---
 
-## License
+## License & Legal Notices
 
 MIT License © 2026 Kirill Zaitsev. See [LICENSE](./LICENSE).  
-Screen mirroring leverages open-source components from [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy) (Apache 2.0).
+Screen mirroring and ADB transport bundle components from [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy) and **Android Platform Tools (`adb`)** under the **Apache License 2.0**. Full attributions and license texts are provided in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) (also bundled inside `AndOnMac.app/Contents/Resources/`).
+
+*AndOnMac is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Apple Inc., Google LLC, Samsung Electronics, Xiaomi, Nothing Technology, or OnePlus. All product names and trademarks belong to their respective owners and are used strictly for compatibility identification.*
