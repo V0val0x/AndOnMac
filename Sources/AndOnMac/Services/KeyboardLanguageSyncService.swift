@@ -107,11 +107,20 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
         return map
     }
     
-    // MARK: - Current Mac Language Detection
+    // MARK: - Current Mac Language Detection (Must be called on main thread for Carbon TIS thread-safety)
     public static func getCurrentMacLanguage() -> String {
+        if !Thread.isMainThread {
+            return DispatchQueue.main.sync {
+                getCurrentMacLanguageOnMain()
+            }
+        }
+        return getCurrentMacLanguageOnMain()
+    }
+    
+    private static func getCurrentMacLanguageOnMain() -> String {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "en" }
         guard let langsPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceLanguages) else { return "en" }
-        let langs = Unmanaged<CFArray>.fromOpaque(langsPtr).takeUnretainedValue() as! [String]
+        let langs = Unmanaged<CFArray>.fromOpaque(langsPtr).takeUnretainedValue() as? [String] ?? []
         if let first = langs.first {
             return String(first.prefix(2).lowercased())
         }
@@ -120,6 +129,12 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
     
     // MARK: - Sync Logic
     public func checkAndSyncLanguage(force: Bool = false) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.checkAndSyncLanguage(force: force)
+            }
+            return
+        }
         guard isSyncing, let serial = currentDeviceSerial else { return }
         
         let currentLang = Self.getCurrentMacLanguage()

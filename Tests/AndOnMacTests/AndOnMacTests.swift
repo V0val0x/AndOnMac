@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import AppKit
 @testable import AndOnMac
 
 final class AndOnMacTests: XCTestCase {
@@ -232,5 +234,282 @@ final class AndOnMacTests: XCTestCase {
         
         client.stop()
         XCTAssertFalse(box.emitted, "stop() when not running must not emit onSessionStateChanged(false)")
+    }
+    
+    func testUnalignedControlMessageParsingAndStartIndexSafety() {
+        var buffer = Data()
+        // 1. Unknown control byte (0x99) that previously caused buffer.removeFirst() to shift startIndex to 1
+        buffer.append(0x99)
+        
+        // 2. DEVICE_MSG_TYPE_CLIPBOARD (type = 0, 4-byte unaligned length at offset 1, UTF-8 text)
+        let text = "Привет из Pixel 11 Pro!"
+        let textBytes = Data(text.utf8)
+        buffer.append(0x00)
+        var lenBE = UInt32(textBytes.count).bigEndian
+        buffer.append(Data(bytes: &lenBE, count: 4))
+        buffer.append(textBytes)
+        
+        // 3. DEVICE_MSG_TYPE_ACK_CLIPBOARD (type = 1, 8-byte unaligned sequence at offset 1)
+        buffer.append(0x01)
+        var seqBE = UInt64(42_000_123).bigEndian
+        buffer.append(Data(bytes: &seqBE, count: 8))
+        
+        // First message: unknown(0x99)
+        let msg1 = ScrcpyClient.consumeNextControlMessage(from: &buffer)
+        XCTAssertEqual(msg1, .unknown(0x99))
+        XCTAssertEqual(buffer.startIndex, 0, "buffer.startIndex must remain 0 after dropping unknown byte")
+        
+        // Second message: clipboard with unaligned 4-byte length at offset 1
+        let msg2 = ScrcpyClient.consumeNextControlMessage(from: &buffer)
+        XCTAssertEqual(msg2, .clipboard(text))
+        XCTAssertEqual(buffer.startIndex, 0)
+        
+        // Third message: ackClipboard with unaligned 8-byte sequence at offset 1
+        let msg3 = ScrcpyClient.consumeNextControlMessage(from: &buffer)
+        XCTAssertEqual(msg3, .ackClipboard(42_000_123))
+        XCTAssertTrue(buffer.isEmpty)
+        
+        // Incomplete packet should return nil without mutating buffer
+        var partial = Data([0x00, 0x00, 0x00, 0x00, 0x0A, 0x41, 0x42])
+        XCTAssertNil(ScrcpyClient.consumeNextControlMessage(from: &partial))
+        XCTAssertEqual(partial.count, 7)
+    }
+    
+    func testParseWirelessTlsPortFromDumpsysAdb() {
+        let activeDumpsys = """
+        ADB MANAGER STATE (dumpsys adb):
+          debugging_manager:
+            connected_to_adb: true
+            adb_wifi_enabled: true
+            tls_port=39787
+        """
+        XCTAssertEqual(ADBService.parseWirelessTlsPort(from: activeDumpsys), 39787)
+        
+        let colonFormat = "  tls_port: 41523\n"
+        XCTAssertEqual(ADBService.parseWirelessTlsPort(from: colonFormat), 41523)
+        
+        let disabledDumpsys = "  tls_port=-1\n"
+        XCTAssertNil(ADBService.parseWirelessTlsPort(from: disabledDumpsys))
+        
+        let zeroPort = "  tls_port=0\n"
+        XCTAssertNil(ADBService.parseWirelessTlsPort(from: zeroPort))
+    }
+    
+    func testADBTimeoutErrorMessageContextAwareness() {
+        let connectMsg = ADBService.timeoutErrorMessage(for: ["connect", "10.36.206.3:39787"], timeoutSeconds: 4.0)
+        XCTAssertTrue(connectMsg.contains("AP Client Isolation"))
+        
+        let pairMsg = ADBService.timeoutErrorMessage(for: ["pair", "10.36.206.3:41234", "123456"], timeoutSeconds: 6.0)
+        XCTAssertTrue(pairMsg.contains("AP Client Isolation"))
+        
+        let usbMsg = ADBService.timeoutErrorMessage(for: ["-s", "67280DLKX006GT", "shell", "dumpsys", "battery"], timeoutSeconds: 6.0)
+        XCTAssertTrue(usbMsg.contains("Проверьте экран телефона"))
+    }
+    
+    @MainActor
+    func testPersistKnownDevicePreservesWirelessPortOverUSB() {
+        let appState = AppState()
+        let testIP = "10.36.206.3"
+        let testSerial = "67280DLKX006GT"
+        appState.removeKnownDevice(id: testSerial)
+        
+        // 1. Device connected via USB with wirelessPort = 39787 from dumpsys adb
+        let usbWithTls = Device(
+            id: testSerial,
+            model: "Pixel 11 Pro",
+            manufacturer: "Google",
+            connectionType: .usb,
+            state: .ready,
+            ipAddress: testIP,
+            wirelessPort: 39787
+        )
+        appState.persistKnownDevice(usbWithTls)
+        XCTAssertEqual(appState.knownDevices.first(where: { $0.ipAddress == testIP })?.port, 39787)
+        
+        // 2. Subsequent USB poll where wirelessPort is nil must NOT clobber 39787 with 5555
+        let usbWithoutTls = Device(
+            id: testSerial,
+            model: "Pixel 11 Pro",
+            manufacturer: "Google",
+            connectionType: .usb,
+            state: .ready,
+            ipAddress: testIP,
+            wirelessPort: nil
+        )
+        // Clear DiscoveryService cache for a clean test of fallback preservation
+        let savedBefore = appState.knownDevices.first(where: { $0.ipAddress == testIP })?.port
+        XCTAssertEqual(savedBefore, 39787)
+        appState.persistKnownDevice(usbWithoutTls)
+        XCTAssertEqual(appState.knownDevices.first(where: { $0.ipAddress == testIP })?.port, 39787)
+    }
+    
+    @MainActor
+    func testScrcpyDisplayNSViewInitialStateAllowsWindowDrag() {
+        let view = ScrcpyDisplayNSView(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
+        XCTAssertFalse(view.hasRenderedFrame)
+        XCTAssertTrue(view.mouseDownCanMoveWindow)
+    }
+    
+    @MainActor
+    func testWindowDraggableAndTopHUDHitTesting() {
+        let appState = AppState()
+        appState.devices = []
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 360, height: 760),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isMovableByWindowBackground = true
+        let standbyHosting = NSHostingView(rootView: PhoneMirrorFrameView(appState: appState))
+        standbyHosting.frame = NSRect(x: 0, y: 0, width: 360, height: 760)
+        window.contentView = standbyHosting
+        standbyHosting.layoutSubtreeIfNeeded()
+        
+        // 1. Standby view hit-testing allows moving window
+        for y in stride(from: 60.0, through: 700.0, by: 80.0) {
+            let hit = standbyHosting.hitTest(NSPoint(x: 180, y: y))
+            XCTAssertNotNil(hit)
+            XCTAssertTrue(hit?.mouseDownCanMoveWindow ?? false)
+        }
+        
+        // 2. Live mirroring view hit-testing reaches ScrcpyDisplayNSView in the center and top drag region
+        appState.isMirroring = true
+        let mirrorHosting = NSHostingView(rootView: PhoneMirrorFrameView(appState: appState))
+        mirrorHosting.frame = NSRect(x: 0, y: 0, width: 360, height: 760)
+        window.contentView = mirrorHosting
+        mirrorHosting.layoutSubtreeIfNeeded()
+        
+        let centerHit = mirrorHosting.hitTest(NSPoint(x: 180, y: 380))
+        XCTAssertTrue(centerHit is ScrcpyDisplayNSView, "Center of live screen must hit ScrcpyDisplayNSView")
+        let topBarPassThroughHit = mirrorHosting.hitTest(NSPoint(x: 180, y: 728))
+        XCTAssertTrue(topBarPassThroughHit is ScrcpyDisplayNSView, "Top drag strip outside HUD buttons must hit ScrcpyDisplayNSView")
+    }
+    
+    func testLivePhoneMirroringAndADBDetailsIfConnected() async throws {
+        let devices = await ADBService.shared.listDevices()
+        guard let usbDevice = devices.first(where: { $0.state == .ready }) else {
+            return
+        }
+        
+        // Run two consecutive start/stop cycles to verify both frame rendering and VTDecompressionSession teardown safety
+        for _ in 0..<2 {
+            let displayView = await MainActor.run {
+                let v = ScrcpyDisplayNSView(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
+                v.bindFrameCallback()
+                return v
+            }
+            try await ScrcpyClient.shared.start(
+                serial: usbDevice.id,
+                maxSize: 1440,
+                maxFps: 60,
+                bitRate: 8_000_000,
+                turnScreenOff: false,
+                stayAwake: true
+            )
+            for _ in 0..<40 {
+                let rendered = await MainActor.run { displayView.hasRenderedFrame }
+                if rendered { break }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            let hasRendered = await MainActor.run { displayView.hasRenderedFrame }
+            let width = ScrcpyClient.shared.deviceWidth
+            let height = ScrcpyClient.shared.deviceHeight
+            let cachedImage = ScrcpyClient.shared.latestFrameImage
+            ScrcpyClient.shared.stop()
+            
+            XCTAssertTrue(hasRendered, "Expected ScrcpyDisplayNSView to decode and render at least 1 real frame from connected phone \(usbDevice.id)")
+            XCTAssertNotNil(cachedImage, "Expected ScrcpyClient.latestFrameImage to be cached")
+            XCTAssertGreaterThan(width, 0)
+            XCTAssertGreaterThan(height, 0)
+        }
+    }
+    
+    func testScrcpyClientConcurrentVideoAndControlSocketHandshake() async throws {
+        let testPort = Int.random(in: 28100...28900)
+        let listenSock = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listenSock, 0)
+        defer { close(listenSock) }
+        
+        var reuse: Int32 = 1
+        setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(testPort).bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+        
+        let bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listenSock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bindRes, 0)
+        XCTAssertEqual(listen(listenSock, 8), 0)
+        
+        final class SizeBox: @unchecked Sendable {
+            var width = 0
+            var height = 0
+        }
+        let sizeBox = SizeBox()
+        ScrcpyClient.shared.onDeviceSizeKnown = { w, h in
+            sizeBox.width = w
+            sizeBox.height = h
+        }
+        
+        // Spawn mock scrcpy-server on background thread
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 1. Simulate early adb forward race: accept and immediately close 1st connection without dummy byte
+            let earlyConn = accept(listenSock, nil, nil)
+            if earlyConn >= 0 {
+                close(earlyConn)
+            }
+            
+            // 2. Accept real videoSocket and send 1 dummy byte (0x00)
+            let vConn = accept(listenSock, nil, nil)
+            guard vConn >= 0 else { return }
+            var dummy: UInt8 = 0x00
+            _ = send(vConn, &dummy, 1, 0)
+            
+            // 3. Accept controlSocket and keep it open (blocking on recv on client side)
+            let cConn = accept(listenSock, nil, nil)
+            guard cConn >= 0 else {
+                close(vConn)
+                return
+            }
+            
+            // 4. Send a 12-byte scrcpy framed H.264 config packet (valid SPS + PPS for 128x96 baseline)
+            let sps: [UInt8] = [0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0A, 0xF8, 0x41, 0xA2]
+            let pps: [UInt8] = [0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80]
+            let payload = sps + pps
+            var packet = Data(repeating: 0, count: 8) // 8-byte pts_and_flags
+            var lenBE = UInt32(payload.count).bigEndian
+            packet.append(Data(bytes: &lenBE, count: 4))
+            packet.append(contentsOf: payload)
+            
+            packet.withUnsafeBytes { rawPtr in
+                if let base = rawPtr.baseAddress {
+                    _ = send(vConn, base, packet.count, 0)
+                }
+            }
+            
+            usleep(300_000)
+            close(vConn)
+            close(cConn)
+        }
+        
+        try ScrcpyClient.shared.connectAndStartStreams(port: testPort, turnScreenOff: false)
+        XCTAssertTrue(ScrcpyClient.shared.isConnected)
+        
+        for _ in 0..<25 {
+            if ScrcpyClient.shared.deviceWidth == 128 || sizeBox.width == 128 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        
+        let parsedW = ScrcpyClient.shared.deviceWidth
+        let parsedH = ScrcpyClient.shared.deviceHeight
+        ScrcpyClient.shared.stop()
+        XCTAssertEqual(parsedW, 128, "Expected video stream reader to parse H.264 SPS width=128 concurrently while control socket is open")
+        XCTAssertEqual(parsedH, 96, "Expected video stream reader to parse H.264 SPS height=96 concurrently while control socket is open")
     }
 }

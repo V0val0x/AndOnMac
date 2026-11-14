@@ -75,6 +75,7 @@ public struct PhoneMirrorFrameView: View {
             RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
                 .fill(Color.black)
                 .padding(bezelWidth)
+                .makeWindowDraggable()
                 .overlay(
                     Group {
                         if appState.isMirroring {
@@ -324,230 +325,242 @@ public struct PhoneMirrorFrameView: View {
             .padding(.vertical, 3)
             .background(Color.black.opacity(0.4))
             .cornerRadius(8)
+            .allowsHitTesting(false)
         }
         .frame(height: 28)
-        .contentShape(Rectangle())
-        .makeWindowDraggable()
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHoveringTop = hovering
-            }
-        }
     }
     
     // MARK: - Standby Screen View (When not mirroring)
     private var standbyScreenView: some View {
-        VStack(spacing: 0) {
-            // Front camera punch hole on standby
-            if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
-                frontCameraView
-                    .padding(.top, 2)
-            }
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .makeWindowDraggable()
             
-            // Top Bar with standard macOS close traffic light
-            HStack {
-                Button {
-                    NSApp.keyWindow?.performClose(nil)
-                } label: {
-                    Circle()
-                        .fill(Color.red.opacity(0.85))
-                        .frame(width: 12, height: 12)
-                        .overlay(
-                            Image(systemName: "xmark")
-                                .font(.system(size: 7, weight: .black))
-                                .foregroundColor(.black.opacity(0.7))
-                        )
+            VStack(spacing: 0) {
+                // Front camera punch hole on standby
+                if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
+                    frontCameraView
+                        .padding(.top, 2)
                 }
-                .buttonStyle(.plain)
-                .help("Закрыть окно")
                 
-                Text("AndOnMac")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white.opacity(0.6))
-                    .padding(.leading, 4)
-                Spacer()
-                if !appState.currentLanguageBadge.isEmpty {
-                    Text(appState.currentLanguageBadge)
-                        .font(.system(size: 9, weight: .black, design: .rounded))
-                        .foregroundColor(.cyan)
-                        .padding(.trailing, 2)
-                }
-                if let battery = appState.selectedDevice?.batteryLevel {
-                    Text("\(battery)%")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.8))
-                } else {
-                    Image(systemName: "wifi")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.6))
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
-            .contentShape(Rectangle())
-            .makeWindowDraggable()
-            
-            Spacer()
-            
-            if let unauth = appState.devices.first(where: { $0.state == .unauthorized }) {
-                // Unauthorized state
-                VStack(spacing: 16) {
-                    ZStack {
-                        Circle().fill(Color.orange.opacity(0.2)).frame(width: 80, height: 80)
-                        Image(systemName: "hand.tap.fill").font(.system(size: 36)).foregroundColor(.orange)
-                    }
-                    Text("Подтвердите на телефоне")
-                        .font(.headline.bold())
-                        .foregroundColor(.white)
-                    Text("Разблокируйте **\(unauth.displayName)** и нажмите **«Разрешить»**.")
-                        .font(.caption)
-                        .multilineTextAlignment(.center)
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(.horizontal, 24)
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            } else if let device = appState.selectedDevice {
-                // Device ready
-                VStack(spacing: 20) {
-                    VStack(spacing: 4) {
-                        Text(Date(), style: .time)
-                            .font(.system(size: 48, weight: .semibold, design: .rounded))
-                            .foregroundColor(.white)
-                        Text(Date(), style: .date)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-                    }
-                    
-                    ZStack {
-                        Circle().fill(Color.white.opacity(0.12)).frame(width: 84, height: 84)
-                        Image(systemName: device.isPixel ? "g.circle.fill" : "smartphone")
-                            .font(.system(size: 42))
-                            .foregroundColor(.white)
-                    }
-                    
-                    VStack(spacing: 4) {
-                        Text(device.displayName)
-                            .font(.headline)
-                            .foregroundColor(.white)
-                        Text(device.connectionType == .wifi ? "Беспроводное соединение (Wi-Fi)" : "Подключен по Type-C")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                    
+                // Top Bar with standard macOS close traffic light
+                HStack {
                     Button {
-                        appState.toggleMirroring()
+                        NSApp.keyWindow?.performClose(nil)
                     } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "play.fill")
-                            Text("Открыть экран")
-                        }
-                        .font(.headline)
-                        .frame(minWidth: 170)
-                        .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                    
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            appState.showPhotoDrawer.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "photo.stack")
-                            Text("Медиатека фото")
-                        }
-                        .font(.caption.bold())
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white.opacity(0.8))
-                }
-            } else {
-                // No device onboarding
-                VStack(spacing: 20) {
-                    ZStack {
                         Circle()
-                            .fill(Color.blue.opacity(pulseAnimation ? 0.25 : 0.1))
-                            .frame(width: 90, height: 90)
-                            .scaleEffect(pulseAnimation ? 1.08 : 0.96)
-                            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulseAnimation)
-                        Image(systemName: "cable.connector.horizontal")
-                            .font(.system(size: 40))
-                            .foregroundColor(.blue)
-                    }
-                    .onAppear { pulseAnimation = true }
-                    
-                    VStack(spacing: 6) {
-                        Text("Подключите телефон")
-                            .font(.title3.bold())
-                            .foregroundColor(.white)
-                        Text("Подключите кабель Type-C или используйте беспроводное сопряжение по Wi-Fi.")
-                            .font(.caption)
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(.horizontal, 20)
-                    }
-                    
-                    Button {
-                        appState.showPairingSheet = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "wifi")
-                            Text("Wi-Fi сопряжение")
-                        }
-                        .font(.subheadline.bold())
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                        .background(
-                            LinearGradient(colors: [Color.blue, Color.cyan], startPoint: .leading, endPoint: .trailing)
-                        )
-                        .foregroundColor(.white)
-                        .cornerRadius(20)
-                        .shadow(color: Color.blue.opacity(0.4), radius: 8, x: 0, y: 3)
+                            .fill(Color.red.opacity(0.85))
+                            .frame(width: 12, height: 12)
+                            .overlay(
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 7, weight: .black))
+                                    .foregroundColor(.black.opacity(0.7))
+                            )
                     }
                     .buttonStyle(.plain)
-                }
-            }
-            
-            Spacer()
-            
-            // Frame style switcher button
-            Menu {
-                ForEach(PhoneFrameStyle.allCases) { style in
-                    Button {
-                        appState.frameStyle = style
-                    } label: {
-                        HStack {
-                            if appState.frameStyle == style {
-                                Image(systemName: "checkmark")
-                            }
-                            Text(style.displayName)
+                    .help("Закрыть окно")
+                    
+                    HStack {
+                        Text("AndOnMac")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.leading, 4)
+                        Spacer()
+                        if !appState.currentLanguageBadge.isEmpty {
+                            Text(appState.currentLanguageBadge)
+                                .font(.system(size: 9, weight: .black, design: .rounded))
+                                .foregroundColor(.cyan)
+                                .padding(.trailing, 2)
+                        }
+                        if let battery = appState.selectedDevice?.batteryLevel {
+                            Text("\(battery)%")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                        } else {
+                            Image(systemName: "wifi")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.6))
                         }
                     }
+                    .contentShape(Rectangle())
+                    .makeWindowDraggable()
                 }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: appState.effectiveFrameStyle.iconName)
-                        .font(.system(size: 10))
-                    Text(appState.effectiveFrameStyle.displayName)
-                        .font(.system(size: 10, weight: .semibold))
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8))
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                
+                Spacer()
+                
+                if let unauth = appState.devices.first(where: { $0.state == .unauthorized }) {
+                    // Unauthorized state
+                    VStack(spacing: 16) {
+                        ZStack {
+                            Circle().fill(Color.orange.opacity(0.2)).frame(width: 80, height: 80)
+                            Image(systemName: "hand.tap.fill").font(.system(size: 36)).foregroundColor(.orange)
+                        }
+                        Text("Подтвердите на телефоне")
+                            .font(.headline.bold())
+                            .foregroundColor(.white)
+                        Text("Разблокируйте **\(unauth.displayName)** и нажмите **«Разрешить»**.")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(.horizontal, 24)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    .contentShape(Rectangle())
+                    .makeWindowDraggable()
+                } else if let device = appState.selectedDevice {
+                    // Device ready
+                    VStack(spacing: 20) {
+                        VStack(spacing: 16) {
+                            VStack(spacing: 4) {
+                                Text(Date(), style: .time)
+                                    .font(.system(size: 48, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.white)
+                                Text(Date(), style: .date)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                            
+                            ZStack {
+                                Circle().fill(Color.white.opacity(0.12)).frame(width: 84, height: 84)
+                                Image(systemName: device.isPixel ? "g.circle.fill" : "smartphone")
+                                    .font(.system(size: 42))
+                                    .foregroundColor(.white)
+                            }
+                            
+                            VStack(spacing: 4) {
+                                Text(device.displayName)
+                                    .font(.headline)
+                                    .foregroundColor(.white)
+                                Text(device.connectionType == .wifi ? "Беспроводное соединение (Wi-Fi)" : "Подключен по Type-C")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.6))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .makeWindowDraggable()
+                        
+                        Button {
+                            appState.toggleMirroring()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "play.fill")
+                                Text("Открыть экран")
+                            }
+                            .font(.headline)
+                            .frame(minWidth: 170)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                        
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                appState.showPhotoDrawer.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "photo.stack")
+                                Text("Медиатека фото")
+                            }
+                            .font(.caption.bold())
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.white.opacity(0.8))
+                    }
+                } else {
+                    // No device onboarding
+                    VStack(spacing: 20) {
+                        VStack(spacing: 16) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.blue.opacity(pulseAnimation ? 0.25 : 0.1))
+                                    .frame(width: 90, height: 90)
+                                    .scaleEffect(pulseAnimation ? 1.08 : 0.96)
+                                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulseAnimation)
+                                Image(systemName: "cable.connector.horizontal")
+                                    .font(.system(size: 40))
+                                    .foregroundColor(.blue)
+                            }
+                            .onAppear { pulseAnimation = true }
+                            
+                            VStack(spacing: 6) {
+                                Text("Подключите телефон")
+                                    .font(.title3.bold())
+                                    .foregroundColor(.white)
+                                Text("Подключите кабель Type-C или используйте беспроводное сопряжение по Wi-Fi.")
+                                    .font(.caption)
+                                    .multilineTextAlignment(.center)
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .padding(.horizontal, 20)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .makeWindowDraggable()
+                        
+                        Button {
+                            appState.showPairingSheet = true
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "wifi")
+                                Text("Wi-Fi сопряжение")
+                            }
+                            .font(.subheadline.bold())
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(
+                                LinearGradient(colors: [Color.blue, Color.cyan], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .foregroundColor(.white)
+                            .cornerRadius(20)
+                            .shadow(color: Color.blue.opacity(0.4), radius: 8, x: 0, y: 3)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .foregroundColor(.white.opacity(0.65))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color.white.opacity(0.08))
-                .cornerRadius(12)
+                
+                Spacer()
+                
+                // Frame style switcher button
+                Menu {
+                    ForEach(PhoneFrameStyle.allCases) { style in
+                        Button {
+                            appState.frameStyle = style
+                        } label: {
+                            HStack {
+                                if appState.frameStyle == style {
+                                    Image(systemName: "checkmark")
+                                }
+                                Text(style.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: appState.effectiveFrameStyle.iconName)
+                            .font(.system(size: 10))
+                        Text(appState.effectiveFrameStyle.displayName)
+                            .font(.system(size: 10, weight: .semibold))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8))
+                    }
+                    .foregroundColor(.white.opacity(0.65))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.08))
+                    .cornerRadius(12)
+                }
+                .menuStyle(.borderlessButton)
+                .padding(.bottom, 4)
+                
+                bottomHomeBarView
+                    .padding(.bottom, 8)
             }
-            .menuStyle(.borderlessButton)
-            .padding(.bottom, 4)
-            
-            bottomHomeBarView
-                .padding(.bottom, 8)
+            .padding(10)
         }
-        .padding(10)
     }
     
     // MARK: - Bottom Home Bar (Interactive)

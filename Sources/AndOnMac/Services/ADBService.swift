@@ -10,6 +10,7 @@ public final class ADBService: @unchecked Sendable {
         }
         // 2. Common Homebrew and system locations
         let candidates = [
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/adb",
             "/opt/homebrew/bin/adb",
             "/usr/local/bin/adb",
             "/opt/homebrew/share/android-commandlinetools/platform-tools/adb",
@@ -62,7 +63,7 @@ public final class ADBService: @unchecked Sendable {
                         continuation.resume(throwing: NSError(
                             domain: "ADBService",
                             code: -1,
-                            userInfo: [NSLocalizedDescriptionKey: "Устройство не ответило вовремя (таймаут \(Int(timeoutSeconds)) сек). Проверьте экран телефона."]
+                            userInfo: [NSLocalizedDescriptionKey: Self.timeoutErrorMessage(for: arguments, timeoutSeconds: timeoutSeconds)]
                         ))
                     }
                 }
@@ -96,12 +97,12 @@ public final class ADBService: @unchecked Sendable {
                     
                     if !hasResumed {
                         hasResumed = true
-                        let output = String(data: stdoutData, encoding: .utf8) ?? ""
+                        let output = String(decoding: stdoutData, as: UTF8.self)
                         
                         if process.terminationStatus == 0 {
                             continuation.resume(returning: output)
                         } else {
-                            let errStr = String(data: stderrData, encoding: .utf8) ?? ""
+                            let errStr = String(decoding: stderrData, as: UTF8.self)
                             continuation.resume(throwing: NSError(
                                 domain: "ADBService",
                                 code: Int(process.terminationStatus),
@@ -120,6 +121,31 @@ public final class ADBService: @unchecked Sendable {
                 }
             }
         }
+    }
+    
+    public static func timeoutErrorMessage(for arguments: [String], timeoutSeconds: Double) -> String {
+        let secs = Int(timeoutSeconds)
+        if arguments.contains("connect") || arguments.contains("pair") {
+            return "Превышено время ожидания сети (\(secs) сек). Убедитесь, что Mac и телефон в одной сети Wi-Fi и роутер не блокирует соединение между устройствами (AP Client Isolation)."
+        }
+        return "Устройство не ответило вовремя (таймаут \(secs) сек). Проверьте экран телефона и кабель USB."
+    }
+    
+    /// Extracts active Wireless Debugging TLS port (`tls_port=39787` or `tls_port: 39787`) from `dumpsys adb`
+    public static func parseWirelessTlsPort(from dumpsysOutput: String) -> Int? {
+        let pattern = "tls_port\\s*[=:]\\s*([0-9]+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let nsRange = NSRange(dumpsysOutput.startIndex..<dumpsysOutput.endIndex, in: dumpsysOutput)
+        guard let match = regex.firstMatch(in: dumpsysOutput, options: [], range: nsRange),
+              match.numberOfRanges >= 2,
+              let portRange = Range(match.range(at: 1), in: dumpsysOutput),
+              let port = Int(dumpsysOutput[portRange]),
+              (1...65535).contains(port) else {
+            return nil
+        }
+        return port
     }
     
     /// Lists all connected Android devices with metadata
@@ -170,14 +196,23 @@ public final class ADBService: @unchecked Sendable {
                 state: state
             )
             
+            if isWifi, let colonIdx = serial.lastIndex(of: ":"),
+               let port = Int(serial[serial.index(after: colonIdx)...]),
+               (1...65535).contains(port) {
+                device.wirelessPort = port
+            }
+            
             if state == .ready {
                 // Enrich device info asynchronously
-                if let (mfr, ver, batt, charging, ip) = try? await fetchDeviceDetails(serial: serial) {
+                if let (mfr, ver, batt, charging, ip, tlsPort) = try? await fetchDeviceDetails(serial: serial) {
                     device.manufacturer = mfr
                     device.androidVersion = ver
                     device.batteryLevel = batt
                     device.isCharging = charging
                     device.ipAddress = ip
+                    if let tlsPort = tlsPort {
+                        device.wirelessPort = tlsPort
+                    }
                 }
             }
             
@@ -187,17 +222,19 @@ public final class ADBService: @unchecked Sendable {
         return devices
     }
     
-    /// Fetches extended battery, OS version, and network IP details
-    private func fetchDeviceDetails(serial: String) async throws -> (String, String, Int?, Bool?, String?) {
+    /// Fetches extended battery, OS version, network IP, and Wireless Debugging `tls_port` details
+    private func fetchDeviceDetails(serial: String) async throws -> (String, String, Int?, Bool?, String?, Int?) {
         async let mfrTask = execute(arguments: ["-s", serial, "shell", "getprop", "ro.product.manufacturer"])
         async let verTask = execute(arguments: ["-s", serial, "shell", "getprop", "ro.build.version.release"])
         async let battTask = execute(arguments: ["-s", serial, "shell", "dumpsys", "battery"])
         async let ipTask = execute(arguments: ["-s", serial, "shell", "ip", "route"])
+        async let adbDumpTask = execute(arguments: ["-s", serial, "shell", "dumpsys", "adb"])
         
         let mfr = (try? await mfrTask)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
         let ver = (try? await verTask)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let battRaw = (try? await battTask) ?? ""
         let ipRaw = (try? await ipTask) ?? ""
+        let adbDumpRaw = (try? await adbDumpTask) ?? ""
         
         // Parse battery
         var level: Int? = nil
@@ -228,7 +265,12 @@ public final class ADBService: @unchecked Sendable {
             }
         }
         
-        return (mfr, ver, level, isCharging, ipAddress)
+        let tlsPort = Self.parseWirelessTlsPort(from: adbDumpRaw)
+        if let ip = ipAddress, let port = tlsPort {
+            DiscoveryService.shared.registerConnectPort(for: ip, port: port)
+        }
+        
+        return (mfr, ver, level, isCharging, ipAddress, tlsPort)
     }
     
     /// Verifies `adb connect` actually succeeded rather than returning "failed to connect" / "cannot connect"
@@ -311,25 +353,43 @@ public final class ADBService: @unchecked Sendable {
         }
         
         // Try connecting
-        var lastConnectErr = ""
         for port in portsToTry {
-            if let connectOutput = try? await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 4.0) {
-                if Self.isConnectSuccess(connectOutput) {
-                    return (true, "Успешно подключено к \(host):\(port)")
-                } else {
-                    lastConnectErr = connectOutput
-                }
+            if let connectOutput = try? await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 4.0),
+               Self.isConnectSuccess(connectOutput) {
+                DiscoveryService.shared.registerConnectPort(for: host, port: port)
+                return (true, "Успешно подключено к \(host):\(port)")
             }
         }
         
-        // If automatic port failed, inform the user
-        let detail = lastConnectErr.isEmpty ? "" : " (\(lastConnectErr.trimmingCharacters(in: .whitespacesAndNewlines)))"
-        return (true, "Сопряжение успешно! Введите порт подключения из главного экрана телефона\(detail)")
+        // Pairing succeeded, but automatic connect did not complete yet — keep pairing sheet open so user can enter connect port!
+        return (false, "Сопряжение выполнено! Теперь укажите порт подключения из главного экрана «Беспроводная отладка» в поле выше и нажмите «Подключить телефон».")
     }
     
-    /// Switches a USB-connected device to TCP/IP Wi-Fi mode
+    /// Switches a USB-connected device to Wi-Fi mode (trying active `adb_wifi` `tls_port` first, then TCP/IP `port`)
     public func switchToWireless(serial: String, ip: String, port: Int = 5555) async -> (success: Bool, message: String) {
-        _ = try? await enableTcpIp(serial: serial, port: port)
+        // 1. Check if Android 11+ Wireless Debugging (`adb_wifi`) already has an active `tls_port` in `dumpsys adb`
+        var activeTlsPort: Int? = nil
+        if let adbDump = try? await execute(arguments: ["-s", serial, "shell", "dumpsys", "adb"], timeoutSeconds: 3.0),
+           let tlsPort = Self.parseWirelessTlsPort(from: adbDump) {
+            activeTlsPort = tlsPort
+            DiscoveryService.shared.registerConnectPort(for: ip, port: tlsPort)
+        } else if let cachedPort = DiscoveryService.shared.getConnectPort(for: ip) {
+            activeTlsPort = cachedPort
+        }
+        
+        if let tlsPort = activeTlsPort {
+            if let output = try? await execute(arguments: ["connect", "\(ip):\(tlsPort)"], timeoutSeconds: 4.0),
+               Self.isConnectSuccess(output) {
+                return (true, "Wi-Fi режим активирован (\(ip):\(tlsPort))! Теперь можно отключить кабель.")
+            }
+        }
+        
+        // 2. Fallback: Enable TCP/IP port on device over USB and test reachability from Mac
+        do {
+            _ = try await enableTcpIp(serial: serial, port: port)
+        } catch {
+            return (false, "Не удалось открыть порт \(port) по USB: \(error.localizedDescription)")
+        }
         try? await Task.sleep(nanoseconds: 800_000_000)
         
         if let output = try? await execute(arguments: ["connect", "\(ip):\(port)"], timeoutSeconds: 4.0),
@@ -337,14 +397,16 @@ public final class ADBService: @unchecked Sendable {
             return (true, "Wi-Fi режим активирован (\(ip):\(port))! Теперь можно отключить кабель.")
         }
         
-        // Even if direct connect timed out while USB cable was still attached, keep TCP/IP 5555 listening on the device!
-        return (true, "Порт Wi-Fi (5555) включён на телефоне! Отключите кабель USB, и AndOnMac подключится к \(ip):5555.")
+        return (false, "Порт \(port) открыт на телефоне (\(ip)), но Mac не может достучаться до устройства по Wi-Fi (возможна изоляция клиентов AP Client Isolation в сети Wi-Fi). Оставайтесь на кабеле USB или используйте общую домашнюю сеть / точку доступа.")
     }
     
     /// Connect to an already-paired device (Android 11+ Wireless Debugging or TCP/IP 5555)
     public func connectPairedDevice(host: String, port: Int) async throws -> (success: Bool, message: String) {
         let output = try await execute(arguments: ["connect", "\(host):\(port)"], timeoutSeconds: 5.0)
         let success = Self.isConnectSuccess(output)
+        if success {
+            DiscoveryService.shared.registerConnectPort(for: host, port: port)
+        }
         let cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
         return (success, success ? "Успешно подключено к \(host):\(port)" : cleaned)
     }

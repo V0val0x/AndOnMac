@@ -64,6 +64,11 @@ public final class MirrorService: @unchecked Sendable {
                     turnScreenOff: turnScreenOff,
                     stayAwake: stayAwake
                 )
+                // Launch background headless audio forwarder AFTER video/control session has connected
+                // so two concurrent scrcpy-server pushes/starts do not contend on the ADB transport.
+                if forwardAudio && ScrcpyClient.shared.isConnected {
+                    self.startBackgroundAudio(serial: device.id)
+                }
             } catch {
                 print("Failed to start ScrcpyClient: \(error)")
                 self.setStarting(false)
@@ -75,11 +80,6 @@ public final class MirrorService: @unchecked Sendable {
                     onTermination?()
                 }
             }
-        }
-        
-        // Background headless audio forwarder if audio enabled
-        if forwardAudio {
-            startBackgroundAudio(serial: device.id)
         }
     }
     
@@ -105,20 +105,29 @@ public final class MirrorService: @unchecked Sendable {
         stateLock.lock(); _isStarting = value; stateLock.unlock()
     }
     
-    /// Kills scrcpy audio forwarders left over from previous runs / crashes of AndOnMac
-    public func killOrphanAudioProcesses() {
-        let pkill = Process()
-        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        pkill.arguments = ["-f", "scrcpy .*--no-video --no-control"]
-        pkill.standardOutput = Pipe()
-        pkill.standardError = Pipe()
-        try? pkill.run()
-        pkill.waitUntilExit()
+    /// Kills scrcpy audio forwarders left over from previous runs / crashes of AndOnMac without blocking @MainActor
+    public func killOrphanAudioProcesses(waitUntilExit: Bool = false) {
+        let work = {
+            let pkill = Process()
+            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            pkill.arguments = ["-f", "scrcpy .*--no-video --no-control"]
+            pkill.standardOutput = FileHandle.nullDevice
+            pkill.standardError = FileHandle.nullDevice
+            try? pkill.run()
+            if waitUntilExit {
+                pkill.waitUntilExit()
+            }
+        }
+        if waitUntilExit {
+            work()
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: work)
+        }
     }
     
     private func startBackgroundAudio(serial: String) {
         stopBackgroundAudio()
-        killOrphanAudioProcesses()
+        killOrphanAudioProcesses(waitUntilExit: true)
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else { return }
         
@@ -143,9 +152,9 @@ public final class MirrorService: @unchecked Sendable {
         }
         proc.environment = env
         
-        // Suppress stdout/stderr
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
+        // Suppress stdout/stderr without leaking unread Pipe file descriptors
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
         
         try? proc.run()
         self.audioProcess = proc

@@ -20,6 +20,7 @@ public final class DiscoveryService: NSObject, ObservableObject, @unchecked Send
     // Discovered state for UI
     @Published public var detectedPairingHost: String?
     @Published public var detectedPairingPort: Int?
+    @Published public var detectedConnectHost: String?
     @Published public var detectedConnectPort: Int?
     @Published public var detectedDeviceName: String?
     @Published public var isBrowsing: Bool = false
@@ -106,6 +107,18 @@ public final class DiscoveryService: NSObject, ObservableObject, @unchecked Send
         }
     }
     
+    /// Registers a known TLS / wireless connect port for a given IP host (e.g. from `dumpsys adb` over USB)
+    public func registerConnectPort(for host: String, port: Int) {
+        guard !host.isEmpty, (1...65535).contains(port) else { return }
+        queue.sync {
+            self.hostConnectPorts[host] = port
+        }
+        DispatchQueue.main.async {
+            self.detectedConnectHost = host
+            self.detectedConnectPort = port
+        }
+    }
+    
     // MARK: - ADB mDNS Fallback / Sync
     private func startPeriodicAdbMdnsPoll() {
         pollTimer?.invalidate()
@@ -150,6 +163,7 @@ public final class DiscoveryService: NSObject, ObservableObject, @unchecked Send
                     self.hostConnectPorts[ip] = port
                 }
                 DispatchQueue.main.async {
+                    self.detectedConnectHost = ip
                     self.detectedConnectPort = port
                 }
                 self.onConnectFound?(ip, port, name)
@@ -199,6 +213,7 @@ extension DiscoveryService: NetServiceBrowserDelegate, NetServiceDelegate {
                     self.queue.async {
                         self.hostConnectPorts[ip] = port
                     }
+                    self.detectedConnectHost = ip
                     self.detectedConnectPort = port
                     self.onConnectFound?(ip, port, sender.name)
                 }

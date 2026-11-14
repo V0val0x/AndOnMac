@@ -24,6 +24,7 @@ public struct Device: Identifiable, Hashable, Sendable {
     public var connectionType: ConnectionType
     public var state: DeviceState
     public var ipAddress: String?
+    public var wirelessPort: Int?
     
     public init(
         id: String,
@@ -34,7 +35,8 @@ public struct Device: Identifiable, Hashable, Sendable {
         isCharging: Bool? = nil,
         connectionType: ConnectionType = .usb,
         state: DeviceState = .ready,
-        ipAddress: String? = nil
+        ipAddress: String? = nil,
+        wirelessPort: Int? = nil
     ) {
         self.id = id
         self.model = model
@@ -45,6 +47,7 @@ public struct Device: Identifiable, Hashable, Sendable {
         self.connectionType = connectionType
         self.state = state
         self.ipAddress = ipAddress
+        self.wirelessPort = wirelessPort
     }
     
     public var displayName: String {

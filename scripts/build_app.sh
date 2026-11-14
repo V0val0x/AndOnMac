@@ -13,6 +13,16 @@ MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
 echo "==> Creating macOS App Bundle layout at ${APP_BUNDLE}..."
+RES_BACKUP_DIR="${OUTPUT_DIR}/.res_backup"
+rm -rf "${RES_BACKUP_DIR}"
+mkdir -p "${RES_BACKUP_DIR}"
+if [ -f "${RESOURCES_DIR}/adb" ]; then
+    cp "${RESOURCES_DIR}/adb" "${RES_BACKUP_DIR}/adb"
+fi
+if [ -f "${RESOURCES_DIR}/scrcpy-server" ]; then
+    cp "${RESOURCES_DIR}/scrcpy-server" "${RES_BACKUP_DIR}/scrcpy-server"
+fi
+
 rm -rf "${APP_BUNDLE}"
 mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
@@ -44,15 +54,22 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.8</string>
+    <string>2.0.9</string>
     <key>CFBundleVersion</key>
-    <string>10</string>
+    <string>11</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>AndOnMac использует локальную сеть для обнаружения и беспроводного подключения к вашему телефону Android (ADB Wireless Debugging).</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_adb-tls-pairing._tcp</string>
+        <string>_adb-tls-connect._tcp</string>
+    </array>
 </dict>
 </plist>
 EOF
@@ -70,15 +87,33 @@ if [ -z "${SCRCPY_SERVER}" ]; then
 fi
 if [ -n "${SCRCPY_SERVER}" ] && [ -f "${SCRCPY_SERVER}" ]; then
     echo "==> Bundling scrcpy-server from ${SCRCPY_SERVER}..."
-    cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/"
+    cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/scrcpy-server" 2>/dev/null || true
+fi
+if [ ! -f "${RESOURCES_DIR}/scrcpy-server" ] && [ -f "${RES_BACKUP_DIR}/scrcpy-server" ]; then
+    echo "==> Restoring existing bundled scrcpy-server..."
+    cp "${RES_BACKUP_DIR}/scrcpy-server" "${RESOURCES_DIR}/scrcpy-server"
 fi
 
 # Copy adb if available
 ADB_BIN=$(which adb 2>/dev/null || true)
 if [ -n "${ADB_BIN}" ] && [ -x "${ADB_BIN}" ]; then
     echo "==> Bundling adb binary from ${ADB_BIN}..."
-    cp "${ADB_BIN}" "${RESOURCES_DIR}/adb"
+    if cp "${ADB_BIN}" "${RESOURCES_DIR}/adb" 2>/dev/null; then
+        chmod +x "${RESOURCES_DIR}/adb"
+    fi
+fi
+if [ ! -x "${RESOURCES_DIR}/adb" ] && [ -f "${RES_BACKUP_DIR}/adb" ]; then
+    echo "==> Restoring existing bundled adb binary..."
+    cp "${RES_BACKUP_DIR}/adb" "${RESOURCES_DIR}/adb"
     chmod +x "${RESOURCES_DIR}/adb"
+fi
+rm -rf "${RES_BACKUP_DIR}"
+
+# Install to /Applications if writable
+if [ -w "/Applications" ]; then
+    echo "==> Installing ${APP_BUNDLE} to /Applications/${APP_NAME}.app..."
+    rm -rf "/Applications/${APP_NAME}.app" 2>/dev/null || true
+    cp -R "${APP_BUNDLE}" "/Applications/${APP_NAME}.app" 2>/dev/null || true
 fi
 
 echo "✅ App bundle successfully created at ${APP_BUNDLE}"

@@ -47,6 +47,8 @@ public struct PhotoTransferDrawerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .contentShape(Rectangle())
+            .makeWindowDraggable()
             
             Divider()
             
@@ -59,6 +61,9 @@ public struct PhotoTransferDrawerView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                 }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .makeWindowDraggable()
             } else if photos.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
@@ -73,6 +78,9 @@ public struct PhotoTransferDrawerView: View {
                         .foregroundColor(.secondary.opacity(0.8))
                     Spacer()
                 }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .makeWindowDraggable()
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 8)], spacing: 8) {
@@ -111,12 +119,15 @@ public struct PhotoTransferDrawerView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Color.primary.opacity(0.03))
+            .contentShape(Rectangle())
+            .makeWindowDraggable()
         }
         .frame(width: 290)
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(.ultraThinMaterial)
                 .shadow(color: Color.black.opacity(0.3), radius: 15, x: -5, y: 5)
+                .makeWindowDraggable()
         )
         .onAppear {
             loadPhotos()

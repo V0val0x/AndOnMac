@@ -86,6 +86,12 @@ public final class AppState: ObservableObject {
     private var hasAutoConnectedThisSession: Bool = false
     private var isRefreshing: Bool = false
     
+    private var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ||
+        ProcessInfo.processInfo.processName == "xctest" ||
+        NSClassFromString("XCTestCase") != nil
+    }
+    
     public init() {
         Self.shared = self
         self.currentLanguageBadge = KeyboardLanguageSyncService.getCurrentMacLanguage().uppercased()
@@ -98,6 +104,10 @@ public final class AppState: ObservableObject {
         
         loadKnownDevices()
         checkSystemDependencies()
+        setupScrcpyCallbacks()
+        
+        guard !isRunningTests else { return }
+        
         // Clean up hidden scrcpy audio helpers left by a previous crash, and make sure
         // ours never outlive the app (they would linger as stray "scrcpy" Dock icons).
         MirrorService.shared.killOrphanAudioProcesses()
@@ -107,7 +117,6 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopMirroring()
         }
         startNotificationListener()
-        setupScrcpyCallbacks()
         startDiscoveryListener()
         refreshDevices()
         startPeriodicPoll()
@@ -140,22 +149,22 @@ public final class AppState: ObservableObject {
         }
     }
     
-    private func persistKnownDevice(_ device: Device) {
+    public func persistKnownDevice(_ device: Device) {
         let ip: String
-        let port: Int
+        let resolvedPort: Int?
         if device.connectionType == .wifi {
             if device.id.contains(":"), let colonIdx = device.id.lastIndex(of: ":") {
                 ip = String(device.id[..<colonIdx])
-                port = Int(device.id[device.id.index(after: colonIdx)...]) ?? 5555
+                resolvedPort = Int(device.id[device.id.index(after: colonIdx)...]) ?? device.wirelessPort ?? 5555
             } else if let devIp = device.ipAddress, !devIp.isEmpty {
                 ip = devIp
-                port = 5555
+                resolvedPort = device.wirelessPort ?? DiscoveryService.shared.getConnectPort(for: devIp) ?? 5555
             } else {
                 return
             }
         } else if device.connectionType == .usb, let devIp = device.ipAddress, !devIp.isEmpty {
             ip = devIp
-            port = 5555
+            resolvedPort = device.wirelessPort ?? DiscoveryService.shared.getConnectPort(for: devIp)
         } else {
             return
         }
@@ -166,13 +175,16 @@ public final class AppState: ObservableObject {
         if let index = knownDevices.firstIndex(where: { $0.ipAddress == ip || $0.id == device.id }) {
             knownDevices[index].lastConnected = Date()
             knownDevices[index].name = device.displayName
-            knownDevices[index].port = port
+            knownDevices[index].ipAddress = ip
+            if let resolvedPort = resolvedPort {
+                knownDevices[index].port = resolvedPort
+            }
         } else {
             let newKnown = KnownDevice(
                 id: device.id,
                 name: device.displayName,
                 ipAddress: ip,
-                port: port,
+                port: resolvedPort ?? 5555,
                 lastConnected: Date(),
                 autoConnect: true
             )
@@ -503,6 +515,9 @@ public final class AppState: ObservableObject {
             statusMessage = output
             let success = ADBService.isConnectSuccess(output)
             if success {
+                addSavedIP(host)
+                lastKnownWifiIP = host
+                DiscoveryService.shared.registerConnectPort(for: host, port: port)
                 refreshDevices()
             }
             return success
@@ -514,13 +529,17 @@ public final class AppState: ObservableObject {
     
     @discardableResult
     public func switchSelectedToWireless() async -> (Bool, String) {
-        guard let device = selectedDevice, device.connectionType == .usb else {
+        let usbCandidate = (selectedDevice?.connectionType == .usb ? selectedDevice : nil)
+            ?? devices.first(where: { $0.connectionType == .usb && $0.state == .ready })
+            ?? devices.first(where: { $0.connectionType == .usb })
+        guard let device = usbCandidate else {
             return (false, "Подключите телефон по кабелю USB")
         }
         guard let ip = device.ipAddress, !ip.isEmpty else {
             return (false, "На телефоне не найден IP-адрес Wi-Fi (wlan0). Проверьте, что Wi-Fi включен.")
         }
-        statusMessage = "Переключение на Wi-Fi (\(ip):5555)..."
+        let targetPort = device.wirelessPort ?? DiscoveryService.shared.getConnectPort(for: ip) ?? 5555
+        statusMessage = "Переключение на Wi-Fi (\(ip):\(targetPort))..."
         let res = await ADBService.shared.switchToWireless(serial: device.id, ip: ip, port: 5555)
         statusMessage = res.message
         refreshDevices()

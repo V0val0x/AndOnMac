@@ -30,6 +30,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         nsView.serial = serial
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
+        nsView.bindFrameCallback()
     }
 }
 
@@ -40,8 +41,12 @@ public final class ScrcpyDisplayNSView: NSView {
     
     override public var isFlipped: Bool { true }
     override public var acceptsFirstResponder: Bool { true }
+    override public var mouseDownCanMoveWindow: Bool { !hasRenderedFrame }
     
     private var trackingArea: NSTrackingArea?
+    private var latestImage: CGImage?
+    public private(set) var hasRenderedFrame: Bool = false
+    private var isTrackingTouch: Bool = false
     
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -64,11 +69,38 @@ public final class ScrcpyDisplayNSView: NSView {
         registerForDraggedTypes([.fileURL])
         
         // Subscribe to decoded video frames
-        ScrcpyClient.shared.onFrameDecoded = { [weak self] pixelBuffer in
-            nonisolated(unsafe) let pb = pixelBuffer
+        bindFrameCallback()
+    }
+    
+    public func bindFrameCallback() {
+        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
             DispatchQueue.main.async {
-                self?.renderFrame(pb)
+                self?.renderCGImage(cgImage)
             }
+        }
+        ScrcpyClient.shared.onFrameDecoded = { [weak self] pixelBuffer in
+            var cgImage: CGImage?
+            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+            if let cgImage = cgImage {
+                DispatchQueue.main.async {
+                    guard let self = self, !self.hasRenderedFrame else { return }
+                    self.renderCGImage(cgImage)
+                }
+            }
+        }
+        if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
+            renderCGImage(cached)
+        }
+    }
+    
+    override public func layout() {
+        super.layout()
+        if let latestImage = latestImage {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.contents = latestImage
+            layer?.contentsGravity = .resizeAspect
+            CATransaction.commit()
         }
     }
     
@@ -83,14 +115,13 @@ public final class ScrcpyDisplayNSView: NSView {
         self.trackingArea = area
     }
     
-    private func renderFrame(_ pixelBuffer: CVPixelBuffer) {
-        var cgImage: CGImage?
-        VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-        let contents = (cgImage as AnyObject?) ?? (CVPixelBufferGetIOSurface(pixelBuffer) as AnyObject?)
-        
+    public func renderCGImage(_ cgImage: CGImage) {
+        self.latestImage = cgImage
+        self.hasRenderedFrame = true
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer?.contents = contents
+        layer?.contents = cgImage
+        layer?.contentsGravity = .resizeAspect
         CATransaction.commit()
     }
     
@@ -143,20 +174,27 @@ public final class ScrcpyDisplayNSView: NSView {
     // MARK: - Mouse Events (Forwarded to scrcpy touch protocol)
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        guard let pt = normalizedPoint(from: event, allowClamping: false) else {
-            // Drag on bezel / window margin moves the macOS window seamlessly
+        let loc = convert(event.locationInWindow, from: nil)
+        guard hasRenderedFrame,
+              loc.y > 38,
+              let pt = normalizedPoint(from: event, allowClamping: false) else {
+            // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/letterbox margin moves the macOS window
+            isTrackingTouch = false
             window?.performDrag(with: event)
             return
         }
+        isTrackingTouch = true
         ScrcpyClient.shared.sendTouchEvent(action: 0, normalizedX: pt.x, normalizedY: pt.y)
     }
     
     override public func mouseDragged(with event: NSEvent) {
-        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+        guard isTrackingTouch, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
         ScrcpyClient.shared.sendTouchEvent(action: 2, normalizedX: pt.x, normalizedY: pt.y)
     }
     
     override public func mouseUp(with event: NSEvent) {
+        guard isTrackingTouch else { return }
+        isTrackingTouch = false
         guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
         ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
     }

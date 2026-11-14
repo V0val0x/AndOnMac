@@ -102,15 +102,18 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
 }
 
-// MARK: - Native Window Dragging for macOS 14 & 15+
+// MARK: - Native Window Dragging for macOS 14–27+
 public struct WindowDraggableModifier: ViewModifier {
     public init() {}
     
     public func body(content: Content) -> some View {
         if #available(macOS 15.0, *) {
-            content.gesture(WindowDragGesture())
+            content
+                .background(WindowDragRepresentable())
+                .gesture(WindowDragGesture())
         } else {
-            content.background(WindowDragRepresentable())
+            content
+                .background(WindowDragRepresentable())
         }
     }
 }
@@ -125,6 +128,8 @@ private struct WindowDragRepresentable: NSViewRepresentable {
 
 private final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
+    
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)

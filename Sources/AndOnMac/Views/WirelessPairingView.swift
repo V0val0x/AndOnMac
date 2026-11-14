@@ -41,7 +41,6 @@ public struct WirelessPairingView: View {
     }
     
     private func closePairing() {
-        discovery.stopBrowsing()
         withAnimation(.easeInOut(duration: 0.25)) {
             appState.showPairingSheet = false
         }
@@ -53,6 +52,7 @@ public struct WirelessPairingView: View {
             // Dark Background
             Color(red: 0.05, green: 0.06, blue: 0.08)
                 .ignoresSafeArea()
+                .makeWindowDraggable()
             
             VStack(spacing: 0) {
                 // Top In-Phone Header Bar
@@ -251,9 +251,6 @@ public struct WirelessPairingView: View {
             prefillSubnet()
             appState.refreshDevices()
         }
-        .onDisappear {
-            discovery.stopBrowsing()
-        }
         .onChange(of: discovery.detectedPairingHost) { _, newHost in
             if let host = newHost, !host.isEmpty {
                 if pairedIP.isEmpty || pairedIP.hasSuffix(".") {
@@ -266,10 +263,33 @@ public struct WirelessPairingView: View {
                 }
             }
         }
+        .onChange(of: discovery.detectedConnectHost) { _, newHost in
+            if let host = newHost, !host.isEmpty {
+                if pairedIP.isEmpty || pairedIP.hasSuffix(".") {
+                    pairedIP = host
+                }
+                if addressAndPort.isEmpty || addressAndPort.hasSuffix(".") {
+                    addressAndPort = "\(host):"
+                }
+            }
+        }
+        .onChange(of: appState.lastKnownWifiIP) { _, newIP in
+            if let host = newIP, !host.isEmpty {
+                if pairedIP.isEmpty || pairedIP.hasSuffix(".") {
+                    pairedIP = host
+                }
+                if addressAndPort.isEmpty || addressAndPort.hasSuffix(".") {
+                    addressAndPort = "\(host):"
+                }
+            }
+        }
         .onChange(of: discovery.detectedConnectPort) { _, newPort in
             if let port = newPort {
                 if pairedPort.isEmpty || pairedPort == "5555" {
                     pairedPort = String(port)
+                }
+                if connectPortText.isEmpty {
+                    connectPortText = String(port)
                 }
             }
         }
@@ -294,9 +314,9 @@ public struct WirelessPairingView: View {
     
     @ViewBuilder
     private var autoDetectedBanner: some View {
-        let detectedHost = discovery.detectedPairingHost ?? (discovery.detectedConnectPort != nil ? pairedIP : nil)
+        let candidateHost = discovery.detectedPairingHost ?? discovery.detectedConnectHost ?? appState.lastKnownWifiIP
         let detectedPort = discovery.detectedConnectPort ?? discovery.detectedPairingPort
-        if let host = detectedHost, let port = detectedPort, !showManualInputs {
+        if let host = candidateHost, !host.isEmpty, !host.hasSuffix("."), let port = detectedPort, !showManualInputs {
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
                     Circle()
@@ -501,6 +521,19 @@ public struct WirelessPairingView: View {
                     }
             }
             
+            VStack(alignment: .leading, spacing: 3) {
+                Text("ПОРТ ПОДКЛЮЧЕНИЯ ИЗ ГЛАВНОГО ЭКРАНА (ОПЦИОНАЛЬНО)")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white.opacity(0.45))
+                TextField("например: 39787", text: $connectPortText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, design: .monospaced))
+                    .focused($focusedField, equals: .connectPort)
+                    .padding(7)
+                    .background(Color.white.opacity(0.07))
+                    .cornerRadius(8)
+            }
+            
             Button {
                 submitPairing()
             } label: {
@@ -681,7 +714,7 @@ public struct WirelessPairingView: View {
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundColor(.white)
                                 HStack(spacing: 4) {
-                                    Text("\(known.ipAddress):\(effectivePort)")
+                                    Text("\(known.ipAddress):\(String(effectivePort))")
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundColor(.white.opacity(0.5))
                                     if dynamicPort != nil {
@@ -742,14 +775,14 @@ public struct WirelessPairingView: View {
     
     // MARK: - Actions
     private func prefillSubnet() {
-        if pairedIP.isEmpty {
-            if let host = discovery.detectedPairingHost, !host.isEmpty {
+        if pairedIP.isEmpty || pairedIP.hasSuffix(".") {
+            if let host = discovery.detectedPairingHost ?? discovery.detectedConnectHost, !host.isEmpty {
                 pairedIP = host
             } else if let last = appState.lastKnownWifiIP, !last.isEmpty {
                 pairedIP = last
             } else if let saved = appState.knownDevices.first?.ipAddress, !saved.isEmpty {
                 pairedIP = saved
-            } else {
+            } else if pairedIP.isEmpty {
                 let netInfo = ADBService.shared.getMacNetworkInfo()
                 if netInfo.ip != "127.0.0.1" {
                     pairedIP = netInfo.prefix
@@ -757,20 +790,30 @@ public struct WirelessPairingView: View {
             }
         }
         
-        if pairedPort.isEmpty {
+        if pairedPort.isEmpty || pairedPort == "5555" {
             if let p = discovery.detectedConnectPort {
                 pairedPort = String(p)
-            } else {
+            } else if let devPort = appState.selectedDevice?.wirelessPort {
+                pairedPort = String(devPort)
+            } else if let savedPort = appState.knownDevices.first?.port, savedPort != 5555 {
+                pairedPort = String(savedPort)
+            } else if pairedPort.isEmpty {
                 pairedPort = "5555"
             }
         }
         
-        if addressAndPort.isEmpty {
+        if connectPortText.isEmpty {
+            if let p = discovery.detectedConnectPort ?? appState.selectedDevice?.wirelessPort {
+                connectPortText = String(p)
+            }
+        }
+        
+        if addressAndPort.isEmpty || addressAndPort.hasSuffix(".") {
             if let host = discovery.detectedPairingHost, let port = discovery.detectedPairingPort {
                 addressAndPort = "\(host):\(port)"
-            } else if let last = appState.lastKnownWifiIP, !last.isEmpty {
-                addressAndPort = "\(last):"
-            } else {
+            } else if let host = discovery.detectedConnectHost ?? appState.lastKnownWifiIP, !host.isEmpty {
+                addressAndPort = "\(host):"
+            } else if addressAndPort.isEmpty {
                 let netInfo = ADBService.shared.getMacNetworkInfo()
                 if netInfo.ip != "127.0.0.1" {
                     self.addressAndPort = netInfo.prefix
@@ -782,8 +825,9 @@ public struct WirelessPairingView: View {
     private func connectDirect(ip: String, portStr: String) {
         let cleanIP = ip.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanPort = portStr.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanIP.isEmpty else {
-            resultMessage = "Введите IP-адрес телефона"
+        let octets = cleanIP.components(separatedBy: ".")
+        guard !cleanIP.isEmpty, octets.count == 4, octets.allSatisfy({ !$0.isEmpty && Int($0) != nil }) else {
+            resultMessage = "Введите полный IP-адрес телефона (например, 10.36.201.171)"
             isSuccess = false
             return
         }
@@ -855,6 +899,10 @@ public struct WirelessPairingView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                         closePairing()
                     }
+                } else if message.contains("Сопряжение выполнено") {
+                    pairedIP = host
+                    discovery.resetPairingState()
+                    focusedField = .pairedPort
                 }
             } catch {
                 isProcessing = false
