@@ -1,82 +1,147 @@
-# AndOnMac 📱⚡️💻
+# AndOnMac
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Platform-macOS%2014%2B-blue?style=for-the-badge&logo=apple" />
-  <img src="https://img.shields.io/badge/Swift-6.0-orange?style=for-the-badge&logo=swift" />
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
-  <img src="https://img.shields.io/github/v/release/V0val0x/AndOnMac?style=for-the-badge&color=brightgreen" />
-</p>
+A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, and transferring media with your Android smartphone at 60 FPS — with zero Electron bloat.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Platform: macOS 14+ / Android](https://img.shields.io/badge/Platform-macOS%2014%2B%20%7C%20Android-blue.svg)](https://github.com/V0val0x/AndOnMac)
+[![GitHub Release](https://img.shields.io/github/v/release/V0val0x/AndOnMac?color=brightgreen)](https://github.com/V0val0x/AndOnMac/releases)
+[![CI](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml/badge.svg)](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)
 
 **English** | [Русская версия (Russian)](README_RU.md)
 
-> **Native open-source Apple iPhone Mirroring alternative for Android and Google Pixel on macOS.**
-
-A modern native macOS application allowing you to mirror and interact with your Android smartphone with ultra-low latency, full trackpad and keyboard control, audio streaming, and bidirectional file transfers.
+![AndOnMac Demo](./assets/demo.gif)
 
 ---
 
-## ✨ Features
+## Why AndOnMac?
 
-* 📱 **1-in-1 Apple iPhone Mirroring Design**: Photorealistic floating smartphone bezel with titanium curved edges, dynamic camera punch-hole, and native Home bar gestures — rendering live 60 FPS Android display embedded natively with Apple VideoToolbox.
-* 🖼 **Bidirectional Photo & Media Transfer**: Pull recent camera photos and screenshots from your phone to Mac via drag-and-drop (`Cmd+4`), and drop images/videos from Mac into Android Gallery with automatic media indexing.
-* ⚡️ **Zero-Friction Setup**:
-  * **Method 1 (3-Second USB Setup)**: Plug in USB-C cable once, tap "Allow" on phone — Mac automatically promotes the device to Wi-Fi mode and remembers it permanently.
-  * **Method 2 (Wireless Pairing Code)**: Connect wirelessly using Android 11+ Wireless Debugging with Apple Bonjour auto-discovery.
-* 🔒 **Screen Off While Mirroring**: Keep phone physical display off to preserve battery life and privacy while working on your Mac.
-* 🔊 **Audio Forwarding**: Stream internal Android system audio and video sound directly to your Mac speakers.
-* 🔔 **macOS Notification Integration**: Push notifications from Android apps appear natively in macOS Notification Center.
-* ⌨️ **Native Shortcuts & Gestures**: Swipe up on Home bar, smooth two-finger trackpad scrolling, universal clipboard (`Cmd+C`/`Cmd+V`), and keyboard shortcuts (`Cmd+1` Home, `Cmd+2` App Switcher, `Cmd+3` Notifications, `Cmd+4` Photos Drawer).
-* 📁 **Drag & Drop Transfers**: Drag photos, APKs, and documents from Mac Finder directly onto your phone screen.
+| Capability | **AndOnMac** | Android File Transfer | OpenMTP | MacDroid | KDE Connect |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Native macOS UI (SwiftUI / AppKit)** | Yes (Swift 6) | Legacy | Electron | Native (Paid) | Qt |
+| **Live 60 FPS Screen Mirroring (VideoToolbox)** | Yes | No | No | No | No |
+| **Full Trackpad, Scroll & Keyboard Control** | Yes | No | No | No | Partial |
+| **Bidirectional Photo & File Drag-and-Drop** | Yes (`Cmd+4`) | Broken / Legacy | File browser only | Paid | File send |
+| **Device Audio Forwarding to Mac** | Yes | No | No | No | No |
+| **macOS ↔ Android Keyboard Layout Sync** | Yes | No | No | No | No |
+| **macOS Notification Center Integration** | Yes | No | No | No | Yes |
+| **USB & Wireless Debugging (Bonjour mDNS)** | Yes | USB only | USB only | USB / Wi-Fi | Wi-Fi only |
+| **Open-Source & Free (MIT)** | Yes | Proprietary | MIT | Proprietary | GPL |
 
 ---
 
-## 🚀 Quick Start
+## Features Implemented in This Codebase
 
-### Download Pre-built Installer
-Download the latest release disk image: [**AndOnMac.dmg (Releases)**](https://github.com/V0val0x/AndOnMac/releases).  
-Open `AndOnMac.dmg` and drag `AndOnMac.app` into your **Applications** folder.
+- **Hardware-Accelerated 60 FPS Mirroring (`ScrcpyClient` + VideoToolbox):** Streams raw H.264 Annex-B frames from `scrcpy-server` over local ADB-forwarded TCP sockets and decodes them directly via `VTDecompressionSession` inside a frameless `NSView` (`ScrcpyDisplayNSView`) — no separate SDL video window in your Dock.
+- **Device-Matched Floating Chassis (`PhoneFrameStyle`):** Auto-detects connected hardware and adapts bezel geometry, materials, and centered camera punch-hole for **Google Pixel (8/9/10)**, **Samsung Galaxy S / S Ultra**, **Xiaomi**, **Nothing Phone**, and **OnePlus** (plus Minimal and Borderless modes).
+- **Bidirectional Photo & Media Drawer (`Cmd+4`, `PhotoTransferService`):** Pulls recent Camera photos and Screenshots from `/sdcard/DCIM` and `/sdcard/Pictures` for drag-and-drop into macOS apps/Finder, and pushes dropped images/APKs/files straight to `/sdcard/Download/`.
+- **Real-Time Keyboard Layout Sync (`KeyboardLanguageSyncService`):** Observes macOS `TISNotifySelectedKeyboardInputSourceChanged` and switches Android `selected_input_method_subtype` / sends `KEYCODE_LANGUAGE_SWITCH`, with **Send on Enter** (`Shift+Return` for newline) for messengers.
+- **Audio Forwarding (`MirrorService`):** Routes internal Android audio to Mac speakers via a hidden background `scrcpy` audio helper (`SDL_MAC_BACKGROUND_APP=1`).
+- **USB & Wireless ADB Discovery (`ADBService` + `DiscoveryService`):** Supports 1-click USB-C mirroring, Android 11+ Wireless Debugging PIN pairing via Bonjour (`_adb-tls-pairing._tcp` / `_adb-tls-connect._tcp`), `dumpsys adb` `tls_port` extraction over USB, and saved device history.
+- **macOS Notification Center Bridge (`NotificationService`):** Listens on TCP port `58241` for companion JSON notifications and QR discovery payloads, posting native `UNUserNotificationCenter` banners.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Cmd + 1` / Swipe up on Home bar | Home Screen (`KEYCODE_HOME`) |
+| `Cmd + 2` / Swipe up and hold | App Switcher (`KEYCODE_APP_SWITCH`) |
+| `Cmd + 3` | Notification Shade (`KEYCODE_NOTIFICATION`) |
+| `Cmd + 4` | Toggle Photo & Media Transfer Drawer |
+| `Cmd + Backspace` / `Esc` / Right-Click | Back |
+| `Cmd + P` | Power / Lock / Wake Screen |
+| `Cmd + 0` / `Cmd + +` / `Cmd + -` | Window Scale (100% / 125% / 75%) |
+| `Cmd + Shift + R` | Reset ADB & Recover USB |
+| `Cmd + W` | Stop Mirroring / Close Window |
+
+---
+
+## Installation & Quick Start
+
+### Option 1: GitHub Releases (Recommended)
+1. Download the latest `AndOnMac.dmg` from [**GitHub Releases**](https://github.com/V0val0x/AndOnMac/releases).
+2. Open `AndOnMac.dmg` and drag **AndOnMac.app** to `/Applications`.
+3. Connect your Android phone via USB-C (with **USB Debugging** enabled) or pair wirelessly via **Settings → Developer Options → Wireless Debugging**.
+
+### Option 2: Homebrew Cask Formula
+A ready-to-use Homebrew Cask definition is included at [`packaging/Casks/andonmac.rb`](./packaging/Casks/andonmac.rb):
 
 ```bash
-# Optional Homebrew installation of CLI tools (also bundled inside app):
+brew install --cask ./packaging/Casks/andonmac.rb
+```
+
+### Option 3: Build from Source (macOS 14+, Swift 5.9+ / 6.x)
+```bash
+# 1. Install runtime tools (bundled automatically into the .app)
 brew install scrcpy android-platform-tools
+
+# 2. Run unit & integration tests
+swift test
+
+# 3. Build standalone dist/AndOnMac.app and dist/AndOnMac.dmg
+chmod +x scripts/*.sh
+./scripts/create_dmg.sh
 ```
 
 ---
 
-## 📶 Connection Methods
+## Architecture Overview
 
-| Method | Instructions | Highlights |
-| :--- | :--- | :--- |
-| **🔌 Type-C Cable (Recommended)** | 1. Plug USB-C cable into Mac.<br>2. Tap "Allow" on phone display.<br>3. *Unplug cable anytime — wireless continuity stays active.* | **3 seconds**: Zero manual IP configuration, automatic TCP/IP Wi-Fi promotion. |
-| **⚡️ Over Wi-Fi (Pairing PIN)** | 1. On phone: *Settings → Developer Options → Wireless Debugging → "Pair with pairing code"*.<br>2. On Mac: Phone is auto-discovered via Apple Bonjour.<br>3. Enter the 6-digit PIN. | **Wireless**: Seamless local mDNS discovery and auto-connect. |
-| **🕒 Saved Devices** | Click "Connect" next to your previously paired phone in the Saved Devices tab. | **1-click**: Instant reconnect without re-entering PIN codes. |
+AndOnMac avoids heavyweight cross-platform runtimes by pairing a native **SwiftUI / AppKit** frontend with direct **VideoToolbox** H.264 decoding and **ADB / Bonjour** system services:
+
+```mermaid
+flowchart LR
+    subgraph macOS["AndOnMac (macOS 14+ / Swift 6)"]
+        UI["SwiftUI / AppKit UI\nMainWindowView · PhoneMirrorFrameView\nPhotoTransferDrawerView · WirelessPairingView"]
+        VideoView["ScrcpyDisplayNSView\nMouse, Trackpad, Keyboard & Drag-Drop"]
+        Client["ScrcpyClient\nvideoQueue + controlQueue\nAnnex-B Parser + VideoToolbox"]
+        Mirror["MirrorService\nSession Lifecycle & Audio Helper"]
+        ADB["ADBService\nUSB/Wi-Fi ADB · dumpsys adb"]
+        Bonjour["DiscoveryService\nNetServiceBrowser mDNS"]
+        Lang["KeyboardLanguageSyncService\nCarbon TIS -> IME Subtype"]
+        Notify["NotificationService\nNWListener :58241 -> UNUserNotificationCenter"]
+        Photos["PhotoTransferService\nDCIM/Screenshots <-> Mac Cache"]
+    end
+
+    subgraph Android["Android Device"]
+        ADBD["adbd Daemon\nUSB / TLS Wireless Debugging"]
+        Server["scrcpy-server\nH.264 Video + Control Socket"]
+        Audio["scrcpy Audio Stream"]
+        IMM["InputMethodManager / MediaStore / Companion"]
+    end
+
+    UI <--> VideoView
+    VideoView <--> Client
+    Mirror --> Client
+    Mirror --> Audio
+    Client <-->|"adb forward TCP\n(dummy byte + H.264 + control)"| Server
+    ADB <--> ADBD
+    Bonjour -.->|"_adb-tls-pairing / _adb-tls-connect"| ADBD
+    Lang -->|"ADB subtype / keycode 204"| IMM
+    Photos <-->|"adb pull / adb push"| IMM
+    IMM -->|"TCP :58241 JSON / HTTP"| Notify
+```
+
+### Key Engineering Decisions
+- **Separate `videoQueue` & `controlQueue`:** Decouples blocking control-message reads from raw Annex-B NAL parsing so the H.264 stream never stalls, while synchronized `VTDecompressionSession` teardown prevents lifecycle crashes.
+- **Embedded `scrcpy-server` + Hidden Audio Helper:** Renders video natively inside SwiftUI/AppKit (`CGImage` backed by VideoToolbox) and delegates audio forwarding to a headless `scrcpy --no-video --no-control --no-window` child process with `SDL_MAC_BACKGROUND_APP=1` so the Dock stays clean.
+- **Resilient Wireless Debugging Discovery:** Combines macOS Bonjour (`NetServiceBrowser`) with lossy UTF-8 parsing of `adb shell dumpsys adb` to extract active `tls_port` values even when Android's `ABX` binary keystore header is present.
 
 ---
 
-## ⌨️ Keyboard Shortcuts (Apple Mirroring Shortcuts)
+## Support
 
-| Shortcut | Action |
-| :--- | :--- |
-| `Cmd + 1` / Swipe up on Home bar | Home Screen |
-| `Cmd + 2` / Swipe up and hold | App Switcher (Recent Apps) |
-| `Cmd + 3` | Notification Shade |
-| `Cmd + 4` | Phone Photos & Screenshots Drawer (Drag & Drop to Mac) |
-| `Cmd + Backspace` / `Esc` / Right-Click | Back |
-| `Cmd + P` | Power / Lock / Wake Display |
-| `Cmd + 0` / `Cmd + +` / `Cmd + -` | Window Scaling (100%, 125%, 75%) |
+If AndOnMac saves you time or makes working between macOS and Android smoother, you can leave a voluntary tip to support ongoing maintenance and testing:
+
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Leave%20a%20tip-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)
+
+*Contributions via Ko-fi are purely voluntary tips and do not include support SLAs, custom development commitments, or charitable tax deductions.*
 
 ---
 
-## 🛠 Architecture & Tech Stack
+## License
 
-* **Frontend**: Swift 6.0, SwiftUI, AppKit (targeting macOS 14.0+ Sonoma & Sequoia).
-* **Networking**: Apple `Network.framework` (Bonjour mDNS / NWBrowser for `_adb-tls-pairing._tcp` and `_adb-tls-connect._tcp`).
-* **Streaming Engine**: [scrcpy](https://github.com/Genymobile/scrcpy) (H.264 / H.265 / Opus decoding).
-* **CI/CD Pipeline**: Automated GitHub Actions workflow on Apple Silicon runners (`macos-15`).
-
----
-
-## 📄 License
-
-MIT License © 2026 Zaitcev Kirill.  
-Screen mirroring core leverages open-source components from Genymobile scrcpy (Apache 2.0).
+MIT License © 2026 Kirill Zaitsev. See [LICENSE](./LICENSE).  
+Screen mirroring leverages open-source components from [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy) (Apache 2.0).
