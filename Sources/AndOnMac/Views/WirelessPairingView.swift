@@ -6,6 +6,14 @@ public enum PairingTab: String, CaseIterable, Identifiable {
     case savedDevices = "История"
     
     public var id: String { rawValue }
+
+    public func title(lang: AppLanguage) -> String {
+        switch self {
+        case .wifiPin: return "Wi-Fi"
+        case .usbSetup: return L10n.tr("Кабель USB", "USB Cable", lang: lang)
+        case .savedDevices: return L10n.tr("История", "History", lang: lang)
+        }
+    }
 }
 
 public struct WirelessPairingView: View {
@@ -63,7 +71,7 @@ public struct WirelessPairingView: View {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
                                 .font(.system(size: 13, weight: .bold))
-                            Text("Назад")
+                            Text(L10n.tr("Назад", "Back", lang: appState.lang))
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .foregroundColor(.cyan)
@@ -72,7 +80,7 @@ public struct WirelessPairingView: View {
                     
                     Spacer()
                     
-                    Text("Подключение")
+                    Text(L10n.tr("Подключение", "Connect", lang: appState.lang))
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
                     
@@ -86,7 +94,7 @@ public struct WirelessPairingView: View {
                             .foregroundColor(.white.opacity(0.6))
                     }
                     .buttonStyle(.plain)
-                    .help("Обновить список устройств")
+                    .help(L10n.tr("Обновить список устройств", "Refresh device list", lang: appState.lang))
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
@@ -101,10 +109,10 @@ public struct WirelessPairingView: View {
                             .foregroundColor(.orange)
                             .font(.system(size: 14))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Подтвердите на телефоне")
+                            Text(L10n.tr("Подтвердите на телефоне", "Confirm on your phone", lang: appState.lang))
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(.white)
-                            Text("Разблокируйте экран и нажмите «Разрешить»")
+                            Text(L10n.tr("Разблокируйте экран и нажмите «Разрешить»", "Unlock your phone and tap Allow", lang: appState.lang))
                                 .font(.system(size: 10))
                                 .foregroundColor(.white.opacity(0.8))
                         }
@@ -127,10 +135,10 @@ public struct WirelessPairingView: View {
                             .foregroundColor(.green)
                             .font(.system(size: 14))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Подключен по USB: \(readyDevice.displayName)")
+                            Text(L10n.tr("Подключен по USB: \(readyDevice.displayName)", "Connected via USB: \(readyDevice.displayName)", lang: appState.lang))
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundColor(.white)
-                            Text("Устройство готово к работе")
+                            Text(L10n.tr("Устройство готово к работе", "Device ready", lang: appState.lang))
                                 .font(.system(size: 10))
                                 .foregroundColor(.white.opacity(0.7))
                         }
@@ -139,7 +147,7 @@ public struct WirelessPairingView: View {
                             closePairing()
                             appState.toggleMirroring()
                         } label: {
-                            Text("Открыть")
+                            Text(L10n.tr("Открыть", "Open", lang: appState.lang))
                                 .font(.system(size: 11, weight: .bold))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
@@ -181,7 +189,7 @@ public struct WirelessPairingView: View {
                                     Image(systemName: "clock.arrow.circlepath")
                                         .font(.system(size: 10))
                                 }
-                                Text(tab.rawValue)
+                                Text(tab.title(lang: appState.lang))
                                     .font(.system(size: 11, weight: selectedTab == tab ? .bold : .medium))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.8)

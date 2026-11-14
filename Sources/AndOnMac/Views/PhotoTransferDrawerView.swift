@@ -4,14 +4,17 @@ import AppKit
 public struct PhotoTransferDrawerView: View {
     @ObservedObject var appState: AppState
     @State private var photos: [PhotoItem] = []
+    @State private var selectedFilter: MediaFolderFilter = .all
+    @State private var currentLimit: Int = 500
     @State private var isLoading: Bool = false
     @State private var statusNote: String? = nil
-    
+
     public init(appState: AppState) {
         self.appState = appState
     }
-    
+
     public var body: some View {
+        let lang = appState.lang
         VStack(spacing: 0) {
             // Header
             HStack {
@@ -19,20 +22,29 @@ public struct PhotoTransferDrawerView: View {
                     Image(systemName: "photo.stack")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.blue)
-                    Text("Медиатека телефона")
+                    Text(L10n.tr("Медиатека телефона", "Phone Gallery", lang: lang))
                         .font(.system(size: 13, weight: .bold))
+                    if !photos.isEmpty {
+                        Text("\(photos.count)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.primary.opacity(0.08))
+                            .cornerRadius(6)
+                    }
                 }
                 Spacer()
-                
+
                 Button {
-                    loadPhotos()
+                    loadPhotos(resetLimit: false)
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
-                .help("Обновить")
-                
+                .help(L10n.tr("Обновить", "Refresh", lang: lang))
+
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         appState.showPhotoDrawer = false
@@ -43,20 +55,43 @@ public struct PhotoTransferDrawerView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Закрыть")
+                .help(L10n.tr("Закрыть", "Close", lang: lang))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .contentShape(Rectangle())
             .makeWindowDraggable()
-            
+
+            // Category Filter Bar
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(MediaFolderFilter.allCases) { filter in
+                        Button {
+                            selectedFilter = filter
+                            loadPhotos(resetLimit: true)
+                        } label: {
+                            Text(filter.title(lang: lang))
+                                .font(.system(size: 11, weight: selectedFilter == filter ? .semibold : .regular))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(selectedFilter == filter ? Color.blue.opacity(0.22) : Color.primary.opacity(0.07))
+                                .foregroundColor(selectedFilter == filter ? .blue : .primary)
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+
             Divider()
-            
+
             if isLoading && photos.isEmpty {
                 VStack(spacing: 12) {
                     Spacer()
                     ProgressView()
-                    Text("Загрузка медиафайлов...")
+                    Text(L10n.tr("Загрузка медиафайлов...", "Loading media...", lang: lang))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -70,12 +105,14 @@ public struct PhotoTransferDrawerView: View {
                     Image(systemName: "photo.on.rectangle.angled")
                         .font(.system(size: 36))
                         .foregroundColor(.secondary.opacity(0.6))
-                    Text("Нет недавних фото")
+                    Text(L10n.tr("Медиафайлы не найдены", "No media found", lang: lang))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    Text("Сделайте фото или скриншот на телефоне")
+                    Text(L10n.tr("Сделайте фото или выберите другую категорию", "Take a photo or choose another category", lang: lang))
                         .font(.caption2)
                         .foregroundColor(.secondary.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -85,15 +122,36 @@ public struct PhotoTransferDrawerView: View {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 8)], spacing: 8) {
                         ForEach(photos) { item in
-                            PhotoThumbnailCell(item: item, serial: appState.selectedDevice?.id ?? "")
+                            PhotoThumbnailCell(item: item, serial: appState.selectedDevice?.id ?? "", lang: lang)
                         }
                     }
                     .padding(12)
+
+                    if photos.count >= currentLimit {
+                        Button {
+                            currentLimit += 500
+                            loadPhotos(resetLimit: false)
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isLoading {
+                                    ProgressView()
+                                        .scaleEffect(0.6)
+                                }
+                                Text(L10n.tr("Загрузить ещё (+500)", "Load more (+500)", lang: lang))
+                                    .font(.caption.bold())
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.bordered)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
+                    }
                 }
             }
-            
+
             Divider()
-            
+
             // Bottom Action Bar: Send photos from Mac to Android
             HStack {
                 Button {
@@ -101,19 +159,20 @@ public struct PhotoTransferDrawerView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus.circle.fill")
-                        Text("Перенести фото с Mac...")
+                        Text(L10n.tr("Перенести фото с Mac...", "Send from Mac...", lang: lang))
                     }
                     .font(.caption.bold())
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                
+
                 Spacer()
-                
+
                 if let note = statusNote {
                     Text(note)
                         .font(.caption2)
                         .foregroundColor(.green)
+                        .lineLimit(1)
                 }
             }
             .padding(.horizontal, 14)
@@ -130,31 +189,37 @@ public struct PhotoTransferDrawerView: View {
                 .makeWindowDraggable()
         )
         .onAppear {
-            loadPhotos()
+            loadPhotos(resetLimit: true)
         }
     }
-    
-    private func loadPhotos() {
+
+    private func loadPhotos(resetLimit: Bool) {
         guard let device = appState.selectedDevice else { return }
+        if resetLimit {
+            currentLimit = 500
+        }
+        let limitToLoad = currentLimit
+        let filterToLoad = selectedFilter
         isLoading = true
         Task {
-            let items = await PhotoTransferService.shared.fetchRecentPhotos(serial: device.id)
+            let items = await PhotoTransferService.shared.fetchRecentPhotos(serial: device.id, limit: limitToLoad, folder: filterToLoad)
             await MainActor.run {
                 self.photos = items
                 self.isLoading = false
             }
         }
     }
-    
+
     private func pickAndSendPhotos() {
         guard let device = appState.selectedDevice else { return }
+        let lang = appState.lang
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.image, .movie, .data]
-        panel.prompt = "Отправить на телефон"
-        
+        panel.prompt = L10n.tr("Отправить на телефон", "Send to Phone", lang: lang)
+
         if panel.runModal() == .OK {
             let urls = panel.urls
             Task {
@@ -162,7 +227,7 @@ public struct PhotoTransferDrawerView: View {
                 await MainActor.run {
                     self.statusNote = res.message
                     if res.success {
-                        loadPhotos()
+                        loadPhotos(resetLimit: false)
                     }
                 }
             }
@@ -170,13 +235,15 @@ public struct PhotoTransferDrawerView: View {
     }
 }
 
-// Single Photo Thumbnail with drag & drop support
+// Single Photo Thumbnail with drag & drop and context menu support
 private struct PhotoThumbnailCell: View {
     let item: PhotoItem
     let serial: String
+    let lang: AppLanguage
     @State private var cachedURL: URL?
     @State private var thumbnailImage: NSImage?
-    
+    @State private var failedLoad: Bool = false
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             if let img = thumbnailImage {
@@ -186,6 +253,15 @@ private struct PhotoThumbnailCell: View {
                     .frame(width: 80, height: 80)
                     .clipped()
                     .cornerRadius(8)
+            } else if failedLoad {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(width: 80, height: 80)
+                    .cornerRadius(8)
+                    .overlay(
+                        Image(systemName: item.isVideo ? "video.fill" : "photo")
+                            .foregroundColor(.secondary)
+                    )
             } else {
                 Rectangle()
                     .fill(Color.primary.opacity(0.1))
@@ -196,8 +272,14 @@ private struct PhotoThumbnailCell: View {
                             .scaleEffect(0.6)
                     )
             }
-            
-            if item.isScreenshot {
+
+            if item.isVideo {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(4)
+                    .shadow(radius: 2)
+            } else if item.isScreenshot {
                 Image(systemName: "camera.viewfinder")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.white)
@@ -209,14 +291,23 @@ private struct PhotoThumbnailCell: View {
         }
         .frame(width: 80, height: 80)
         .contentShape(Rectangle())
+        .help(item.name)
         .onAppear {
             ensureDownloaded()
+        }
+        .contextMenu {
+            Button(L10n.tr("Открыть в Просмотре", "Open in Preview", lang: lang)) {
+                openInPreview()
+            }
+            Button(L10n.tr("Сохранить на Mac...", "Save to Mac...", lang: lang)) {
+                saveToMac()
+            }
         }
         .onDrag {
             if let local = cachedURL {
                 let provider = NSItemProvider(object: local as NSURL)
                 let ext = local.pathExtension.lowercased()
-                let uti = (ext == "png") ? "public.png" : (ext == "mp4" ? "public.mpeg-4" : "public.jpeg")
+                let uti = (ext == "png") ? "public.png" : (ext == "mp4" || ext == "mov" ? "public.mpeg-4" : "public.jpeg")
                 if let data = try? Data(contentsOf: local) {
                     provider.registerDataRepresentation(forTypeIdentifier: uti, visibility: .all) { completion in
                         completion(data, nil)
@@ -228,20 +319,75 @@ private struct PhotoThumbnailCell: View {
             return NSItemProvider()
         }
     }
-    
+
     private func ensureDownloaded() {
-        if let existing = item.localURL, let img = NSImage(contentsOf: existing) {
+        if let existing = item.localURL {
             self.cachedURL = existing
-            self.thumbnailImage = img
+            Task {
+                let thumb = await PhotoTransferService.shared.generateThumbnail(for: existing)
+                await MainActor.run {
+                    if let thumb {
+                        self.thumbnailImage = thumb
+                    } else {
+                        self.failedLoad = true
+                    }
+                }
+            }
             return
         }
-        
+
         Task {
             if let downloaded = await PhotoTransferService.shared.downloadPhoto(item: item, serial: serial) {
-                let img = NSImage(contentsOf: downloaded)
+                let thumb = await PhotoTransferService.shared.generateThumbnail(for: downloaded)
                 await MainActor.run {
                     self.cachedURL = downloaded
-                    self.thumbnailImage = img
+                    if let thumb {
+                        self.thumbnailImage = thumb
+                    } else {
+                        self.failedLoad = true
+                    }
+                }
+            } else {
+                await MainActor.run {
+                    self.failedLoad = true
+                }
+            }
+        }
+    }
+
+    private func openInPreview() {
+        let existing = cachedURL
+        Task {
+            let url: URL?
+            if let existing {
+                url = existing
+            } else {
+                url = await PhotoTransferService.shared.downloadPhoto(item: item, serial: serial)
+            }
+            if let url {
+                _ = await MainActor.run {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    private func saveToMac() {
+        let existing = cachedURL
+        Task {
+            let url: URL?
+            if let existing {
+                url = existing
+            } else {
+                url = await PhotoTransferService.shared.downloadPhoto(item: item, serial: serial)
+            }
+            guard let sourceURL = url else { return }
+            await MainActor.run {
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = item.name
+                if panel.runModal() == .OK, let dest = panel.url {
+                    try? FileManager.default.removeItem(at: dest)
+                    try? FileManager.default.copyItem(at: sourceURL, to: dest)
                 }
             }
         }
