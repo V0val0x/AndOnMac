@@ -7,6 +7,7 @@ public struct PhoneMirrorFrameView: View {
     @State private var isHoveringHome: Bool = false
     @State private var dragOffset: CGFloat = 0
     @State private var pulseAnimation: Bool = false
+    @State private var homeBarPulse: Bool = false
     
     public init(appState: AppState) {
         self.appState = appState
@@ -155,10 +156,13 @@ public struct PhoneMirrorFrameView: View {
                     }
                 },
                 onHoverZonesChanged: { isTop, isBottom in
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(AndMotion.hudSpring) {
                         self.isHoveringTop = isTop
                         self.isHoveringHome = isBottom
                     }
+                },
+                onHomeGestureTriggered: {
+                    triggerHomeBarPulse()
                 }
             )
             .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
@@ -174,19 +178,22 @@ public struct PhoneMirrorFrameView: View {
             // Sequoia Top Hover HUD & Home Bar (Fades in smoothly only when hovering near top/bottom)
             VStack {
                 topHoverHUDView
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, AndSpacing.md)
                     .padding(.top, 6)
                     .opacity(isHoveringTop ? 1.0 : 0.0)
+                    .offset(y: isHoveringTop ? 0 : -6)
+                    .scaleEffect(isHoveringTop ? 1.0 : 0.96)
                     .allowsHitTesting(isHoveringTop)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringTop)
+                    .animation(AndMotion.hudSpring, value: isHoveringTop)
                 
                 Spacer()
                 
                 bottomHomeBarView
                     .padding(.bottom, 6)
                     .opacity(isHoveringHome ? 1.0 : 0.0)
+                    .offset(y: isHoveringHome ? 0 : 6)
                     .allowsHitTesting(isHoveringHome)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringHome)
+                    .animation(AndMotion.hudSpring, value: isHoveringHome)
             }
             
             // Photo Transfer Toast Alert
@@ -201,14 +208,13 @@ public struct PhoneMirrorFrameView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(20)
-                    .shadow(radius: 8)
+                    .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.25, shadowRadius: 10)
                     .padding(.top, 44)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .top).combined(with: .scale(scale: 0.94)).combined(with: .opacity))
                     
                     Spacer()
                 }
+                .animation(AndMotion.hudSpring, value: appState.photoTransferNotice)
             }
             
             // Phone Screen Off / Locked Overlay (1-in-1 with macOS Sequoia iPhone Mirroring)
@@ -296,7 +302,7 @@ public struct PhoneMirrorFrameView: View {
             
             // Glass action capsule
             if isHoveringTop {
-                HStack(spacing: 12) {
+                HStack(spacing: 4) {
                     Button {
                         appState.triggerAppSwitch()
                     } label: {
@@ -304,17 +310,18 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Недавние приложения (Cmd+2)", "Recent Apps (Cmd+2)", lang: appState.lang))
                     
                     Button {
                         appState.triggerHome()
+                        triggerHomeBarPulse()
                     } label: {
                         Image(systemName: "circle")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Домой (Cmd+1)", "Home (Cmd+1)", lang: appState.lang))
                     
                     Button {
@@ -324,11 +331,11 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Уведомления (Cmd+3)", "Notifications (Cmd+3)", lang: appState.lang))
                     
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(AndMotion.drawerSpring) {
                             appState.openDrawer(mode: .gallery)
                         }
                     } label: {
@@ -336,11 +343,11 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .gallery ? .cyan : .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Медиатека и перенос фото (Cmd+4)", "Gallery & Photo Transfer (Cmd+4)", lang: appState.lang))
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(AndMotion.drawerSpring) {
                             appState.openDrawer(mode: .files)
                         }
                     } label: {
@@ -348,7 +355,7 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .files ? .cyan : .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Файловый менеджер (Cmd+5)", "File Manager (Cmd+5)", lang: appState.lang))
                     
                     Button {
@@ -358,14 +365,13 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Блокировка / Экран (Cmd+P)", "Lock / Screen (Cmd+P)", lang: appState.lang))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial)
-                .cornerRadius(14)
-                .transition(.scale.combined(with: .opacity))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.28, shadowRadius: 10)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
             
             Spacer()
@@ -749,14 +755,30 @@ public struct PhoneMirrorFrameView: View {
         }
     }
     
+    private func triggerHomeBarPulse() {
+        withAnimation(AndMotion.homePulseSpring) {
+            homeBarPulse = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            withAnimation(AndMotion.homePulseSpring) {
+                homeBarPulse = false
+            }
+        }
+    }
+
     // MARK: - Bottom Home Bar (Interactive)
     private var bottomHomeBarView: some View {
-        VStack {
+        ZStack {
+            BottomBarScrollCatcher {
+                appState.triggerHome()
+                triggerHomeBarPulse()
+            }
             Capsule()
-                .fill(Color.white.opacity(isHoveringHome ? 0.95 : 0.6))
+                .fill(Color.white.opacity(homeBarPulse ? 1.0 : (isHoveringHome ? 0.95 : 0.6)))
                 .frame(width: 130, height: 5)
-                .shadow(color: .black.opacity(0.5), radius: 2)
-                .offset(y: dragOffset)
+                .shadow(color: homeBarPulse ? Color.white.opacity(0.65) : .black.opacity(0.5), radius: homeBarPulse ? 6 : 2)
+                .scaleEffect(x: homeBarPulse ? 1.08 : 1.0, y: homeBarPulse ? 1.2 : 1.0)
+                .offset(y: homeBarPulse ? -9 : dragOffset)
                 .gesture(
                     DragGesture(minimumDistance: 5)
                         .onChanged { value in
@@ -765,13 +787,14 @@ public struct PhoneMirrorFrameView: View {
                             }
                         }
                         .onEnded { value in
-                            withAnimation(.spring()) {
+                            withAnimation(AndMotion.homePulseSpring) {
                                 if value.translation.height < -160 {
                                     // Very tall drag -> App Switcher (Recents)
                                     appState.triggerAppSwitch()
                                 } else if value.translation.height < -15 {
                                     // Normal upward drag -> Home
                                     appState.triggerHome()
+                                    triggerHomeBarPulse()
                                 }
                                 dragOffset = 0
                             }
@@ -779,13 +802,77 @@ public struct PhoneMirrorFrameView: View {
                 )
                 .onTapGesture {
                     appState.triggerHome()
+                    triggerHomeBarPulse()
                 }
                 .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(AndMotion.hudSpring) {
                         isHoveringHome = hovering
                     }
                 }
         }
-        .frame(height: 18)
+        .frame(height: 22)
+    }
+}
+
+/// Captures click-free trackpad upward scroll swipes directly over the bottom Home bar capsule.
+private struct BottomBarScrollCatcher: NSViewRepresentable {
+    let onScrollUpHome: () -> Void
+
+    func makeNSView(context: Context) -> ScrollCatcherNSView {
+        let view = ScrollCatcherNSView()
+        view.onScrollUpHome = onScrollUpHome
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollCatcherNSView, context: Context) {
+        nsView.onScrollUpHome = onScrollUpHome
+    }
+
+    final class ScrollCatcherNSView: NSView {
+        var onScrollUpHome: (() -> Void)?
+        private var accumulatedUp: CGFloat = 0
+        private var accumulatedX: CGFloat = 0
+        private var triggered: Bool = false
+
+        override func scrollWheel(with event: NSEvent) {
+            guard event.hasPreciseScrollingDeltas else {
+                super.scrollWheel(with: event)
+                return
+            }
+            guard event.momentumPhase == [] else {
+                accumulatedUp = 0
+                accumulatedX = 0
+                triggered = false
+                return
+            }
+
+            let upwardDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+            switch event.phase {
+            case .began:
+                accumulatedUp = upwardDelta
+                accumulatedX = event.scrollingDeltaX
+                triggered = false
+            case .changed, []:
+                accumulatedUp += upwardDelta
+                accumulatedX += event.scrollingDeltaX
+                if !triggered && ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                    startNormalizedY: 0.96,
+                    accumulatedUpwardDelta: accumulatedUp,
+                    horizontalDelta: accumulatedX
+                ) {
+                    triggered = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onScrollUpHome?()
+                    }
+                }
+            case .ended, .cancelled:
+                accumulatedUp = 0
+                accumulatedX = 0
+                triggered = false
+            default:
+                break
+            }
+        }
     }
 }

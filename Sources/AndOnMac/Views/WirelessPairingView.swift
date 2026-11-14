@@ -43,13 +43,14 @@ public struct WirelessPairingView: View {
     // Status feedback
     @State private var resultMessage: String?
     @State private var isSuccess: Bool = false
+    @Namespace private var pairingTabNamespace
     
     public init(appState: AppState) {
         self.appState = appState
     }
     
     private func closePairing() {
-        withAnimation(.easeInOut(duration: 0.25)) {
+        withAnimation(AndMotion.drawerSpring) {
             appState.showPairingSheet = false
         }
         dismiss()
@@ -173,7 +174,7 @@ public struct WirelessPairingView: View {
                 HStack(spacing: 4) {
                     ForEach(PairingTab.allCases) { tab in
                         Button {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            withAnimation(AndMotion.pillSlide) {
                                 selectedTab = tab
                             }
                         } label: {
@@ -197,26 +198,29 @@ public struct WirelessPairingView: View {
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity)
                             .background(
-                                selectedTab == tab
-                                    ? Color.white.opacity(0.18)
-                                    : Color.white.opacity(0.04)
+                                ZStack {
+                                    if selectedTab == tab {
+                                        RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                            .fill(Color.white.opacity(0.18))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.75)
+                                            )
+                                            .matchedGeometryEffect(id: "pairingTabPill", in: pairingTabNamespace)
+                                    } else {
+                                        RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                            .fill(Color.white.opacity(0.04))
+                                    }
+                                }
                             )
                             .foregroundColor(selectedTab == tab ? .white : .white.opacity(0.6))
-                            .cornerRadius(16)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(
-                                        selectedTab == tab ? Color.white.opacity(0.25) : Color.clear,
-                                        lineWidth: 1
-                                    )
-                            )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(AndonTactileScaleButtonStyle(pressedScale: 0.96))
                     }
                 }
                 .padding(3)
                 .background(Color.white.opacity(0.04))
-                .cornerRadius(18)
+                .clipShape(RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
                 

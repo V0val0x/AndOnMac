@@ -18,13 +18,14 @@ public struct MainWindowView: View {
                 PhotoTransferDrawerView(appState: appState)
                     .transition(
                         .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            insertion: .move(edge: .trailing).combined(with: .scale(scale: 0.96, anchor: .leading)).combined(with: .opacity),
                             removal: .move(edge: .trailing).combined(with: .opacity)
                         )
                     )
             }
         }
-        .padding(20)
+        .animation(AndMotion.drawerSpring, value: appState.showPhotoDrawer)
+        .padding(AndSpacing.xl)
         .background(
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,

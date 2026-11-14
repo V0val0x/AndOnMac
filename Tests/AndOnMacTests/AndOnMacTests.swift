@@ -657,4 +657,35 @@ final class AndOnMacTests: XCTestCase {
         let withHiddenBySize = FileBrowserService.parseStatListing(sample, includeHidden: true, sortOrder: .size)
         XCTAssertEqual(withHiddenBySize.map(\.name), ["DCIM", "archive.zip", "notes.txt", ".nomedia"])
     }
+
+    func testScrollHomeTriggerAtBottomEdge() {
+        XCTAssertTrue(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.90,
+                accumulatedUpwardDelta: 26,
+                horizontalDelta: 4
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.50,
+                accumulatedUpwardDelta: 40,
+                horizontalDelta: 0
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.92,
+                accumulatedUpwardDelta: 12,
+                horizontalDelta: 0
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.92,
+                accumulatedUpwardDelta: 24,
+                horizontalDelta: 25
+            )
+        )
+    }
 }
