@@ -12,20 +12,23 @@ public struct MainWindowView: View {
         HStack(alignment: .top, spacing: 16) {
             // Main Phone Chassis (Frameless Sequoia Floating Smartphone)
             PhoneMirrorFrameView(appState: appState)
+                .zIndex(1)
             
             // Photo & File Transfer Side Drawer
             if appState.showPhotoDrawer {
                 PhotoTransferDrawerView(appState: appState)
+                    .zIndex(0)
                     .transition(
                         .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .scale(scale: 0.96, anchor: .leading)).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
+                            insertion: .scale(scale: 0.94, anchor: .leading).combined(with: .opacity),
+                            removal: .scale(scale: 0.94, anchor: .leading).combined(with: .opacity)
                         )
                     )
             }
         }
         .animation(AndMotion.drawerSpring, value: appState.showPhotoDrawer)
         .padding(AndSpacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,
@@ -57,8 +60,18 @@ private struct WindowConfigurator: NSViewRepresentable {
     let aspect: CGFloat
     let configure: (NSWindow) -> Void
     
+    final class Coordinator {
+        var lastShowDrawer: Bool?
+        var pendingShrinkWorkItem: DispatchWorkItem?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
+        context.coordinator.lastShowDrawer = showDrawer
         DispatchQueue.main.async {
             if let window = view.window {
                 configure(window)
@@ -71,7 +84,29 @@ private struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         if let window = nsView.window {
             configure(window)
-            updateWindowSize(window: window, animated: true)
+            let previousShowDrawer = context.coordinator.lastShowDrawer
+            context.coordinator.lastShowDrawer = showDrawer
+
+            if let previous = previousShowDrawer, previous != showDrawer {
+                context.coordinator.pendingShrinkWorkItem?.cancel()
+                context.coordinator.pendingShrinkWorkItem = nil
+
+                if showDrawer {
+                    // Expand invisible transparent NSWindow bounds immediately so the phone
+                    // stays rock-solid at origin.x while the drawer springs open smoothly.
+                    updateWindowSize(window: window, animated: false)
+                } else {
+                    // Wait for the drawer closing spring to finish before shrinking the invisible window.
+                    let workItem = DispatchWorkItem { [weak window] in
+                        guard let window else { return }
+                        self.updateWindowSize(window: window, animated: false)
+                    }
+                    context.coordinator.pendingShrinkWorkItem = workItem
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: workItem)
+                }
+            } else {
+                updateWindowSize(window: window, animated: true)
+            }
         }
     }
     
