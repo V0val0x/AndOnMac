@@ -149,8 +149,8 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
             self.onLanguageChanged?(badge)
             AppState.shared?.currentLanguageBadge = badge
             
-            let langDisplayName = localizedLanguageName(for: currentLang)
-            AppState.shared?.photoTransferNotice = "🌐 Язык ввода: \(langDisplayName)"
+            let uiLang = AppState.shared?.lang ?? L10n.currentLanguage()
+            AppState.shared?.photoTransferNotice = Self.formatInputLanguageNotice(code: currentLang, uiLang: uiLang)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
                 if AppState.shared?.photoTransferNotice?.hasPrefix("🌐") == true {
                     AppState.shared?.photoTransferNotice = nil
@@ -184,7 +184,12 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
         }
     }
     
-    private func localizedLanguageName(for code: String) -> String {
+    public static func formatInputLanguageNotice(code: String, uiLang: AppLanguage? = nil) -> String {
+        let langDisplayName = localizedLanguageName(for: code)
+        return L10n.tr("🌐 Язык ввода: \(langDisplayName)", "🌐 Input Language: \(langDisplayName)", lang: uiLang)
+    }
+
+    private static func localizedLanguageName(for code: String) -> String {
         switch code {
         case "ru": return "Русский (RU)"
         case "en": return "English (EN)"

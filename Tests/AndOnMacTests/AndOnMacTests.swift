@@ -574,6 +574,8 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(AppLanguage.resolveSystemLanguage(preferredLanguages: ["de-DE"]), .english)
         XCTAssertEqual(L10n.tr("Привет", "Hello", lang: .russian), "Привет")
         XCTAssertEqual(L10n.tr("Привет", "Hello", lang: .english), "Hello")
+        XCTAssertEqual(KeyboardLanguageSyncService.formatInputLanguageNotice(code: "ru", uiLang: .english), "🌐 Input Language: Русский (RU)")
+        XCTAssertEqual(KeyboardLanguageSyncService.formatInputLanguageNotice(code: "en", uiLang: .russian), "🌐 Язык ввода: English (EN)")
     }
 
     func testPhotoTransferParseMediaLinesAndFilters() {
