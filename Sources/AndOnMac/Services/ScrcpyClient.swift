@@ -22,9 +22,12 @@ public final class ScrcpyClient: @unchecked Sendable {
     private var activeLocalPort: Int?
     private var activeSerial: String?
     private var didTurnScreenOff = false
+    public static let maxVideoBufferBytes = 16 * 1024 * 1024
+
     private let videoQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.video", qos: .userInteractive)
     private let controlQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.control", qos: .userInitiated)
     private let decoderLock = NSLock()
+    private let socketLock = NSLock()
     
     // VideoToolbox
     private var decompressionSession: VTDecompressionSession?
@@ -40,6 +43,8 @@ public final class ScrcpyClient: @unchecked Sendable {
     private init() {}
     
     public var isConnected: Bool {
+        socketLock.lock()
+        defer { socketLock.unlock() }
         return isRunning && videoSocket >= 0
     }
     
@@ -137,18 +142,42 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Connects videoSocket (verifying 1 dummy byte) and controlSocket on `127.0.0.1:port` and starts concurrent stream readers.
     public func connectAndStartStreams(port: Int, turnScreenOff: Bool = false) throws {
+        socketLock.lock()
         self.isRunning = true
-        let vSock = try connectVideoSocket(port: port)
+        socketLock.unlock()
+
+        let vSock: Int32
         let cSock: Int32
         do {
-            cSock = try connectSocket(port: port)
+            vSock = try connectVideoSocket(port: port)
+            do {
+                cSock = try connectSocket(port: port)
+            } catch {
+                close(vSock)
+                throw error
+            }
         } catch {
-            close(vSock)
+            socketLock.lock()
+            self.isRunning = false
+            socketLock.unlock()
             throw error
         }
-        
+
+        socketLock.lock()
+        let oldVSock = videoSocket
+        let oldCSock = controlSocket
         self.videoSocket = vSock
         self.controlSocket = cSock
+        socketLock.unlock()
+
+        if oldVSock >= 0 {
+            Darwin.shutdown(oldVSock, SHUT_RDWR)
+            close(oldVSock)
+        }
+        if oldCSock >= 0 {
+            Darwin.shutdown(oldCSock, SHUT_RDWR)
+            close(oldCSock)
+        }
         
         onSessionStateChanged?(true)
         
@@ -177,28 +206,39 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Stops the embedded session and cleans up sockets
     public func stop() {
+        socketLock.lock()
         let wasRunning = isRunning
         isRunning = false
         sessionGeneration &+= 1
+        let shouldRestorePower = controlSocket >= 0 && didTurnScreenOff
+        if shouldRestorePower {
+            didTurnScreenOff = false
+        }
+        let vSock = videoSocket
+        videoSocket = -1
+        let cSock = controlSocket
+        controlSocket = -1
+        socketLock.unlock()
+
         DispatchQueue.main.async { [weak self] in
             self?.stopClipboardSync()
         }
         
         // Restore screen power mode before closing controlSocket
-        if controlSocket >= 0 && didTurnScreenOff {
-            setScreenPowerMode(true)
-            didTurnScreenOff = false
+        if shouldRestorePower && cSock >= 0 {
+            let msg = Data([10, 2]) // TYPE_SET_SCREEN_POWER_MODE = 10, POWER_MODE_NORMAL = 2
+            msg.withUnsafeBytes { rawPtr in
+                if let ptr = rawPtr.baseAddress {
+                    _ = send(cSock, ptr, msg.count, 0)
+                }
+            }
         }
         
-        let vSock = videoSocket
-        videoSocket = -1
         if vSock >= 0 {
             Darwin.shutdown(vSock, SHUT_RDWR)
             close(vSock)
         }
         
-        let cSock = controlSocket
-        controlSocket = -1
         if cSock >= 0 {
             Darwin.shutdown(cSock, SHUT_RDWR)
             close(cSock)
@@ -320,6 +360,14 @@ public final class ScrcpyClient: @unchecked Sendable {
     }
     
     // MARK: - Video Stream Reader & Low-Latency Frame Parser
+    /// Caps the video stream buffer at `maxBytes` to prevent unbounded memory growth on malformed streams.
+    @discardableResult
+    public static func trimOversizedStreamBuffer(_ buffer: inout Data, maxBytes: Int = maxVideoBufferBytes) -> Bool {
+        guard buffer.count > maxBytes else { return false }
+        buffer.removeAll(keepingCapacity: false)
+        return true
+    }
+
     private func readRawVideoStream(socket: Int32) {
         var buffer = Data()
         var temp = [UInt8](repeating: 0, count: 65536)
@@ -338,6 +386,9 @@ public final class ScrcpyClient: @unchecked Sendable {
             guard bytesRead > 0 else { break }
             
             buffer.append(temp, count: bytesRead)
+            if Self.trimOversizedStreamBuffer(&buffer) {
+                continue
+            }
             
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
@@ -741,10 +792,13 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Sends a binary control message to the device
     public func sendControlMessage(_ data: Data) {
-        guard controlSocket >= 0 else { return }
+        socketLock.lock()
+        let sock = controlSocket
+        socketLock.unlock()
+        guard sock >= 0 else { return }
         data.withUnsafeBytes { rawPtr in
             guard let ptr = rawPtr.baseAddress else { return }
-            _ = send(controlSocket, ptr, data.count, 0)
+            _ = send(sock, ptr, data.count, 0)
         }
     }
     

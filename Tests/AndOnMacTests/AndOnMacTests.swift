@@ -688,4 +688,122 @@ final class AndOnMacTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - Security, Concurrency & Resource Safety Tests
+
+    func testFileBrowserPathSecurityAndDataLossPrevention() throws {
+        // Traversal & null-byte injection must be rejected
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("/sdcard/../../etc/passwd"))
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("/sdcard/test\0.txt"))
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("relative/path"))
+
+        // Destructive deletion on protected roots must be blocked
+        let protectedRoots = [
+            "/",
+            "/sdcard",
+            "/sdcard/",
+            "/sdcard/DCIM",
+            "/sdcard/Download",
+            "/sdcard/Pictures",
+            "/storage/emulated/0",
+            "/system"
+        ]
+        for root in protectedRoots {
+            XCTAssertThrowsError(
+                try FileBrowserService.validateRemotePath(root, forDeletion: true),
+                "Expected deletion of protected root \(root) to throw"
+            )
+        }
+
+        // Valid user-level paths succeed
+        XCTAssertEqual(try FileBrowserService.validateRemotePath("/sdcard/Download/photo.jpg"), "/sdcard/Download/photo.jpg")
+        XCTAssertEqual(try FileBrowserService.validateRemotePath("/sdcard/Download/photo.jpg", forDeletion: true), "/sdcard/Download/photo.jpg")
+    }
+
+    func testADBSerialAndEndpointValidation() {
+        XCTAssertTrue(ADBService.validateSerial("61061JEA307110"))
+        XCTAssertTrue(ADBService.validateSerial("192.168.1.42:5555"))
+        XCTAssertTrue(ADBService.validateSerial("adb-61061JEA307110-abc._adb-tls-connect._tcp"))
+
+        XCTAssertFalse(ADBService.validateSerial(""))
+        XCTAssertFalse(ADBService.validateSerial("-H"))
+        XCTAssertFalse(ADBService.validateSerial("--help"))
+        XCTAssertFalse(ADBService.validateSerial("12345;rm -rf /"))
+
+        XCTAssertTrue(ADBService.validateTargetEndpoint("192.168.0.10:5555"))
+        XCTAssertTrue(ADBService.validateTargetEndpoint("pixel.local:37123"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("192.168.0.10"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("-s 192.168.0.10:5555"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("192.168.0.10:99999"))
+    }
+
+    func testADBTimeoutDoesNotHangAndCancelsCleanly() async {
+        // Executing a non-existent or hanging command with a short timeout must return promptly
+        let start = Date()
+        do {
+            _ = try await ADBService.shared.execute(arguments: ["wait-for-device"], timeoutSeconds: 0.25)
+        } catch {
+            // Expected timeout or adb-not-found error
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 2.5, "ADB watchdog timeout should not hang")
+    }
+
+    func testScrcpyVideoBufferCapPreventsOOM() {
+        var normalBuffer = Data(repeating: 0xAA, count: 1024)
+        XCTAssertFalse(ScrcpyClient.trimOversizedStreamBuffer(&normalBuffer, maxBytes: 4096))
+        XCTAssertEqual(normalBuffer.count, 1024)
+
+        var oversizedBuffer = Data(repeating: 0xBB, count: 8192)
+        XCTAssertTrue(ScrcpyClient.trimOversizedStreamBuffer(&oversizedBuffer, maxBytes: 4096))
+        XCTAssertEqual(oversizedBuffer.count, 0)
+    }
+
+    func testScrcpyConcurrentStartStopStressSafety() async {
+        let client = ScrcpyClient.shared
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<20 {
+                group.addTask {
+                    if i % 2 == 0 {
+                        client.sendControlMessage(Data([5]))
+                    } else {
+                        client.stop()
+                    }
+                    _ = client.isConnected
+                }
+            }
+        }
+        XCTAssertFalse(client.isConnected)
+    }
+
+    func testNotificationPayloadBoundsAndSanitization() throws {
+        // Oversized payload (> 64 KB) must be rejected before decoding
+        let oversized = Data(repeating: 0x20, count: NotificationService.maxIncomingPayloadBytes + 1)
+        XCTAssertNil(NotificationService.parseNotificationPayload(oversized))
+
+        // Long strings inside valid JSON must be truncated safely
+        let longTitle = String(repeating: "A", count: 500)
+        let longText = String(repeating: "B", count: 2500)
+        let item = NotificationItem(
+            packageName: "com.example.chat",
+            appName: String(repeating: "App", count: 100),
+            title: longTitle,
+            text: longText,
+            iconBase64: String(repeating: "X", count: 40_000)
+        )
+        let encoded = try JSONEncoder().encode(item)
+        let parsed = NotificationService.parseNotificationPayload(encoded)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.appName.count, 200)
+        XCTAssertEqual(parsed?.title.count, 200)
+        XCTAssertEqual(parsed?.text.count, 1000)
+        XCTAssertNil(parsed?.iconBase64)
+    }
+
+    func testPhotoCacheFilenameSanitization() {
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("../../etc/passwd"), "passwd")
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("IMG_001\0.jpg"), "IMG_001.jpg")
+        XCTAssertTrue(PhotoTransferService.sanitizedCacheFilename("..").hasPrefix("file_"))
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("vacation.heic"), "vacation.heic")
+    }
 }
