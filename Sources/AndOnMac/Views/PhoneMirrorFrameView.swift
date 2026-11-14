@@ -329,15 +329,27 @@ public struct PhoneMirrorFrameView: View {
                     
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            appState.showPhotoDrawer.toggle()
+                            appState.openDrawer(mode: .gallery)
                         }
                     } label: {
                         Image(systemName: "photo.stack")
                             .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(appState.showPhotoDrawer ? .cyan : .white)
+                            .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .gallery ? .cyan : .white)
                     }
                     .buttonStyle(.plain)
                     .help(L10n.tr("Медиатека и перенос фото (Cmd+4)", "Gallery & Photo Transfer (Cmd+4)", lang: appState.lang))
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            appState.openDrawer(mode: .files)
+                        }
+                    } label: {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .files ? .cyan : .white)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n.tr("Файловый менеджер (Cmd+5)", "File Manager (Cmd+5)", lang: appState.lang))
                     
                     Button {
                         appState.triggerPower()
@@ -534,19 +546,35 @@ public struct PhoneMirrorFrameView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.blue)
                         
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                appState.showPhotoDrawer.toggle()
+                        HStack(spacing: 8) {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    appState.openDrawer(mode: .gallery)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "photo.stack")
+                                    Text(L10n.tr("Галерея", "Gallery", lang: appState.lang))
+                                }
+                                .font(.caption.bold())
                             }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "photo.stack")
-                                Text(L10n.tr("Медиатека фото", "Photo Gallery", lang: appState.lang))
+                            .buttonStyle(.bordered)
+                            .tint(.white.opacity(0.8))
+
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    appState.openDrawer(mode: .files)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "folder.fill")
+                                    Text(L10n.tr("Файлы", "Files", lang: appState.lang))
+                                }
+                                .font(.caption.bold())
                             }
-                            .font(.caption.bold())
+                            .buttonStyle(.bordered)
+                            .tint(.white.opacity(0.8))
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.white.opacity(0.8))
 
                         HStack(spacing: 8) {
                             if appState.devices.count > 1 {
