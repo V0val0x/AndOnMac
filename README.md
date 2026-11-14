@@ -10,7 +10,13 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 **English** | [Русская версия (Russian)](README_RU.md)
 
-![AndOnMac Demo](./assets/demo.gif)
+![AndOnMac Mirroring Demo](./assets/demo-mirroring.gif)
+
+### Feature Demos
+
+| 60 FPS Mirroring & Shortcuts | Drag & Drop Photos to Mac Desktop (`Cmd+4`) | Keyboard Layout Sync & Hover HUD |
+| :---: | :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Language Sync & HUD](./assets/demo-language-sync.gif) |
 
 ---
 
@@ -141,7 +147,9 @@ If AndOnMac saves you time or makes working between macOS and Android smoother, 
 
 ---
 
-## License
+## License & Legal Notices
 
 MIT License © 2026 Kirill Zaitsev. See [LICENSE](./LICENSE).  
-Screen mirroring leverages open-source components from [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy) (Apache 2.0).
+Screen mirroring and ADB transport bundle components from [Genymobile/scrcpy](https://github.com/Genymobile/scrcpy) and **Android Platform Tools (`adb`)** under the **Apache License 2.0**. Full attributions and license texts are provided in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) (also bundled inside `AndOnMac.app/Contents/Resources/`).
+
+*AndOnMac is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Apple Inc., Google LLC, Samsung Electronics, Xiaomi, Nothing Technology, or OnePlus. All product names and trademarks belong to their respective owners and are used strictly for compatibility identification.*
