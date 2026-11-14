@@ -32,6 +32,7 @@ public final class AppState: ObservableObject {
     @Published public var isPhoneLocked: Bool = false
     
     // Preferences
+    @AppStorage(L10n.storageKey) public var appLanguage: AppLanguage = .system
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
     @AppStorage("forwardAudio") public var forwardAudio: Bool = true
     @AppStorage("stayAwake") public var stayAwake: Bool = true
@@ -44,9 +45,13 @@ public final class AppState: ObservableObject {
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
+
+    public var lang: AppLanguage {
+        appLanguage.resolved
+    }
     
     @Published public var knownDevices: [KnownDevice] = []
-    @Published public var statusMessage: String = "Готов к работе"
+    @Published public var statusMessage: String = L10n.tr("Готов к работе", "Ready")
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
     @Published public var showPhotoDrawer: Bool = false
@@ -509,7 +514,7 @@ public final class AppState: ObservableObject {
                 if self.selectedDeviceId == device.id {
                     self.selectedDeviceId = nil
                 }
-                self.statusMessage = "Отключено от \(device.displayName)"
+                self.statusMessage = L10n.tr("Отключено от \(device.displayName)", "Disconnected from \(device.displayName)", lang: self.lang)
                 self.refreshDevices()
             }
         }
