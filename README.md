@@ -10,7 +10,13 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 **English** | [Русская версия (Russian)](README_RU.md)
 
-![AndOnMac Demo](./assets/demo.gif)
+![AndOnMac Mirroring Demo](./assets/demo-mirroring.gif)
+
+### Feature Demos
+
+| 60 FPS Mirroring & Shortcuts | Drag & Drop Photos to Mac Desktop (`Cmd+4`) | Keyboard Layout Sync & Hover HUD |
+| :---: | :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Language Sync & HUD](./assets/demo-language-sync.gif) |
 
 ---
 
