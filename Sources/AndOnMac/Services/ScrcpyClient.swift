@@ -849,6 +849,11 @@ public final class ScrcpyClient: @unchecked Sendable {
         let msgUp = Data([4, 1])
         sendControlMessage(msgUp)
     }
+
+    /// Expands the Android notification shade
+    public func expandNotificationsPanel() {
+        sendControlMessage(Data([5])) // TYPE_EXPAND_NOTIFICATION_PANEL
+    }
     
     /// Returns true if text contains non-ASCII characters (e.g. Cyrillic) that scrcpy's
     /// TYPE_INJECT_TEXT KeyCharacterMap drops and must instead be injected via clipboard paste.
