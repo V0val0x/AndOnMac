@@ -1,5 +1,5 @@
 cask "andonmac" do
-  version "2.0.9"
+  version "2.0.10"
   sha256 :no_check # Replace with `shasum -a 256 dist/AndOnMac.dmg` for a pinned release
 
   url "https://github.com/V0val0x/AndOnMac/releases/download/v#{version}/AndOnMac.dmg"
