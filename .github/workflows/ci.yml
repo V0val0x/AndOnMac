@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    name: Build & Test (macOS)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar
+          key: ${{ runner.os }}-brew-ci-v1
+          restore-keys: |
+            ${{ runner.os }}-brew-ci-
+
+      - name: Install runtime dependencies
+        run: |
+          which scrcpy || brew install scrcpy
+          which adb || brew install android-platform-tools
+
+      - name: Build Swift Package
+        run: swift build -v
+
+      - name: Run Test Suite
+        run: swift test -v
