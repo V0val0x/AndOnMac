@@ -738,11 +738,11 @@ public struct PhoneMirrorFrameView: View {
                         }
                         .onEnded { value in
                             withAnimation(.spring()) {
-                                if value.translation.height < -55 {
-                                    // High drag -> App Switcher (Recents)
+                                if value.translation.height < -160 {
+                                    // Very tall drag -> App Switcher (Recents)
                                     appState.triggerAppSwitch()
-                                } else if value.translation.height < -20 {
-                                    // Short drag -> Home
+                                } else if value.translation.height < -15 {
+                                    // Normal upward drag -> Home
                                     appState.triggerHome()
                                 }
                                 dragOffset = 0
