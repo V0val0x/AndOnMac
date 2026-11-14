@@ -210,6 +210,63 @@ public struct PhoneMirrorFrameView: View {
                     Spacer()
                 }
             }
+            
+            // Phone Screen Off / Locked Overlay (1-in-1 with macOS Sequoia iPhone Mirroring)
+            if appState.isPhoneScreenOff || appState.isPhoneLocked {
+                phoneLockedOrScreenOffOverlay
+                    .transition(.opacity)
+            }
+        }
+    }
+    
+    private var phoneLockedOrScreenOffOverlay: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .background(Color.black.opacity(0.65))
+                .makeWindowDraggable()
+            
+            VStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.12))
+                        .frame(width: 64, height: 64)
+                    Image(systemName: appState.isPhoneLocked ? "lock.fill" : "moon.zzz.fill")
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                
+                VStack(spacing: 4) {
+                    Text(appState.isPhoneLocked ? "Телефон заблокирован" : "Экран телефона выключен")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("Нажмите кнопку ниже, чтобы разбудить и разблокировать экран устройства.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                
+                Button {
+                    appState.triggerUnlock()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        appState.refreshDevices()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.open.fill")
+                        Text("Разбудить и разблокировать")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(16)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(20)
         }
     }
     
@@ -438,6 +495,20 @@ public struct PhoneMirrorFrameView: View {
                                 Text(device.connectionType == .wifi ? "Беспроводное соединение (Wi-Fi)" : "Подключен по Type-C")
                                     .font(.caption)
                                     .foregroundColor(.white.opacity(0.6))
+                                if appState.isPhoneScreenOff || appState.isPhoneLocked {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: appState.isPhoneLocked ? "lock.fill" : "moon.zzz.fill")
+                                            .font(.system(size: 10))
+                                        Text(appState.isPhoneLocked ? "Телефон заблокирован" : "Экран выключен")
+                                            .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .foregroundColor(.orange)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(Color.orange.opacity(0.15))
+                                    .cornerRadius(10)
+                                    .padding(.top, 2)
+                                }
                             }
                         }
                         .contentShape(Rectangle())

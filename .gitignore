@@ -11,3 +11,6 @@ DerivedData/
 # Distribution outputs
 dist/
 *.dmg
+
+# Local launch & promotion notes
+LAUNCH_PLAN.md

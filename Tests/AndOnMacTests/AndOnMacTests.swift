@@ -512,4 +512,27 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(parsedW, 128, "Expected video stream reader to parse H.264 SPS width=128 concurrently while control socket is open")
         XCTAssertEqual(parsedH, 96, "Expected video stream reader to parse H.264 SPS height=96 concurrently while control socket is open")
     }
+    
+    func testParsePowerAndLockState() {
+        let awakeUnlocked = ADBService.parsePowerAndLockState(
+            powerDump: "  mWakefulness=Awake\n",
+            policyDump: "    KeyguardServiceDelegate\n      showing=false\n"
+        )
+        XCTAssertFalse(awakeUnlocked.isScreenOff)
+        XCTAssertFalse(awakeUnlocked.isLocked)
+        
+        let asleepLocked = ADBService.parsePowerAndLockState(
+            powerDump: "  mWakefulness=Asleep\n",
+            policyDump: "    KeyguardServiceDelegate\n      showing=true\n"
+        )
+        XCTAssertTrue(asleepLocked.isScreenOff)
+        XCTAssertTrue(asleepLocked.isLocked)
+        
+        let dozingDreamLock = ADBService.parsePowerAndLockState(
+            powerDump: "  mWakefulness=Dozing\n",
+            policyDump: "  mShowingDream=false mDreamingLockscreen=true\n"
+        )
+        XCTAssertTrue(dozingDreamLock.isScreenOff)
+        XCTAssertTrue(dozingDreamLock.isLocked)
+    }
 }

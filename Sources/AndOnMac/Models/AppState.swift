@@ -28,6 +28,8 @@ public final class AppState: ObservableObject {
     @Published public var notifications: [NotificationItem] = []
     @Published public var isDemoMode: Bool = false
     @Published public var currentLanguageBadge: String = ""
+    @Published public var isPhoneScreenOff: Bool = false
+    @Published public var isPhoneLocked: Bool = false
     
     // Preferences
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
@@ -291,8 +293,19 @@ public final class AppState: ObservableObject {
             
             if list.isEmpty {
                 self.hasAutoConnectedThisSession = false
+                self.isPhoneScreenOff = false
+                self.isPhoneLocked = false
                 self.attemptAutoWifiReconnect()
             } else {
+                if let ready = list.first(where: { $0.state == .ready }) {
+                    let lockState = await ADBService.shared.fetchScreenAndLockState(serial: ready.id)
+                    if self.isPhoneScreenOff != lockState.isScreenOff {
+                        self.isPhoneScreenOff = lockState.isScreenOff
+                    }
+                    if self.isPhoneLocked != lockState.isLocked {
+                        self.isPhoneLocked = lockState.isLocked
+                    }
+                }
                 self.handleAutomation(devices: list)
             }
         }

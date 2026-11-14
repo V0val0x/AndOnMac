@@ -148,6 +148,30 @@ public final class ADBService: @unchecked Sendable {
         return port
     }
     
+    /// Parses Android power wakefulness and keyguard lock state from `dumpsys power` and `dumpsys window policy`
+    public static func parsePowerAndLockState(powerDump: String, policyDump: String) -> (isScreenOff: Bool, isLocked: Bool) {
+        let lowerPower = powerDump.lowercased()
+        let isScreenOff = lowerPower.contains("mwakefulness=asleep") || lowerPower.contains("mwakefulness=dozing")
+        let lowerPolicy = policyDump.lowercased()
+        let isLocked = lowerPolicy.contains("showing=true") || lowerPolicy.contains("mdreaminglockscreen=true")
+        return (isScreenOff, isLocked)
+    }
+    
+    /// Queries whether the connected Android device currently has its screen off or keyguard locked
+    public func fetchScreenAndLockState(serial: String) async -> (isScreenOff: Bool, isLocked: Bool) {
+        async let powerTask = execute(
+            arguments: ["-s", serial, "shell", "dumpsys power | grep -E 'mWakefulness='"],
+            timeoutSeconds: 2.0
+        )
+        async let policyTask = execute(
+            arguments: ["-s", serial, "shell", "dumpsys window policy | grep -E 'showing=|mDreamingLockscreen='"],
+            timeoutSeconds: 2.0
+        )
+        let powerOut = (try? await powerTask) ?? ""
+        let policyOut = (try? await policyTask) ?? ""
+        return Self.parsePowerAndLockState(powerDump: powerOut, policyDump: policyOut)
+    }
+    
     /// Lists all connected Android devices with metadata
     public func listDevices() async -> [Device] {
         guard let output = try? await execute(arguments: ["devices", "-l"]) else {
