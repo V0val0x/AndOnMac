@@ -18,6 +18,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     private var controlSocket: Int32 = -1
     private var isRunning = false
     private var sessionGeneration: UInt64 = 0
+    private var clipboardSequence: UInt64 = 0
     private var activeLocalPort: Int?
     private var activeSerial: String?
     private var didTurnScreenOff = false
@@ -849,8 +850,18 @@ public final class ScrcpyClient: @unchecked Sendable {
         sendControlMessage(msgUp)
     }
     
-    /// Injects raw text (UTF-8)
+    /// Returns true if text contains non-ASCII characters (e.g. Cyrillic) that scrcpy's
+    /// TYPE_INJECT_TEXT KeyCharacterMap drops and must instead be injected via clipboard paste.
+    public static func shouldUseClipboardPaste(for text: String) -> Bool {
+        return !text.isEmpty && !text.allSatisfy { $0.isASCII }
+    }
+
+    /// Injects raw text (UTF-8), routing non-ASCII text through clipboard paste so Cyrillic works.
     public func sendText(_ text: String) {
+        if Self.shouldUseClipboardPaste(for: text) {
+            setClipboardText(text, paste: true)
+            return
+        }
         guard let textData = text.data(using: .utf8) else { return }
         var msg = Data()
         msg.append(1) // TYPE_INJECT_TEXT
@@ -897,9 +908,10 @@ public final class ScrcpyClient: @unchecked Sendable {
     /// Set clipboard content (Universal Clipboard)
     public func setClipboardText(_ text: String, paste: Bool = false) {
         guard let textData = text.data(using: .utf8) else { return }
+        clipboardSequence &+= 1
         var msg = Data()
         msg.append(9) // TYPE_SET_CLIPBOARD
-        var seq: UInt64 = 0
+        var seq = clipboardSequence.bigEndian
         msg.append(Data(bytes: &seq, count: 8))
         msg.append(paste ? 1 : 0) // paste = true/false
         var len = UInt32(textData.count).bigEndian

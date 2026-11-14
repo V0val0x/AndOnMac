@@ -495,6 +495,26 @@ public final class AppState: ObservableObject {
         }
     }
     
+    public func disconnectDevice(_ device: Device) {
+        if isMirroring && selectedDeviceId == device.id {
+            toggleMirroring()
+        }
+        guard device.connectionType == .wifi else {
+            refreshDevices()
+            return
+        }
+        Task {
+            _ = try? await ADBService.shared.execute(arguments: ["disconnect", device.id], timeoutSeconds: 4.0)
+            await MainActor.run {
+                if self.selectedDeviceId == device.id {
+                    self.selectedDeviceId = nil
+                }
+                self.statusMessage = "Отключено от \(device.displayName)"
+                self.refreshDevices()
+            }
+        }
+    }
+
     public func removeKnownDevice(id: String) {
         knownDevices.removeAll { $0.id == id }
         if let encoded = try? JSONEncoder().encode(knownDevices) {

@@ -541,6 +541,56 @@ public struct PhoneMirrorFrameView: View {
                         }
                         .buttonStyle(.bordered)
                         .tint(.white.opacity(0.8))
+
+                        HStack(spacing: 8) {
+                            if appState.devices.count > 1 {
+                                Menu {
+                                    ForEach(appState.devices) { candidate in
+                                        Button {
+                                            appState.selectedDeviceId = candidate.id
+                                        } label: {
+                                            if candidate.id == device.id {
+                                                Label(candidate.displayName, systemImage: "checkmark")
+                                            } else {
+                                                Text("\(candidate.displayName) (\(candidate.connectionType == .wifi ? "Wi-Fi" : "USB"))")
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                        Text("Сменить")
+                                    }
+                                    .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.white.opacity(0.65))
+                            }
+
+                            Button {
+                                appState.showPairingSheet = true
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "iphone.and.arrow.forward")
+                                    Text("Другой телефон")
+                                }
+                                .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.white.opacity(0.65))
+
+                            if device.connectionType == .wifi {
+                                Button {
+                                    appState.disconnectDevice(device)
+                                } label: {
+                                    Image(systemName: "wifi.slash")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.red.opacity(0.75))
+                                .help("Отключить Wi-Fi устройство")
+                            }
+                        }
                     }
                 } else {
                     // No device onboarding
