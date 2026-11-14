@@ -2,6 +2,11 @@ import Foundation
 import SwiftUI
 import Combine
 
+public enum SideDrawerMode: String, CaseIterable, Sendable {
+    case gallery
+    case files
+}
+
 public enum PhoneWindowScale: String, CaseIterable, Identifiable, Sendable {
     case smaller = "Smaller (75%)"
     case standard = "Standard (100%)"
@@ -55,6 +60,7 @@ public final class AppState: ObservableObject {
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
     @Published public var showPhotoDrawer: Bool = false
+    @Published public var drawerMode: SideDrawerMode = .gallery
     @Published public var photoTransferNotice: String? = nil
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
@@ -500,6 +506,15 @@ public final class AppState: ObservableObject {
         }
     }
     
+    public func openDrawer(mode: SideDrawerMode) {
+        if showPhotoDrawer && drawerMode == mode {
+            showPhotoDrawer = false
+        } else {
+            drawerMode = mode
+            showPhotoDrawer = true
+        }
+    }
+
     public func disconnectDevice(_ device: Device) {
         if isMirroring && selectedDeviceId == device.id {
             toggleMirroring()

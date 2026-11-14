@@ -634,4 +634,23 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(wheel.h, 0.35, accuracy: 0.0001)
         XCTAssertEqual(wheel.v, 0.35, accuracy: 0.0001)
     }
+
+    func testFileBrowserParsingSortingAndEscaping() {
+        XCTAssertEqual(FileBrowserService.shellEscape("/sdcard/My Folder/a'b.txt"), "'/sdcard/My Folder/a'\\''b.txt'")
+
+        let sample = """
+        regular file|2048|1794685000|/sdcard/notes.txt
+        directory|4096|1794684000|/sdcard/DCIM
+        regular file|512|1794686000|/sdcard/.nomedia
+        regular file|1024000|1794685500|/sdcard/archive.zip
+        """
+
+        let visibleByName = FileBrowserService.parseStatListing(sample, includeHidden: false, sortOrder: .name)
+        XCTAssertEqual(visibleByName.map(\.name), ["DCIM", "archive.zip", "notes.txt"])
+        XCTAssertTrue(visibleByName[0].isDirectory)
+        XCTAssertEqual(visibleByName[1].sfSymbolName, "doc.zipper")
+
+        let withHiddenBySize = FileBrowserService.parseStatListing(sample, includeHidden: true, sortOrder: .size)
+        XCTAssertEqual(withHiddenBySize.map(\.name), ["DCIM", "archive.zip", "notes.txt", ".nomedia"])
+    }
 }

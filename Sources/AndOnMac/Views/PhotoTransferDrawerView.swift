@@ -16,34 +16,35 @@ public struct PhotoTransferDrawerView: View {
     public var body: some View {
         let lang = appState.lang
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "photo.stack")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.blue)
-                    Text(L10n.tr("Медиатека телефона", "Phone Gallery", lang: lang))
-                        .font(.system(size: 13, weight: .bold))
+            // Header with Mode Switcher (Gallery / Files)
+            HStack(spacing: 8) {
+                Picker("", selection: $appState.drawerMode) {
+                    Text(L10n.tr("Галерея", "Gallery", lang: lang)).tag(SideDrawerMode.gallery)
+                    Text(L10n.tr("Файлы", "Files", lang: lang)).tag(SideDrawerMode.files)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if appState.drawerMode == .gallery {
                     if !photos.isEmpty {
                         Text("\(photos.count)")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.secondary)
-                            .padding(.horizontal, 6)
+                            .padding(.horizontal, 5)
                             .padding(.vertical, 2)
                             .background(Color.primary.opacity(0.08))
                             .cornerRadius(6)
                     }
-                }
-                Spacer()
 
-                Button {
-                    loadPhotos(resetLimit: false)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 12))
+                    Button {
+                        loadPhotos(resetLimit: false)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n.tr("Обновить", "Refresh", lang: lang))
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr("Обновить", "Refresh", lang: lang))
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -57,10 +58,15 @@ public struct PhotoTransferDrawerView: View {
                 .buttonStyle(.plain)
                 .help(L10n.tr("Закрыть", "Close", lang: lang))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
             .makeWindowDraggable()
+
+            if appState.drawerMode == .files {
+                Divider()
+                FileBrowserView(appState: appState)
+            } else {
 
             // Category Filter Bar
             ScrollView(.horizontal, showsIndicators: false) {
@@ -180,6 +186,7 @@ public struct PhotoTransferDrawerView: View {
             .background(Color.primary.opacity(0.03))
             .contentShape(Rectangle())
             .makeWindowDraggable()
+            }
         }
         .frame(width: 290)
         .background(

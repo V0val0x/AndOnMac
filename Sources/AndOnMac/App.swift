@@ -36,9 +36,14 @@ struct AndOnMacApp: App {
                 .keyboardShortcut("3", modifiers: .command)
                 
                 Button(L10n.tr("Медиатека и перенос фото", "Phone Gallery & Photo Transfer", lang: appState.lang)) {
-                    appState.showPhotoDrawer.toggle()
+                    appState.openDrawer(mode: .gallery)
                 }
                 .keyboardShortcut("4", modifiers: .command)
+
+                Button(L10n.tr("Файловый менеджер (Android)", "File Manager (Android)", lang: appState.lang)) {
+                    appState.openDrawer(mode: .files)
+                }
+                .keyboardShortcut("5", modifiers: .command)
                 
                 Divider()
                 
