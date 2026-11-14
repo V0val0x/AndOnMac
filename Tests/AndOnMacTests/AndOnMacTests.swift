@@ -535,4 +535,26 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertTrue(dozingDreamLock.isScreenOff)
         XCTAssertTrue(dozingDreamLock.isLocked)
     }
+
+    func testShouldUseClipboardPasteForCyrillicAndASCII() {
+        XCTAssertFalse(ScrcpyClient.shouldUseClipboardPaste(for: ""))
+        XCTAssertFalse(ScrcpyClient.shouldUseClipboardPaste(for: "Hello, world! 123"))
+        XCTAssertTrue(ScrcpyClient.shouldUseClipboardPaste(for: "Привет"))
+        XCTAssertTrue(ScrcpyClient.shouldUseClipboardPaste(for: "а"))
+        XCTAssertTrue(ScrcpyClient.shouldUseClipboardPaste(for: "Test Привет"))
+    }
+
+    func testFormatConnectFailureMessage() {
+        let refused = ADBService.formatConnectFailureMessage(
+            host: "10.242.11.23",
+            port: 41051,
+            rawOutput: "failed to connect to '10.242.11.23:41051': Connection refused"
+        )
+        XCTAssertTrue(refused.contains("10.242.11.23:41051"))
+        XCTAssertTrue(refused.contains("Сопряжение по PIN"))
+        XCTAssertTrue(refused.contains("хотспот"))
+
+        let empty = ADBService.formatConnectFailureMessage(host: "192.168.1.5", port: 5555, rawOutput: "   ")
+        XCTAssertEqual(empty, "Не удалось подключиться к 192.168.1.5:5555")
+    }
 }

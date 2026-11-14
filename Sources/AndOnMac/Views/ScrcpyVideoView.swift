@@ -230,30 +230,24 @@ public final class ScrcpyDisplayNSView: NSView {
             return
         }
         
-        // Command key combinations
+        // Command key combinations (matched by hardware ANSI keyCode so they work on Russian/non-Latin layouts)
         if event.modifierFlags.contains(.command) {
-            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-            switch key {
-            case "v":
-                // Universal Clipboard Paste (Cmd+V)
+            switch event.keyCode {
+            case 9: // V -> Universal Clipboard Paste (Cmd+V)
                 if let string = NSPasteboard.general.string(forType: .string) {
                     ScrcpyClient.shared.setClipboardText(string, paste: true)
                     return
                 }
-            case "c":
-                // Copy (Cmd+C -> Android KEYCODE_COPY = 278)
+            case 8: // C -> Copy (Cmd+C -> Android KEYCODE_COPY = 278)
                 ScrcpyClient.shared.sendKeycode(278)
                 return
-            case "x":
-                // Cut (Cmd+X -> Android KEYCODE_CUT = 277)
+            case 7: // X -> Cut (Cmd+X -> Android KEYCODE_CUT = 277)
                 ScrcpyClient.shared.sendKeycode(277)
                 return
-            case "a":
-                // Select All (Cmd+A -> Android KEYCODE_A with CTRL or KEYCODE_ALL_APPS)
-                // Inject Ctrl+A via text/key combinations
-                ScrcpyClient.shared.sendKeycode(29) // KEYCODE_A
+            case 0: // A -> Select All (Cmd+A -> Android KEYCODE_A with CTRL = 0x3000)
+                ScrcpyClient.shared.sendKeycode(29, metaState: 0x3000)
                 return
-            case "\r", "\n": // Cmd + Return -> Send message
+            case 36, 76: // Return / Keypad Enter -> Send message
                 ScrcpyClient.shared.sendKeycode(66, metaState: 0x3000)
                 return
             default:

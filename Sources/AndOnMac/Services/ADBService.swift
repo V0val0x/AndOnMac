@@ -431,8 +431,17 @@ public final class ADBService: @unchecked Sendable {
         if success {
             DiscoveryService.shared.registerConnectPort(for: host, port: port)
         }
-        let cleaned = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (success, success ? "Успешно подключено к \(host):\(port)" : cleaned)
+        return (success, success ? "Успешно подключено к \(host):\(port)" : Self.formatConnectFailureMessage(host: host, port: port, rawOutput: output))
+    }
+
+    /// Formats a clear diagnostic message when `adb connect` fails (e.g. unpaired device or hotspot client isolation).
+    public static func formatConnectFailureMessage(host: String, port: Int, rawOutput: String) -> String {
+        let cleaned = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = cleaned.lowercased()
+        if lower.contains("failed to connect") || lower.contains("connection refused") || lower.contains("cannot connect") || lower.contains("timed out") {
+            return "Не удалось подключиться к \(host):\(port).\nЕсли это новый телефон — сначала выполните «Сопряжение по PIN» (вкладка Wi-Fi).\nЕсли Mac подключён к точке доступа другого телефона, Android-хотспот часто блокирует прямое соединение между клиентами — используйте общую сеть Wi-Fi или кабель USB."
+        }
+        return cleaned.isEmpty ? "Не удалось подключиться к \(host):\(port)" : cleaned
     }
     
     /// Disables stale Wi-Fi connections, resets USB mode, and restarts the local ADB server
