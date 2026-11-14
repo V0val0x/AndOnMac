@@ -593,4 +593,43 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .downloads, limit: 500), ["/sdcard/Download/photo_dl.webp"])
         XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .videos, limit: 500), ["/sdcard/Movies/clip.mp4"])
     }
+
+    func testSmartphoneEdgeGestureDetection() {
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.02, y: 0.5), endNormalized: CGPoint(x: 0.18, y: 0.52)),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.97, y: 0.5), endNormalized: CGPoint(x: 0.80, y: 0.51)),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.96), endNormalized: CGPoint(x: 0.51, y: 0.82)),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.96), endNormalized: CGPoint(x: 0.5, y: 0.65)),
+            .appSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), endNormalized: CGPoint(x: 0.5, y: 0.20)),
+            .notifications
+        )
+        XCTAssertNil(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.5), endNormalized: CGPoint(x: 0.7, y: 0.5))
+        )
+    }
+
+    func testTrackpadDragAndMouseWheelClamping() {
+        let huge = ScrcpyDisplayNSView.trackpadDragDelta(scrollingDeltaX: 500, scrollingDeltaY: -500, viewSize: CGSize(width: 320, height: 700))
+        XCTAssertEqual(huge.x, 0.08, accuracy: 0.0001)
+        XCTAssertEqual(huge.y, -0.08, accuracy: 0.0001)
+
+        let gentle = ScrcpyDisplayNSView.trackpadDragDelta(scrollingDeltaX: 16, scrollingDeltaY: 0, viewSize: CGSize(width: 320, height: 700))
+        XCTAssertEqual(gentle.x, (16.0 * 0.75) / 320.0, accuracy: 0.0001)
+
+        let wheel = ScrcpyDisplayNSView.clampedMouseWheelScroll(deltaX: -20, deltaY: 20)
+        XCTAssertEqual(wheel.h, 0.35, accuracy: 0.0001)
+        XCTAssertEqual(wheel.v, 0.35, accuracy: 0.0001)
+    }
 }

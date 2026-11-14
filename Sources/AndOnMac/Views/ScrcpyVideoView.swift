@@ -47,6 +47,61 @@ public final class ScrcpyDisplayNSView: NSView {
     private var latestImage: CGImage?
     public private(set) var hasRenderedFrame: Bool = false
     private var isTrackingTouch: Bool = false
+    private var touchStartNormalized: CGPoint?
+    private var isTrackpadPanning: Bool = false
+    private var trackpadPanPoint: CGPoint = .zero
+    private var isPinching: Bool = false
+    private var pinchCenter: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    private var pinchSpread: CGFloat = 0.12
+
+    public enum SmartphoneEdgeGesture: Equatable, Sendable {
+        case back
+        case home
+        case appSwitcher
+        case notifications
+    }
+
+    /// Detects Android smartphone edge gestures (edge-back, bottom-home, bottom-recents, top-notifications).
+    public static func detectEdgeGesture(startNormalized: CGPoint, endNormalized: CGPoint) -> SmartphoneEdgeGesture? {
+        let dx = endNormalized.x - startNormalized.x
+        let dy = endNormalized.y - startNormalized.y
+
+        // Left edge swipe right -> Back
+        if startNormalized.x <= 0.06, dx >= 0.08, abs(dx) > abs(dy) * 1.25 {
+            return .back
+        }
+        // Right edge swipe left -> Back
+        if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
+            return .back
+        }
+        // Bottom edge swipe up -> Home (short) or App Switcher (tall)
+        if startNormalized.y >= 0.92, dy <= -0.08, abs(dy) > abs(dx) * 1.25 {
+            return dy <= -0.24 ? .appSwitcher : .home
+        }
+        // Top edge swipe down -> Notification Shade
+        if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {
+            return .notifications
+        }
+        return nil
+    }
+
+    /// Converts high-precision macOS trackpad deltas into damped, bounded normalized drag increments.
+    public static func trackpadDragDelta(scrollingDeltaX: CGFloat, scrollingDeltaY: CGFloat, viewSize: CGSize) -> CGPoint {
+        let w = max(1.0, viewSize.width)
+        let h = max(1.0, viewSize.height)
+        let sensitivity: CGFloat = 0.75
+        let maxStep: CGFloat = 0.08
+        let nx = max(-maxStep, min(maxStep, (scrollingDeltaX * sensitivity) / w))
+        let ny = max(-maxStep, min(maxStep, (scrollingDeltaY * sensitivity) / h))
+        return CGPoint(x: nx, y: ny)
+    }
+
+    /// Clamps discrete physical mouse wheel scroll deltas so one notch never jumps multiple pages.
+    public static func clampedMouseWheelScroll(deltaX: CGFloat, deltaY: CGFloat) -> (h: Float, v: Float) {
+        let h = max(-0.35, min(0.35, Float(-deltaX) / 12.0))
+        let v = max(-0.35, min(0.35, Float(deltaY) / 12.0))
+        return (h, v)
+    }
     
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -184,7 +239,12 @@ public final class ScrcpyDisplayNSView: NSView {
             return
         }
         isTrackingTouch = true
-        ScrcpyClient.shared.sendTouchEvent(action: 0, normalizedX: pt.x, normalizedY: pt.y)
+        let startPt = CGPoint(x: pt.x, y: pt.y)
+        touchStartNormalized = startPt
+        // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
+        let clampedX: CGFloat = startPt.x <= 0.05 ? 0.0 : (startPt.x >= 0.95 ? 1.0 : startPt.x)
+        let clampedY: CGFloat = startPt.y >= 0.94 ? 1.0 : (startPt.y <= 0.05 ? 0.0 : startPt.y)
+        ScrcpyClient.shared.sendTouchEvent(action: 0, normalizedX: clampedX, normalizedY: clampedY)
     }
     
     override public func mouseDragged(with event: NSEvent) {
@@ -195,8 +255,29 @@ public final class ScrcpyDisplayNSView: NSView {
     override public func mouseUp(with event: NSEvent) {
         guard isTrackingTouch else { return }
         isTrackingTouch = false
+        let start = touchStartNormalized
+        touchStartNormalized = nil
         guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+
+        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+            ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
+            performEdgeGesture(gesture)
+            return
+        }
         ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
+    }
+
+    private func performEdgeGesture(_ gesture: SmartphoneEdgeGesture) {
+        switch gesture {
+        case .back:
+            ScrcpyClient.shared.sendKeycode(4) // KEYCODE_BACK
+        case .home:
+            ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+        case .appSwitcher:
+            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+        case .notifications:
+            ScrcpyClient.shared.expandNotificationsPanel()
+        }
     }
     
     override public func rightMouseDown(with event: NSEvent) {
@@ -204,13 +285,88 @@ public final class ScrcpyDisplayNSView: NSView {
         ScrcpyClient.shared.sendBackOrScreenOn()
     }
     
-    // MARK: - Trackpad & Mouse Scrolling
+    // MARK: - Trackpad & Mouse Scrolling + Multi-Touch Gestures
     override public func scrollWheel(with event: NSEvent) {
-        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
-        // Scale delta for smooth scroll on Android
-        let deltaH = -Float(event.scrollingDeltaX) / 100.0
-        let deltaV = Float(event.scrollingDeltaY) / 100.0
-        ScrcpyClient.shared.sendScrollEvent(normalizedX: pt.x, normalizedY: pt.y, deltaH: deltaH, deltaV: deltaV)
+        guard hasRenderedFrame, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+
+        if event.hasPreciseScrollingDeltas {
+            // Suppress macOS momentum inertia so lifting fingers stops scrolling cleanly instead of flinging pages
+            guard event.momentumPhase == [] else {
+                if isTrackpadPanning {
+                    ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
+                    isTrackpadPanning = false
+                }
+                return
+            }
+
+            let vSize = videoRect().size
+            let delta = Self.trackpadDragDelta(scrollingDeltaX: event.scrollingDeltaX, scrollingDeltaY: event.scrollingDeltaY, viewSize: vSize)
+
+            switch event.phase {
+            case .mayBegin:
+                return
+            case .began:
+                isTrackpadPanning = true
+                trackpadPanPoint = CGPoint(x: max(0.08, min(0.92, pt.x)), y: max(0.08, min(0.92, pt.y)))
+                ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
+            case .changed, []:
+                if !isTrackpadPanning {
+                    isTrackpadPanning = true
+                    trackpadPanPoint = CGPoint(x: max(0.08, min(0.92, pt.x)), y: max(0.08, min(0.92, pt.y)))
+                    ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
+                }
+                trackpadPanPoint = CGPoint(
+                    x: max(0.01, min(0.99, trackpadPanPoint.x + delta.x)),
+                    y: max(0.01, min(0.99, trackpadPanPoint.y + delta.y))
+                )
+                ScrcpyClient.shared.sendTouchEvent(action: 2, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
+            case .ended, .cancelled:
+                if isTrackpadPanning {
+                    ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
+                    isTrackpadPanning = false
+                }
+            default:
+                break
+            }
+        } else {
+            let clamped = Self.clampedMouseWheelScroll(deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY)
+            ScrcpyClient.shared.sendScrollEvent(normalizedX: pt.x, normalizedY: pt.y, deltaH: clamped.h, deltaV: clamped.v)
+        }
+    }
+
+    override public func magnify(with event: NSEvent) {
+        guard hasRenderedFrame, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+        switch event.phase {
+        case .began:
+            isPinching = true
+            pinchCenter = CGPoint(x: max(0.2, min(0.8, pt.x)), y: max(0.2, min(0.8, pt.y)))
+            pinchSpread = 0.12
+            ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 20, normalizedX: pinchCenter.x - pinchSpread, normalizedY: pinchCenter.y)
+            ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 21, normalizedX: pinchCenter.x + pinchSpread, normalizedY: pinchCenter.y)
+        case .changed:
+            guard isPinching else { return }
+            pinchSpread = max(0.03, min(0.45, pinchSpread + event.magnification * 0.22))
+            ScrcpyClient.shared.sendTouchEvent(action: 2, pointerId: 20, normalizedX: max(0.02, pinchCenter.x - pinchSpread), normalizedY: pinchCenter.y)
+            ScrcpyClient.shared.sendTouchEvent(action: 2, pointerId: 21, normalizedX: min(0.98, pinchCenter.x + pinchSpread), normalizedY: pinchCenter.y)
+        case .ended, .cancelled:
+            guard isPinching else { return }
+            isPinching = false
+            ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 20, normalizedX: max(0.02, pinchCenter.x - pinchSpread), normalizedY: pinchCenter.y)
+            ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 21, normalizedX: min(0.98, pinchCenter.x + pinchSpread), normalizedY: pinchCenter.y)
+        default:
+            break
+        }
+    }
+
+    override public func swipe(with event: NSEvent) {
+        guard hasRenderedFrame else { return }
+        if abs(event.deltaX) > abs(event.deltaY) {
+            ScrcpyClient.shared.sendKeycode(4) // 3-finger swipe left/right -> Back
+        } else if event.deltaY > 0 {
+            ScrcpyClient.shared.sendKeycode(3) // 3-finger swipe up -> Home
+        } else if event.deltaY < 0 {
+            ScrcpyClient.shared.expandNotificationsPanel() // 3-finger swipe down -> Notifications
+        }
     }
     
     // MARK: - Keyboard Events
