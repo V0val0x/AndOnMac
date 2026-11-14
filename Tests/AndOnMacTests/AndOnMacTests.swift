@@ -545,16 +545,52 @@ final class AndOnMacTests: XCTestCase {
     }
 
     func testFormatConnectFailureMessage() {
-        let refused = ADBService.formatConnectFailureMessage(
+        let refusedRu = ADBService.formatConnectFailureMessage(
             host: "10.242.11.23",
             port: 41051,
-            rawOutput: "failed to connect to '10.242.11.23:41051': Connection refused"
+            rawOutput: "failed to connect to '10.242.11.23:41051': Connection refused",
+            lang: .russian
         )
-        XCTAssertTrue(refused.contains("10.242.11.23:41051"))
-        XCTAssertTrue(refused.contains("Сопряжение по PIN"))
-        XCTAssertTrue(refused.contains("хотспот"))
+        XCTAssertTrue(refusedRu.contains("10.242.11.23:41051"))
+        XCTAssertTrue(refusedRu.contains("Сопряжение по PIN"))
+        XCTAssertTrue(refusedRu.contains("хотспот"))
 
-        let empty = ADBService.formatConnectFailureMessage(host: "192.168.1.5", port: 5555, rawOutput: "   ")
+        let refusedEn = ADBService.formatConnectFailureMessage(
+            host: "10.242.11.23",
+            port: 41051,
+            rawOutput: "failed to connect to '10.242.11.23:41051': Connection refused",
+            lang: .english
+        )
+        XCTAssertTrue(refusedEn.contains("PIN Pairing"))
+        XCTAssertTrue(refusedEn.contains("hotspot"))
+
+        let empty = ADBService.formatConnectFailureMessage(host: "192.168.1.5", port: 5555, rawOutput: "   ", lang: .russian)
         XCTAssertEqual(empty, "Не удалось подключиться к 192.168.1.5:5555")
+    }
+
+    func testAppLanguageSystemResolutionAndLocalization() {
+        XCTAssertEqual(AppLanguage.resolveSystemLanguage(preferredLanguages: ["ru-RU", "en-US"]), .russian)
+        XCTAssertEqual(AppLanguage.resolveSystemLanguage(preferredLanguages: ["en-US", "ru-RU"]), .english)
+        XCTAssertEqual(AppLanguage.resolveSystemLanguage(preferredLanguages: ["de-DE"]), .english)
+        XCTAssertEqual(L10n.tr("Привет", "Hello", lang: .russian), "Привет")
+        XCTAssertEqual(L10n.tr("Привет", "Hello", lang: .english), "Hello")
+    }
+
+    func testPhotoTransferParseMediaLinesAndFilters() {
+        var lines: [String] = []
+        for i in 1...60 {
+            lines.append("179468526\(i)|/sdcard/DCIM/Camera/IMG_\(i).jpg")
+        }
+        lines.append("1794685000|/sdcard/Pictures/Screenshots/Screenshot_1.png")
+        lines.append("1794684999|/sdcard/Download/photo_dl.webp")
+        lines.append("1794684998|/sdcard/Movies/clip.mp4")
+        let raw = lines.joined(separator: "\n")
+
+        let all = PhotoTransferService.parseMediaLines(raw, folder: .all, limit: 500)
+        XCTAssertEqual(all.count, 63, "Gallery should not truncate at 24 items")
+        XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .camera, limit: 500).count, 60)
+        XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .screenshots, limit: 500), ["/sdcard/Pictures/Screenshots/Screenshot_1.png"])
+        XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .downloads, limit: 500), ["/sdcard/Download/photo_dl.webp"])
+        XCTAssertEqual(PhotoTransferService.parseMediaLines(raw, folder: .videos, limit: 500), ["/sdcard/Movies/clip.mp4"])
     }
 }

@@ -237,10 +237,12 @@ public struct PhoneMirrorFrameView: View {
                 }
                 
                 VStack(spacing: 4) {
-                    Text(appState.isPhoneLocked ? "Телефон заблокирован" : "Экран телефона выключен")
+                    Text(appState.isPhoneLocked
+                         ? L10n.tr("Телефон заблокирован", "Phone is locked", lang: appState.lang)
+                         : L10n.tr("Экран телефона выключен", "Phone screen is off", lang: appState.lang))
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.white)
-                    Text("Нажмите кнопку ниже, чтобы разбудить и разблокировать экран устройства.")
+                    Text(L10n.tr("Нажмите кнопку ниже, чтобы разбудить и разблокировать экран устройства.", "Click the button below to wake and unlock your device.", lang: appState.lang))
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.75))
                         .multilineTextAlignment(.center)
@@ -255,7 +257,7 @@ public struct PhoneMirrorFrameView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "lock.open.fill")
-                        Text("Разбудить и разблокировать")
+                        Text(L10n.tr("Разбудить и разблокировать", "Wake & Unlock", lang: appState.lang))
                             .font(.system(size: 12, weight: .bold))
                     }
                     .padding(.horizontal, 16)
@@ -288,7 +290,7 @@ public struct PhoneMirrorFrameView: View {
                     )
             }
             .buttonStyle(.plain)
-            .help("Завершить трансляцию (Cmd+W)")
+            .help(L10n.tr("Завершить трансляцию (Cmd+W)", "Stop mirroring (Cmd+W)", lang: appState.lang))
             
             Spacer()
             
@@ -303,7 +305,7 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(.white)
                     }
                     .buttonStyle(.plain)
-                    .help("Недавние приложения (Cmd+2)")
+                    .help(L10n.tr("Недавние приложения (Cmd+2)", "Recent Apps (Cmd+2)", lang: appState.lang))
                     
                     Button {
                         appState.triggerHome()
@@ -313,7 +315,7 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(.white)
                     }
                     .buttonStyle(.plain)
-                    .help("Домой (Cmd+1)")
+                    .help(L10n.tr("Домой (Cmd+1)", "Home (Cmd+1)", lang: appState.lang))
                     
                     Button {
                         appState.triggerNotifications()
@@ -323,7 +325,7 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(.white)
                     }
                     .buttonStyle(.plain)
-                    .help("Уведомления (Cmd+3)")
+                    .help(L10n.tr("Уведомления (Cmd+3)", "Notifications (Cmd+3)", lang: appState.lang))
                     
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -335,7 +337,7 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(appState.showPhotoDrawer ? .cyan : .white)
                     }
                     .buttonStyle(.plain)
-                    .help("Медиатека и перенос фото (Cmd+4)")
+                    .help(L10n.tr("Медиатека и перенос фото (Cmd+4)", "Gallery & Photo Transfer (Cmd+4)", lang: appState.lang))
                     
                     Button {
                         appState.triggerPower()
@@ -345,7 +347,7 @@ public struct PhoneMirrorFrameView: View {
                             .foregroundColor(.white)
                     }
                     .buttonStyle(.plain)
-                    .help("Блокировка / Экран (Cmd+P)")
+                    .help(L10n.tr("Блокировка / Экран (Cmd+P)", "Lock / Screen (Cmd+P)", lang: appState.lang))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
@@ -416,7 +418,7 @@ public struct PhoneMirrorFrameView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help("Закрыть окно")
+                    .help(L10n.tr("Закрыть окно", "Close Window", lang: appState.lang))
                     
                     HStack {
                         Text("AndOnMac")
@@ -455,10 +457,10 @@ public struct PhoneMirrorFrameView: View {
                             Circle().fill(Color.orange.opacity(0.2)).frame(width: 80, height: 80)
                             Image(systemName: "hand.tap.fill").font(.system(size: 36)).foregroundColor(.orange)
                         }
-                        Text("Подтвердите на телефоне")
+                        Text(L10n.tr("Подтвердите на телефоне", "Confirm on your phone", lang: appState.lang))
                             .font(.headline.bold())
                             .foregroundColor(.white)
-                        Text("Разблокируйте **\(unauth.displayName)** и нажмите **«Разрешить»**.")
+                        Text(L10n.tr("Разблокируйте \(unauth.displayName) и нажмите «Разрешить».", "Unlock \(unauth.displayName) and tap Allow.", lang: appState.lang))
                             .font(.caption)
                             .multilineTextAlignment(.center)
                             .foregroundColor(.white.opacity(0.8))
@@ -492,14 +494,18 @@ public struct PhoneMirrorFrameView: View {
                                 Text(device.displayName)
                                     .font(.headline)
                                     .foregroundColor(.white)
-                                Text(device.connectionType == .wifi ? "Беспроводное соединение (Wi-Fi)" : "Подключен по Type-C")
+                                Text(device.connectionType == .wifi
+                                     ? L10n.tr("Беспроводное соединение (Wi-Fi)", "Wireless connection (Wi-Fi)", lang: appState.lang)
+                                     : L10n.tr("Подключен по Type-C", "Connected via USB-C", lang: appState.lang))
                                     .font(.caption)
                                     .foregroundColor(.white.opacity(0.6))
                                 if appState.isPhoneScreenOff || appState.isPhoneLocked {
                                     HStack(spacing: 5) {
                                         Image(systemName: appState.isPhoneLocked ? "lock.fill" : "moon.zzz.fill")
                                             .font(.system(size: 10))
-                                        Text(appState.isPhoneLocked ? "Телефон заблокирован" : "Экран выключен")
+                                        Text(appState.isPhoneLocked
+                                             ? L10n.tr("Телефон заблокирован", "Phone locked", lang: appState.lang)
+                                             : L10n.tr("Экран выключен", "Screen off", lang: appState.lang))
                                             .font(.system(size: 10, weight: .semibold))
                                     }
                                     .foregroundColor(.orange)
@@ -519,7 +525,7 @@ public struct PhoneMirrorFrameView: View {
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "play.fill")
-                                Text("Открыть экран")
+                                Text(L10n.tr("Открыть экран", "Open Screen", lang: appState.lang))
                             }
                             .font(.headline)
                             .frame(minWidth: 170)
@@ -535,7 +541,7 @@ public struct PhoneMirrorFrameView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "photo.stack")
-                                Text("Медиатека фото")
+                                Text(L10n.tr("Медиатека фото", "Photo Gallery", lang: appState.lang))
                             }
                             .font(.caption.bold())
                         }
@@ -559,7 +565,7 @@ public struct PhoneMirrorFrameView: View {
                                 } label: {
                                     HStack(spacing: 5) {
                                         Image(systemName: "arrow.triangle.2.circlepath")
-                                        Text("Сменить")
+                                        Text(L10n.tr("Сменить", "Switch", lang: appState.lang))
                                     }
                                     .font(.caption)
                                 }
@@ -572,7 +578,7 @@ public struct PhoneMirrorFrameView: View {
                             } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: "iphone.and.arrow.forward")
-                                    Text("Другой телефон")
+                                    Text(L10n.tr("Другой телефон", "Another Phone", lang: appState.lang))
                                 }
                                 .font(.caption)
                             }
@@ -588,7 +594,7 @@ public struct PhoneMirrorFrameView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .tint(.red.opacity(0.75))
-                                .help("Отключить Wi-Fi устройство")
+                                .help(L10n.tr("Отключить Wi-Fi устройство", "Disconnect Wi-Fi device", lang: appState.lang))
                             }
                         }
                     }
@@ -609,10 +615,10 @@ public struct PhoneMirrorFrameView: View {
                             .onAppear { pulseAnimation = true }
                             
                             VStack(spacing: 6) {
-                                Text("Подключите телефон")
+                                Text(L10n.tr("Подключите телефон", "Connect a Phone", lang: appState.lang))
                                     .font(.title3.bold())
                                     .foregroundColor(.white)
-                                Text("Подключите кабель Type-C или используйте беспроводное сопряжение по Wi-Fi.")
+                                Text(L10n.tr("Подключите кабель Type-C или используйте беспроводное сопряжение по Wi-Fi.", "Plug in a USB-C cable or pair wirelessly over Wi-Fi.", lang: appState.lang))
                                     .font(.caption)
                                     .multilineTextAlignment(.center)
                                     .foregroundColor(.white.opacity(0.7))
@@ -627,7 +633,7 @@ public struct PhoneMirrorFrameView: View {
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "wifi")
-                                Text("Wi-Fi сопряжение")
+                                Text(L10n.tr("Wi-Fi сопряжение", "Wi-Fi Pairing", lang: appState.lang))
                             }
                             .font(.subheadline.bold())
                             .padding(.horizontal, 20)
@@ -645,36 +651,67 @@ public struct PhoneMirrorFrameView: View {
                 
                 Spacer()
                 
-                // Frame style switcher button
-                Menu {
-                    ForEach(PhoneFrameStyle.allCases) { style in
-                        Button {
-                            appState.frameStyle = style
-                        } label: {
-                            HStack {
-                                if appState.frameStyle == style {
-                                    Image(systemName: "checkmark")
+                // Frame style & Language switcher row
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(PhoneFrameStyle.allCases) { style in
+                            Button {
+                                appState.frameStyle = style
+                            } label: {
+                                HStack {
+                                    if appState.frameStyle == style {
+                                        Image(systemName: "checkmark")
+                                    }
+                                    Text(style.displayName)
                                 }
-                                Text(style.displayName)
                             }
                         }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: appState.effectiveFrameStyle.iconName)
+                                .font(.system(size: 10))
+                            Text(appState.effectiveFrameStyle.displayName)
+                                .font(.system(size: 10, weight: .semibold))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 8))
+                        }
+                        .foregroundColor(.white.opacity(0.65))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: appState.effectiveFrameStyle.iconName)
-                            .font(.system(size: 10))
-                        Text(appState.effectiveFrameStyle.displayName)
-                            .font(.system(size: 10, weight: .semibold))
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 8))
+                    .menuStyle(.borderlessButton)
+
+                    Menu {
+                        ForEach(AppLanguage.allCases) { language in
+                            Button {
+                                appState.appLanguage = language
+                            } label: {
+                                HStack {
+                                    if appState.appLanguage == language {
+                                        Image(systemName: "checkmark")
+                                    }
+                                    Text(language.displayName(in: appState.lang))
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 10))
+                            Text(appState.lang == .russian ? "RU" : "EN")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundColor(.white.opacity(0.65))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.08))
+                        .cornerRadius(12)
                     }
-                    .foregroundColor(.white.opacity(0.65))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.08))
-                    .cornerRadius(12)
+                    .menuStyle(.borderlessButton)
+                    .help(L10n.tr("Язык интерфейса", "Interface Language", lang: appState.lang))
                 }
-                .menuStyle(.borderlessButton)
                 .padding(.bottom, 4)
                 
                 bottomHomeBarView

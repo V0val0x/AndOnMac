@@ -435,13 +435,17 @@ public final class ADBService: @unchecked Sendable {
     }
 
     /// Formats a clear diagnostic message when `adb connect` fails (e.g. unpaired device or hotspot client isolation).
-    public static func formatConnectFailureMessage(host: String, port: Int, rawOutput: String) -> String {
+    public static func formatConnectFailureMessage(host: String, port: Int, rawOutput: String, lang: AppLanguage? = nil) -> String {
         let cleaned = rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = cleaned.lowercased()
         if lower.contains("failed to connect") || lower.contains("connection refused") || lower.contains("cannot connect") || lower.contains("timed out") {
-            return "Не удалось подключиться к \(host):\(port).\nЕсли это новый телефон — сначала выполните «Сопряжение по PIN» (вкладка Wi-Fi).\nЕсли Mac подключён к точке доступа другого телефона, Android-хотспот часто блокирует прямое соединение между клиентами — используйте общую сеть Wi-Fi или кабель USB."
+            return L10n.tr(
+                "Не удалось подключиться к \(host):\(port).\nЕсли это новый телефон — сначала выполните «Сопряжение по PIN» (вкладка Wi-Fi).\nЕсли Mac подключён к точке доступа другого телефона, Android-хотспот часто блокирует прямое соединение между клиентами — используйте общую сеть Wi-Fi или кабель USB.",
+                "Could not connect to \(host):\(port).\nIf this is a new phone, complete \"PIN Pairing\" in the Wi-Fi tab first.\nIf your Mac is on another phone's hotspot, Android hotspots often block client-to-client connections — use a shared Wi-Fi router or USB cable.",
+                lang: lang
+            )
         }
-        return cleaned.isEmpty ? "Не удалось подключиться к \(host):\(port)" : cleaned
+        return cleaned.isEmpty ? L10n.tr("Не удалось подключиться к \(host):\(port)", "Could not connect to \(host):\(port)", lang: lang) : cleaned
     }
     
     /// Disables stale Wi-Fi connections, resets USB mode, and restarts the local ADB server
