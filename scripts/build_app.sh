@@ -54,9 +54,9 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.10</string>
+    <string>2.0.11</string>
     <key>CFBundleVersion</key>
-    <string>12</string>
+    <string>13</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -108,6 +108,10 @@ if [ ! -x "${RESOURCES_DIR}/adb" ] && [ -f "${RES_BACKUP_DIR}/adb" ]; then
     chmod +x "${RESOURCES_DIR}/adb"
 fi
 rm -rf "${RES_BACKUP_DIR}"
+
+# Bundle license and third-party attribution notices inside .app/Contents/Resources
+[ -f "LICENSE" ] && cp "LICENSE" "${RESOURCES_DIR}/LICENSE"
+[ -f "THIRD_PARTY_NOTICES.md" ] && cp "THIRD_PARTY_NOTICES.md" "${RESOURCES_DIR}/THIRD_PARTY_NOTICES.md"
 
 # Install to /Applications if writable
 if [ -w "/Applications" ]; then
