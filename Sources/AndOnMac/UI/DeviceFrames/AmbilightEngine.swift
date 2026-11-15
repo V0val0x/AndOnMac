@@ -27,9 +27,9 @@ public struct AmbilightRGB: Equatable, Sendable {
         let nr = mean + (r - mean) * vibranceBoost
         let ng = mean + (g - mean) * vibranceBoost
         let nb = mean + (b - mean) * vibranceBoost
-        // Clamp brightness so very bright white apps yield a tasteful ambient halo instead of harsh glare
+        // Clamp brightness so very bright white apps yield a subtle ambient halo instead of harsh glare
         let luma = 0.2126 * nr + 0.7152 * ng + 0.0722 * nb
-        let scale = luma > 0.68 ? (0.68 / max(0.001, luma)) : 1.0
+        let scale = luma > 0.42 ? (0.42 / max(0.001, luma)) : 1.0
         return AmbilightRGB(r: nr * scale, g: ng * scale, b: nb * scale)
     }
 }
@@ -244,17 +244,17 @@ public struct AmbilightGlowView: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                activePalette.leading.color.opacity(0.52),
-                                activePalette.top.color.opacity(0.45),
-                                activePalette.trailing.color.opacity(0.52),
-                                activePalette.bottom.color.opacity(0.45)
+                                activePalette.leading.color.opacity(0.22),
+                                activePalette.top.color.opacity(0.18),
+                                activePalette.trailing.color.opacity(0.22),
+                                activePalette.bottom.color.opacity(0.18)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
-                    .blur(radius: 26)
-                    .padding(-6)
+                    .blur(radius: 12)
+                    .padding(-1)
                     .animation(.easeOut(duration: 0.25), value: activePalette)
             }
         }

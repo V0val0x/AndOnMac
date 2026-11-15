@@ -49,7 +49,7 @@ public struct MainWindowView: View {
                     )
             }
         }
-        .padding(28)
+        .padding(16)
         .onAppear {
             windowWideForDrawer = appState.showPhotoDrawer
             drawerExpanded = appState.showPhotoDrawer
@@ -167,7 +167,7 @@ private struct WindowConfigurator: NSViewRepresentable {
             phoneHeight = (320.0 * aspect) * scale.multiplier
         }
         
-        let outerPadding: CGFloat = 56 // 28pt on each side so Ambilight glow never clips
+        let outerPadding: CGFloat = 32 // 16pt on each side so compact Ambilight glow never clips
         let targetWidth = (phoneWidth + outerPadding) + (showDrawer ? 290 + 16 : 0)
         let targetHeight = phoneHeight + outerPadding
         

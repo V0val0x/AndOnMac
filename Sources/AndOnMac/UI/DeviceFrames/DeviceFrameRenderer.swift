@@ -195,7 +195,7 @@ public struct DeviceFrameRenderer<ScreenContent: View>: View {
                         }
                     }
                 )
-                .shadow(color: Color.black.opacity(enableAmbilight ? 0.40 : 0.50), radius: 22, x: 0, y: 12)
+                .shadow(color: Color.black.opacity(enableAmbilight ? 0.36 : 0.45), radius: 13, x: 0, y: 7)
                 .makeWindowDraggable()
 
             // Inner Display Substrate + Hardware Corner Clip + Camera Optics
