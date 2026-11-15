@@ -189,25 +189,58 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
         
         syncTask?.cancel()
         syncTask = Task {
-            var targetSubtype = mapLock.withLock {
-                self.languageToSubtypeMap[currentLang]
+            var (targetSubtype, mapCount) = mapLock.withLock {
+                (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
             }
 
             if targetSubtype == nil {
                 await self.refreshDeviceSubtypes(serial: serial)
-                targetSubtype = mapLock.withLock {
-                    self.languageToSubtypeMap[currentLang]
+                (targetSubtype, mapCount) = mapLock.withLock {
+                    (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
                 }
             }
 
             guard !Task.isCancelled else { return }
 
             if let targetSubtype = targetSubtype {
-                // Directly apply the exact Android subtype via Settings.Secure (idempotent; avoids cycling through extra languages like DE)
-                _ = try? await ADBService.shared.execute(
-                    arguments: ["-s", serial, "shell", "settings put secure selected_input_method_subtype \(targetSubtype)"],
-                    timeoutSeconds: 2.0
-                )
+                let currentOut = (try? await ADBService.shared.execute(
+                    arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
+                    timeoutSeconds: 1.5
+                )) ?? ""
+                var lastSubtype = Self.parseCurrentSubtype(from: currentOut)
+                if lastSubtype == targetSubtype {
+                    return
+                }
+
+                let maxAttempts = max(1, min(mapCount, 5))
+                for _ in 0..<maxAttempts {
+                    guard !Task.isCancelled else { return }
+                    if ScrcpyClient.shared.isConnected {
+                        ScrcpyClient.shared.sendKeycode(204)
+                    } else {
+                        _ = try? await ADBService.shared.execute(
+                            arguments: ["-s", serial, "shell", "input keyevent 204"],
+                            timeoutSeconds: 2.0
+                        )
+                    }
+                    // Allow Gboard and InputMethodManagerService enough time to commit the subtype switch
+                    try? await Task.sleep(nanoseconds: 220_000_000)
+                    guard !Task.isCancelled else { return }
+
+                    let checkOut = (try? await ADBService.shared.execute(
+                        arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
+                        timeoutSeconds: 1.5
+                    )) ?? ""
+                    let updatedSubtype = Self.parseCurrentSubtype(from: checkOut)
+                    if updatedSubtype == targetSubtype {
+                        break
+                    }
+                    // If keyevent 204 did not advance the subtype at all, stop rather than spamming toggles
+                    if let prev = lastSubtype, let updated = updatedSubtype, prev == updated {
+                        break
+                    }
+                    lastSubtype = updatedSubtype
+                }
             } else if !force {
                 // Universal fallback only on explicit user switch when subtype map is unavailable
                 if ScrcpyClient.shared.isConnected {
