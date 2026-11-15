@@ -942,8 +942,9 @@ final class AndOnMacTests: XCTestCase {
     }
 
     func testQRPairingPayloadFormat() {
-        let payload = QRPairingService.buildQRPayload(serviceName: "ADB_WIFI_A1B2C3D4", password: "XYZ98765")
-        XCTAssertEqual(payload, "WIFI:T:ADB;S:ADB_WIFI_A1B2C3D4;P:XYZ98765;;")
+        let samplePin = String(repeating: "0", count: 8)
+        let payload = QRPairingService.buildQRPayload(serviceName: "ADB_WIFI_A1B2C3D4", password: samplePin)
+        XCTAssertEqual(payload, "WIFI:T:ADB;S:ADB_WIFI_A1B2C3D4;P:\(samplePin);;")
     }
 
     func testRouterlessBypassGatewayAndBluetoothPAN() {
