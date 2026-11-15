@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 
 @main
+enum AndOnMacEntryPoint {
+    static func main() {
+        if CommandLine.arguments.contains("--mcp-stdio") {
+            MCPStdioTransport.runBlocking()
+            return
+        }
+        AndOnMacApp.main()
+    }
+}
+
 struct AndOnMacApp: App {
     @StateObject private var appState = AppState()
     

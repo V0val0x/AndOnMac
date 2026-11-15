@@ -208,6 +208,42 @@ public struct PhoneMirrorFrameView: View {
                     .transition(.opacity)
             }
 
+            // Live AI Agent Activity HUD + Instant Kill-Switch
+            if let activity = appState.mcpAgentActivity {
+                VStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.cyan)
+                        Text(activity)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+
+                        Button {
+                            appState.toggleMCPAgentPause()
+                        } label: {
+                            Text(L10n.tr("Пауза", "Pause", lang: appState.lang))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.18))
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.45, shadowRadius: 10)
+                    .padding(.top, 44)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+
+                    Spacer()
+                }
+                .animation(AndMotion.hudSpring, value: appState.mcpAgentActivity)
+            }
+
             // Photo Transfer Toast Alert
             if let notice = appState.photoTransferNotice {
                 VStack {

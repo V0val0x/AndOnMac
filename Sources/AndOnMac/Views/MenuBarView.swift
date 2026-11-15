@@ -183,6 +183,79 @@ public struct MenuBarView: View {
 
             Divider()
 
+            // AI Agent Bridge (Built-in MCP Server)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle(isOn: $appState.mcpServerEnabled) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "cpu.fill")
+                                .foregroundColor(appState.isMCPRunning ? .green : .secondary)
+                            Text("AI Agent Bridge (MCP)")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .onChange(of: appState.mcpServerEnabled) { _, _ in
+                        appState.syncMCPServerState()
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(appState.isMCPRunning ? (appState.isMCPAgentPaused ? Color.orange : Color.green) : Color.secondary.opacity(0.4))
+                        .frame(width: 7, height: 7)
+                    Text(appState.isMCPRunning
+                         ? (appState.isMCPAgentPaused
+                            ? L10n.tr("Пауза (:\(appState.mcpServerPort))", "Paused (:\(appState.mcpServerPort))", lang: lang)
+                            : L10n.tr("Работает на :\(appState.mcpServerPort)", "Running on :\(appState.mcpServerPort)", lang: lang))
+                         : L10n.tr("Выключен", "Off", lang: lang))
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    TextField("Port", value: $appState.mcpServerPort, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.mini)
+                        .frame(width: 56)
+                }
+
+                if let activity = appState.mcpAgentActivity {
+                    Text(activity)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.cyan)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 6) {
+                    Button {
+                        appState.copyMCPConfigToClipboard()
+                    } label: {
+                        Label(L10n.tr("Копировать MCP Config", "Copy MCP Config", lang: lang), systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button {
+                        appState.toggleMCPAgentPause()
+                    } label: {
+                        Label(
+                            appState.isMCPAgentPaused
+                                ? L10n.tr("Возобновить", "Resume", lang: lang)
+                                : L10n.tr("Пауза агента", "Pause Agent", lang: lang),
+                            systemImage: appState.isMCPAgentPaused ? "play.fill" : "hand.raised.fill"
+                        )
+                        .foregroundColor(appState.isMCPAgentPaused ? .green : .orange)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+
+            Divider()
+
             // Device Actions & Dock Toggle
             HStack {
                 Button(L10n.tr("Поиск", "Scan", lang: lang)) {

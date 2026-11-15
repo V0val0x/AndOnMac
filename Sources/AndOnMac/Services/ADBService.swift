@@ -50,6 +50,12 @@ public final class ADBService: @unchecked Sendable {
     /// Executes an ADB command asynchronously with a strict timeout to prevent indefinite hangs
     @discardableResult
     public func execute(arguments: [String], timeoutSeconds: Double = 6.0) async throws -> String {
+        let data = try await executeData(arguments: arguments, timeoutSeconds: timeoutSeconds)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Executes an ADB command and returns raw stdout `Data` (safe for binary `exec-out screencap -p`).
+    public func executeData(arguments: [String], timeoutSeconds: Double = 10.0) async throws -> Data {
         if let sIdx = arguments.firstIndex(of: "-s"), sIdx + 1 < arguments.count {
             guard Self.validateSerial(arguments[sIdx + 1]) else {
                 throw NSError(domain: "ADBService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid ADB device serial."])
@@ -125,16 +131,15 @@ public final class ADBService: @unchecked Sendable {
                     
                     if !hasResumed {
                         hasResumed = true
-                        let output = String(decoding: stdoutData, as: UTF8.self)
-                        
                         if process.terminationStatus == 0 {
-                            continuation.resume(returning: output)
+                            continuation.resume(returning: stdoutData)
                         } else {
                             let errStr = String(decoding: stderrData, as: UTF8.self)
+                            let outStr = String(decoding: stdoutData, as: UTF8.self)
                             continuation.resume(throwing: NSError(
                                 domain: "ADBService",
                                 code: Int(process.terminationStatus),
-                                userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? output : errStr]
+                                userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? outStr : errStr]
                             ))
                         }
                     }

@@ -868,4 +868,69 @@ final class AndOnMacTests: XCTestCase {
         appState.updateProfile(custom, for: serial)
         XCTAssertEqual(appState.profile(for: serial), custom)
     }
+
+    // MARK: - Built-in MCP Server & Android UI Tree Tests
+
+    func testMCPServerInitializeToolsListAndKillSwitch() async throws {
+        let core = MCPServerCore.shared
+        core.isAgentPaused = false
+
+        let initReq = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#
+        let initRespData = await core.handleRawRequestData(Data(initReq.utf8))
+        XCTAssertNotNil(initRespData)
+        let initJSON = try JSONSerialization.jsonObject(with: initRespData!) as? [String: Any]
+        let initResult = initJSON?["result"] as? [String: Any]
+        XCTAssertEqual(initResult?["protocolVersion"] as? String, "2024-11-05")
+
+        let listReq = #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
+        let listRespData = await core.handleRawRequestData(Data(listReq.utf8))
+        XCTAssertNotNil(listRespData)
+        let listJSON = try JSONSerialization.jsonObject(with: listRespData!) as? [String: Any]
+        let listResult = listJSON?["result"] as? [String: Any]
+        let tools = listResult?["tools"] as? [[String: Any]]
+        XCTAssertEqual(tools?.count, 9)
+
+        // Kill-switch must block tool calls while paused
+        core.isAgentPaused = true
+        defer { core.isAgentPaused = false }
+        let callReq = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"android_list_devices","arguments":{}}}"#
+        let callRespData = await core.handleRawRequestData(Data(callReq.utf8))
+        let callJSON = try JSONSerialization.jsonObject(with: callRespData!) as? [String: Any]
+        let callResult = callJSON?["result"] as? [String: Any]
+        XCTAssertEqual(callResult?["isError"] as? Bool, true)
+    }
+
+    func testAndroidUITreeParserStripsContainersAndComputesCenters() {
+        let xml = """
+        UI hierchary dumped to: /dev/tty
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="Confirm" resource-id="com.app:id/btn_confirm" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[100,200][500,300]" />
+            <node index="2" text="" resource-id="" class="android.view.ViewGroup" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,200]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        XCTAssertEqual(nodes.count, 1)
+        XCTAssertEqual(nodes[0].text, "Confirm")
+        XCTAssertEqual(nodes[0].resource_id, "com.app:id/btn_confirm")
+        XCTAssertEqual(nodes[0].class, "Button")
+        XCTAssertEqual(nodes[0].center_x, 300)
+        XCTAssertEqual(nodes[0].center_y, 250)
+    }
+
+    func testMCPNotificationsParser() {
+        let dumpsys = """
+        NotificationRecord(0x1234: pkg=org.telegram.messenger user=UserHandle{0} id=42)
+          when=1731624000000
+          android.title=String (Alice)
+          android.text=String (Your code is 482910)
+        NotificationRecord(0x5678: pkg=com.android.systemui user=UserHandle{0} id=1)
+        """
+        let parsed = AndroidMCPTools.parseNotifications(from: dumpsys)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].package, "org.telegram.messenger")
+        XCTAssertEqual(parsed[0].title, "Alice")
+        XCTAssertEqual(parsed[0].text, "Your code is 482910")
+    }
 }

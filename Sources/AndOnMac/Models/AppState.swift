@@ -53,6 +53,8 @@ public final class AppState: ObservableObject {
     @AppStorage("deviceProfilesData") private var deviceProfilesData: Data = Data()
     @AppStorage("hideDockIcon") public var hideDockIcon: Bool = false
     @AppStorage("continuityBridgeEnabled") public var continuityBridgeEnabled: Bool = true
+    @AppStorage("mcpServerEnabled") public var mcpServerEnabled: Bool = false
+    @AppStorage("mcpServerPort") public var mcpServerPort: Int = 8765
 
     public var lang: AppLanguage {
         appLanguage.resolved
@@ -70,6 +72,9 @@ public final class AppState: ObservableObject {
     @Published public var isOCROverlayActive: Bool = false
     @Published public var installedApps: [AndroidAppItem] = []
     @Published public var isLoadingApps: Bool = false
+    @Published public var isMCPRunning: Bool = false
+    @Published public var isMCPAgentPaused: Bool = false
+    @Published public var mcpAgentActivity: String? = nil
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
@@ -139,10 +144,15 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopRecording()
             AndroidAppLauncherService.shared.stopAllAppWindows()
             ContinuityBridge.shared.stop()
+            MCPHTTPServer.shared.stop()
         }
         loadDeviceProfiles()
         applyDockVisibility()
         syncContinuityBridgeState()
+        setupMCPCallbacks()
+        if mcpServerEnabled {
+            syncMCPServerState()
+        }
         startNotificationListener()
         startDiscoveryListener()
         refreshDevices()
@@ -634,6 +644,62 @@ public final class AppState: ObservableObject {
         guard !deviceProfilesData.isEmpty,
               let decoded = try? JSONDecoder().decode([String: DeviceProfile].self, from: deviceProfilesData) else { return }
         deviceProfiles = decoded
+    }
+
+    // MARK: - Built-in MCP Server & AI Agent Kill-Switch
+
+    private func setupMCPCallbacks() {
+        MCPServerCore.shared.onAgentActivity = { [weak self] activity in
+            Task { @MainActor in
+                self?.mcpAgentActivity = activity
+            }
+        }
+    }
+
+    public func syncMCPServerState() {
+        if mcpServerEnabled {
+            let clampedPort = UInt16(max(1024, min(65535, mcpServerPort)))
+            MCPHTTPServer.shared.start(port: clampedPort) { [weak self] running in
+                Task { @MainActor in
+                    self?.isMCPRunning = running
+                }
+            }
+        } else {
+            MCPHTTPServer.shared.stop()
+            isMCPRunning = false
+        }
+    }
+
+    public func toggleMCPAgentPause() {
+        isMCPAgentPaused.toggle()
+        MCPServerCore.shared.isAgentPaused = isMCPAgentPaused
+        if isMCPAgentPaused {
+            mcpAgentActivity = nil
+        }
+    }
+
+    public func copyMCPConfigToClipboard() {
+        let executablePath = Bundle.main.executablePath
+            ?? "/Applications/AndOnMac.app/Contents/MacOS/AndOnMac"
+        let snippet = """
+        {
+          "mcpServers": {
+            "andonmac": {
+              "command": "\(executablePath)",
+              "args": ["--mcp-stdio"]
+            }
+          }
+        }
+        """
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(snippet, forType: .string)
+        photoTransferNotice = L10n.tr("MCP-конфиг скопирован", "MCP Config Copied", lang: lang)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if self.photoTransferNotice == L10n.tr("MCP-конфиг скопирован", "MCP Config Copied", lang: self.lang) {
+                self.photoTransferNotice = nil
+            }
+        }
     }
     
     public func openDrawer(mode: SideDrawerMode) {
