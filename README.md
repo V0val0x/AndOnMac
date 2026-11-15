@@ -66,17 +66,28 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 ## Installation & Quick Start
 
-### Option 1: GitHub Releases (Recommended)
-1. Download the latest `AndOnMac.dmg` from [**GitHub Releases**](https://github.com/V0val0x/AndOnMac/releases).
-2. Open `AndOnMac.dmg` and drag **AndOnMac.app** to `/Applications`.
-3. Connect your Android phone via USB-C (with **USB Debugging** enabled) or pair wirelessly via **Settings → Developer Options → Wireless Debugging**.
-
-### Option 2: Homebrew Cask Formula
-A ready-to-use Homebrew Cask definition is included at [`packaging/Casks/andonmac.rb`](./packaging/Casks/andonmac.rb):
+### Option 1: Homebrew Tap (Recommended — Zero Gatekeeper Hassle)
+Because **AndOnMac** is completely free and open-source, it is distributed without a \$99/year Apple Developer ID certificate. Installing via the official Homebrew Tap automatically clears macOS Gatekeeper quarantine so the app launches right away:
 
 ```bash
-brew install --cask ./packaging/Casks/andonmac.rb
+brew install --cask V0val0x/andonmac/andonmac
 ```
+
+To update later:
+```bash
+brew upgrade --cask andonmac
+```
+
+### Option 2: GitHub Releases (`.dmg`)
+1. Download the latest `AndOnMac.dmg` from [**GitHub Releases**](https://github.com/V0val0x/AndOnMac/releases).
+2. Open `AndOnMac.dmg` and drag **AndOnMac.app** into `/Applications`.
+3. **Bypass macOS Gatekeeper** (required once for apps without a paid Apple Developer signature):
+   * **Via Terminal (fastest):**
+     ```bash
+     xattr -cr /Applications/AndOnMac.app
+     ```
+   * **Via System Settings (macOS Sequoia / Sonoma):** Try opening `AndOnMac`, click **Done**/**Cancel** on the warning, then open **System Settings → Privacy & Security → Open Anyway**.
+4. Connect your Android phone via USB-C (with **USB Debugging** enabled) or pair wirelessly via **Settings → Developer Options → Wireless Debugging**.
 
 ### Option 3: Build from Source (macOS 14+, Swift 5.9+ / 6.x)
 ```bash
@@ -90,6 +101,17 @@ swift test
 chmod +x scripts/*.sh
 ./scripts/create_dmg.sh
 ```
+
+---
+
+## Security & ADB Privacy Model
+
+AndOnMac communicates **100% locally** between your Mac and your Android device — zero cloud servers, zero analytics, zero telemetry:
+
+* **Explicit Phone Authorization (RSA / TLS):** Both USB Debugging and Android 11+ Wireless Debugging (`_adb-tls-pairing._tcp` / `_adb-tls-connect._tcp`) require you to physically unlock your phone and approve your Mac's RSA fingerprint.
+* **No Shell / Flag Injection:** Device serials and `host:port` endpoints are strictly validated before invoking `adb`, and subprocesses use argument arrays (`Process.arguments`) rather than shell interpolation.
+* **Accidental Data-Loss & Traversal Protection:** Remote file operations reject `..` traversal, null bytes, and destructive deletions (`rm -rf`) on protected Android system and media roots (`/`, `/sdcard`, `/sdcard/DCIM`, `/sdcard/Download`, `/system`).
+* **Bounded Memory & Local Listeners:** The local notification listener (`:58241`) rejects payloads over 64 KB and truncates untrusted text; the H.264 stream parser caps buffers at 16 MB; and the photo cache auto-prunes at 200 MB.
 
 ---
 

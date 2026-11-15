@@ -5,31 +5,41 @@ import VideoToolbox
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
+    public var screenClipRadius: CGFloat = 24
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
+    public var onHomeGestureTriggered: (() -> Void)?
     
     public init(
         serial: String?,
+        screenClipRadius: CGFloat = 24,
         onFileDrop: (([URL]) -> Void)? = nil,
-        onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil
+        onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil,
+        onHomeGestureTriggered: (() -> Void)? = nil
     ) {
         self.serial = serial
+        self.screenClipRadius = screenClipRadius
         self.onFileDrop = onFileDrop
         self.onHoverZonesChanged = onHoverZonesChanged
+        self.onHomeGestureTriggered = onHomeGestureTriggered
     }
     
     public func makeNSView(context: Context) -> ScrcpyDisplayNSView {
         let view = ScrcpyDisplayNSView()
         view.serial = serial
+        view.layer?.cornerRadius = screenClipRadius
         view.onFileDrop = onFileDrop
         view.onHoverZonesChanged = onHoverZonesChanged
+        view.onHomeGestureTriggered = onHomeGestureTriggered
         return view
     }
     
     public func updateNSView(_ nsView: ScrcpyDisplayNSView, context: Context) {
         nsView.serial = serial
+        nsView.layer?.cornerRadius = screenClipRadius
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
+        nsView.onHomeGestureTriggered = onHomeGestureTriggered
         nsView.bindFrameCallback()
     }
 }
@@ -38,6 +48,7 @@ public final class ScrcpyDisplayNSView: NSView {
     public var serial: String?
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
+    public var onHomeGestureTriggered: (() -> Void)?
     
     override public var isFlipped: Bool { true }
     override public var acceptsFirstResponder: Bool { true }
@@ -50,6 +61,10 @@ public final class ScrcpyDisplayNSView: NSView {
     private var touchStartNormalized: CGPoint?
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
+    private var isBottomScrollHomeTracking: Bool = false
+    private var bottomScrollAccumulatedUp: CGFloat = 0
+    private var bottomScrollAccumulatedX: CGFloat = 0
+    private var bottomScrollTriggered: Bool = false
     private var isPinching: Bool = false
     private var pinchCenter: CGPoint = CGPoint(x: 0.5, y: 0.5)
     private var pinchSpread: CGFloat = 0.12
@@ -83,6 +98,16 @@ public final class ScrcpyDisplayNSView: NSView {
             return .notifications
         }
         return nil
+    }
+
+    /// Detects whether a click-free two-finger trackpad scroll near the bottom edge should trigger Home.
+    public static func shouldTriggerScrollHome(
+        startNormalizedY: CGFloat,
+        accumulatedUpwardDelta: CGFloat,
+        horizontalDelta: CGFloat
+    ) -> Bool {
+        guard startNormalizedY >= 0.85 else { return false }
+        return accumulatedUpwardDelta >= 22 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
     }
 
     /// Converts high-precision macOS trackpad deltas into damped, bounded normalized drag increments.
@@ -295,6 +320,51 @@ public final class ScrcpyDisplayNSView: NSView {
                 if isTrackpadPanning {
                     ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
                     isTrackpadPanning = false
+                }
+                if isBottomScrollHomeTracking {
+                    isBottomScrollHomeTracking = false
+                    bottomScrollAccumulatedUp = 0
+                    bottomScrollAccumulatedX = 0
+                    bottomScrollTriggered = false
+                }
+                return
+            }
+
+            let upwardDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+
+            if event.phase == .began || (!isTrackpadPanning && !isBottomScrollHomeTracking && (event.phase == .changed || event.phase == [])) {
+                if pt.y >= 0.85 {
+                    isBottomScrollHomeTracking = true
+                    bottomScrollAccumulatedUp = 0
+                    bottomScrollAccumulatedX = 0
+                    bottomScrollTriggered = false
+                }
+            }
+
+            if isBottomScrollHomeTracking {
+                switch event.phase {
+                case .began, .changed, []:
+                    bottomScrollAccumulatedUp += upwardDelta
+                    bottomScrollAccumulatedX += event.scrollingDeltaX
+                    if !bottomScrollTriggered && Self.shouldTriggerScrollHome(
+                        startNormalizedY: 0.90,
+                        accumulatedUpwardDelta: bottomScrollAccumulatedUp,
+                        horizontalDelta: bottomScrollAccumulatedX
+                    ) {
+                        bottomScrollTriggered = true
+                        ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                        DispatchQueue.main.async { [weak self] in
+                            self?.onHomeGestureTriggered?()
+                        }
+                    }
+                case .ended, .cancelled:
+                    isBottomScrollHomeTracking = false
+                    bottomScrollAccumulatedUp = 0
+                    bottomScrollAccumulatedX = 0
+                    bottomScrollTriggered = false
+                default:
+                    break
                 }
                 return
             }

@@ -25,10 +25,31 @@ public final class ADBService: @unchecked Sendable {
     }
     
     private init() {}
+
+    /// Validates an ADB device serial or `host:port` target to prevent flag injection or malformed endpoints.
+    public static func validateSerial(_ serial: String) -> Bool {
+        let trimmed = serial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 128, !trimmed.hasPrefix("-") else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-[]")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// Validates a `host:port` TCP/TLS endpoint for `adb connect` / `adb pair`.
+    public static func validateTargetEndpoint(_ endpoint: String) -> Bool {
+        guard validateSerial(endpoint) else { return false }
+        let parts = endpoint.split(separator: ":")
+        guard parts.count == 2, let port = Int(parts[1]), (1...65535).contains(port) else { return false }
+        return !parts[0].isEmpty
+    }
     
     /// Executes an ADB command asynchronously with a strict timeout to prevent indefinite hangs
     @discardableResult
     public func execute(arguments: [String], timeoutSeconds: Double = 6.0) async throws -> String {
+        if let sIdx = arguments.firstIndex(of: "-s"), sIdx + 1 < arguments.count {
+            guard Self.validateSerial(arguments[sIdx + 1]) else {
+                throw NSError(domain: "ADBService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid ADB device serial."])
+            }
+        }
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -60,6 +81,8 @@ public final class ADBService: @unchecked Sendable {
                         if process.isRunning {
                             process.terminate()
                         }
+                        try? stdoutPipe.fileHandleForReading.close()
+                        try? stderrPipe.fileHandleForReading.close()
                         continuation.resume(throwing: NSError(
                             domain: "ADBService",
                             code: -1,

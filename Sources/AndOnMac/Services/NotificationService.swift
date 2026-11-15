@@ -73,17 +73,32 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
         receiveData(from: connection)
     }
     
+    public static let maxIncomingPayloadBytes = 65_536
+
     private func receiveData(from connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: Self.maxIncomingPayloadBytes + 1) { [weak self] content, _, isComplete, error in
+            guard let self = self else {
+                connection.cancel()
+                return
+            }
             if let data = content, !data.isEmpty {
+                if data.count > Self.maxIncomingPayloadBytes {
+                    connection.cancel()
+                    return
+                }
                 if let str = String(data: data, encoding: .utf8), str.starts(with: "GET ") {
-                    self?.handleHTTPQRCodeRequest(from: connection, request: str)
+                    self.handleHTTPQRCodeRequest(from: connection, request: str)
+                    return
                 } else {
-                    self?.processIncomingNotificationData(data)
+                    self.processIncomingNotificationData(data)
+                    connection.cancel()
+                    return
                 }
             }
-            if error == nil && !isComplete {
-                self?.receiveData(from: connection)
+            if error != nil || isComplete {
+                connection.cancel()
+            } else {
+                self.receiveData(from: connection)
             }
         }
     }
@@ -143,15 +158,38 @@ public final class NotificationService: NSObject, @unchecked Sendable, UNUserNot
         }
     }
     
+    /// Validates and sanitizes an incoming JSON notification payload within strict size limits.
+    public static func parseNotificationPayload(_ data: Data) -> NotificationItem? {
+        guard !data.isEmpty, data.count <= maxIncomingPayloadBytes else { return nil }
+        guard let decoded = try? JSONDecoder().decode(NotificationItem.self, from: data) else { return nil }
+        let safeAppName = String(decoded.appName.prefix(200))
+        let safeTitle = String(decoded.title.prefix(200))
+        let safeText = String(decoded.text.prefix(1000))
+        let safeIcon: String?
+        if let icon = decoded.iconBase64, icon.count <= 32_768 {
+            safeIcon = icon
+        } else {
+            safeIcon = nil
+        }
+        return NotificationItem(
+            id: decoded.id,
+            packageName: String(decoded.packageName.prefix(200)),
+            appName: safeAppName,
+            title: safeTitle,
+            text: safeText,
+            timestamp: decoded.timestamp,
+            iconBase64: safeIcon
+        )
+    }
+
     private func processIncomingNotificationData(_ data: Data) {
-        do {
-            let item = try JSONDecoder().decode(NotificationItem.self, from: data)
-            DispatchQueue.main.async {
-                self.onNotificationReceived?(item)
-                self.postToMacOSNotificationCenter(item: item)
-            }
-        } catch {
-            print("Error decoding incoming notification: \(error)")
+        guard let item = Self.parseNotificationPayload(data) else {
+            print("Rejected invalid or oversized incoming notification payload (\(data.count) bytes)")
+            return
+        }
+        DispatchQueue.main.async {
+            self.onNotificationReceived?(item)
+            self.postToMacOSNotificationCenter(item: item)
         }
     }
     

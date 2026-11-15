@@ -44,10 +44,41 @@ public struct PhotoItem: Identifiable, Hashable, Sendable {
     }
 }
 
+private actor AsyncSemaphore {
+    private let limit: Int
+    private var current = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func wait() async {
+        if current < limit {
+            current += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            current = max(0, current - 1)
+        }
+    }
+}
+
 public final class PhotoTransferService: @unchecked Sendable {
     public static let shared = PhotoTransferService()
-    
+    public static let maxCacheBytes: Int64 = 200 * 1024 * 1024
+
     private let fileManager = FileManager.default
+    private let downloadSemaphore = AsyncSemaphore(limit: 4)
     private var cacheDir: URL {
         let urls = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
         let dir = urls[0].appendingPathComponent("com.andonmac.cache/photos", isDirectory: true)
@@ -160,22 +191,72 @@ public final class PhotoTransferService: @unchecked Sendable {
         return NSImage(contentsOf: url)
     }
     
+    /// Sanitizes a remote filename so it cannot escape the local cache directory.
+    public static func sanitizedCacheFilename(_ name: String) -> String {
+        let base = (name as NSString).lastPathComponent
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\0", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty || base == "." || base == ".." {
+            return "file_\(UUID().uuidString)"
+        }
+        return base
+    }
+
     /// Pulls a photo from Android to local Mac cache for drag-and-drop or preview
     public func downloadPhoto(item: PhotoItem, serial: String) async -> URL? {
-        let localDest = cacheDir.appendingPathComponent(item.name)
+        let safeName = Self.sanitizedCacheFilename(item.name)
+        let localDest = cacheDir.appendingPathComponent(safeName)
         if fileManager.fileExists(atPath: localDest.path) {
             return localDest
         }
-        
+
+        await downloadSemaphore.wait()
+        defer { Task { await downloadSemaphore.signal() } }
+
+        if fileManager.fileExists(atPath: localDest.path) {
+            return localDest
+        }
+
         do {
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "pull", item.remotePath, localDest.path])
             if fileManager.fileExists(atPath: localDest.path) {
+                pruneCacheIfNeeded(maxBytes: Self.maxCacheBytes)
                 return localDest
             }
         } catch {
             print("Failed to pull photo: \(error)")
         }
         return nil
+    }
+
+    /// Evicts oldest cached media files when total cache size exceeds `maxBytes`.
+    public func pruneCacheIfNeeded(maxBytes: Int64 = maxCacheBytes) {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: cacheDir,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var entries: [(url: URL, size: Int64, date: Date)] = []
+        var totalSize: Int64 = 0
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else { continue }
+            let size = Int64(values.fileSize ?? 0)
+            let date = values.contentModificationDate ?? .distantPast
+            totalSize += size
+            entries.append((url, size, date))
+        }
+
+        guard totalSize > maxBytes else { return }
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            guard totalSize > maxBytes else { break }
+            if (try? fileManager.removeItem(at: entry.url)) != nil {
+                totalSize -= entry.size
+            }
+        }
     }
     
     /// Pushes files from Mac into Android Gallery / Downloads and invokes MediaScanner
