@@ -830,6 +830,84 @@ final class AndOnMacTests: XCTestCase {
         )
     }
 
+    func testTrackpadFourEdgeGestureClassificationAndNaturalScrollingDeltas() {
+        // Natural Scrolling ON (inverted): sliding fingers UP gives negative scrollingDeltaY -> positive upwardDelta
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: -24, isDirectionInverted: true), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: 24, isDirectionInverted: false), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: 25, isDirectionInverted: true), 25)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: -25, isDirectionInverted: false), 25)
+
+        // Edge intents differentiate edge gesture vs normal scrolling near bottom/side edges
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: 10, accumulatedFingerX: 0),
+            .bottomHomeSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: -14, accumulatedFingerX: 0),
+            .pan
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.04, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: 12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: -12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -12, accumulatedFingerX: 0),
+            .edgeGesture
+        )
+
+        // Edge Back & Notifications triggers
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.03, y: 0.5), accumulatedUpwardDelta: 2, accumulatedFingerX: 24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: -2, accumulatedFingerX: -24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -26, accumulatedFingerX: 3),
+            .notifications
+        )
+    }
+
+    @MainActor
+    func testBottomTrackpadSwipeTrackerHomeVsAppSwitcher() async {
+        // 1. Quick upward flick fires Home ONLY on finger lift (.ended), never mid-gesture
+        var homeCount = 0
+        var appSwitchCount = 0
+        let tracker = BottomTrackpadSwipeTracker()
+        tracker.onHomeTriggered = { homeCount += 1 }
+        tracker.onAppSwitcherTriggered = { appSwitchCount += 1 }
+
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 24, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(homeCount, 0, "Must not fire Home prematurely during upward swipe before lift")
+        XCTAssertEqual(appSwitchCount, 0)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
+        XCTAssertEqual(appSwitchCount, 0)
+
+        // 2. Tall upward swipe fires App Switcher immediately without triggering Home
+        tracker.process(upwardDelta: 10, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 82, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(appSwitchCount, 1)
+        XCTAssertEqual(homeCount, 1)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1, "Must not fire Home after App Switcher already triggered")
+
+        // 3. Upward swipe + stationary pause (~0.25s) fires App Switcher without firing Home
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 22, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        try? await Task.sleep(nanoseconds: 280_000_000)
+        XCTAssertEqual(appSwitchCount, 2, "Pausing fingers during upward trackpad swipe should trigger App Switcher")
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
+    }
+
     // MARK: - Security, Concurrency & Resource Safety Tests
 
     func testFileBrowserPathSecurityAndDataLossPrevention() throws {

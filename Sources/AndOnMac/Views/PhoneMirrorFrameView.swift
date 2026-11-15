@@ -101,6 +101,16 @@ public struct PhoneMirrorFrameView: View {
                 },
                 onHomeGestureTriggered: {
                     triggerHomeBarPulse()
+                },
+                onHomeBarDragChanged: { offset, dragging in
+                    isDraggingHomeBar = dragging
+                    if dragging {
+                        dragOffset = offset
+                    } else {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            dragOffset = offset
+                        }
+                    }
                 }
             )
             
@@ -793,20 +803,9 @@ public struct PhoneMirrorFrameView: View {
         return .none
     }
 
-    // MARK: - Bottom Home Bar (Interactive AppKit Control + Trackpad Scroll Support)
+    // MARK: - Bottom Home Bar (Interactive AppKit Control with Trackpad + Drag Support)
     private func bottomHomeBarView(interactive: Bool) -> some View {
         ZStack {
-            if interactive {
-                BottomBarScrollCatcher(
-                    onScrollUpHome: {
-                        appState.triggerHome()
-                        triggerHomeBarPulse()
-                    },
-                    onScrollUpAppSwitcher: {
-                        appState.triggerAppSwitch()
-                    }
-                )
-            }
             Capsule()
                 .fill(Color.white.opacity(homeBarPulse ? 1.0 : (showHomeBar ? 0.95 : 0.6)))
                 .frame(width: 130, height: 5)
@@ -878,6 +877,25 @@ public final class HomeBarInteractiveNSView: NSView {
     public var onAction: ((PhoneMirrorFrameView.HomeBarGestureAction) -> Void)?
 
     private var hoverTrackingArea: NSTrackingArea?
+    private lazy var trackpadSwipeTracker: BottomTrackpadSwipeTracker = {
+        let tracker = BottomTrackpadSwipeTracker()
+        tracker.onVisualDragOffset = { [weak self] offset, active in
+            DispatchQueue.main.async {
+                self?.onDragChanged?(offset, active)
+            }
+        }
+        tracker.onHomeTriggered = { [weak self] in
+            DispatchQueue.main.async {
+                self?.onAction?(.home)
+            }
+        }
+        tracker.onAppSwitcherTriggered = { [weak self] in
+            DispatchQueue.main.async {
+                self?.onAction?(.appSwitcher)
+            }
+        }
+        return tracker
+    }()
 
     override public var mouseDownCanMoveWindow: Bool { false }
     override public func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -903,6 +921,27 @@ public final class HomeBarInteractiveNSView: NSView {
 
     override public func mouseExited(with event: NSEvent) {
         onHoverChanged?(false)
+    }
+
+    override public func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let upwardDelta = ScrcpyDisplayNSView.upwardTrackpadDelta(
+            scrollingDeltaY: event.scrollingDeltaY,
+            isDirectionInverted: event.isDirectionInvertedFromDevice
+        )
+        let fingerDeltaX = ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(
+            scrollingDeltaX: event.scrollingDeltaX,
+            isDirectionInverted: event.isDirectionInvertedFromDevice
+        )
+        trackpadSwipeTracker.process(
+            upwardDelta: upwardDelta,
+            fingerDeltaX: fingerDeltaX,
+            phase: event.phase,
+            momentumPhase: event.momentumPhase
+        )
     }
 
     override public func mouseDown(with event: NSEvent) {
@@ -940,88 +979,6 @@ public final class HomeBarInteractiveNSView: NSView {
                 self.onDragChanged?(0, false)
                 self.onAction?(action)
                 stop.pointee = true
-            default:
-                break
-            }
-        }
-    }
-}
-
-/// Captures click-free trackpad upward scroll swipes directly over the bottom Home bar capsule.
-private struct BottomBarScrollCatcher: NSViewRepresentable {
-    let onScrollUpHome: () -> Void
-    let onScrollUpAppSwitcher: () -> Void
-
-    func makeNSView(context: Context) -> ScrollCatcherNSView {
-        let view = ScrollCatcherNSView()
-        view.onScrollUpHome = onScrollUpHome
-        view.onScrollUpAppSwitcher = onScrollUpAppSwitcher
-        return view
-    }
-
-    func updateNSView(_ nsView: ScrollCatcherNSView, context: Context) {
-        nsView.onScrollUpHome = onScrollUpHome
-        nsView.onScrollUpAppSwitcher = onScrollUpAppSwitcher
-    }
-
-    final class ScrollCatcherNSView: NSView {
-        var onScrollUpHome: (() -> Void)?
-        var onScrollUpAppSwitcher: (() -> Void)?
-        private var accumulatedUp: CGFloat = 0
-        private var accumulatedX: CGFloat = 0
-        private var triggeredHome: Bool = false
-        private var triggeredAppSwitcher: Bool = false
-
-        override func scrollWheel(with event: NSEvent) {
-            guard event.hasPreciseScrollingDeltas else {
-                super.scrollWheel(with: event)
-                return
-            }
-            guard event.momentumPhase == [] else {
-                accumulatedUp = 0
-                accumulatedX = 0
-                triggeredHome = false
-                triggeredAppSwitcher = false
-                return
-            }
-
-            let upwardDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
-            switch event.phase {
-            case .began:
-                accumulatedUp = upwardDelta
-                accumulatedX = event.scrollingDeltaX
-                triggeredHome = false
-                triggeredAppSwitcher = false
-            case .changed, []:
-                accumulatedUp += upwardDelta
-                accumulatedX += event.scrollingDeltaX
-                if !triggeredHome && ScrcpyDisplayNSView.shouldTriggerScrollHome(
-                    startNormalizedY: 0.96,
-                    accumulatedUpwardDelta: accumulatedUp,
-                    horizontalDelta: accumulatedX
-                ) {
-                    triggeredHome = true
-                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.onScrollUpHome?()
-                    }
-                }
-                if !triggeredAppSwitcher && ScrcpyDisplayNSView.shouldTriggerScrollAppSwitcher(
-                    startNormalizedY: 0.96,
-                    accumulatedUpwardDelta: accumulatedUp,
-                    horizontalDelta: accumulatedX
-                ) {
-                    triggeredAppSwitcher = true
-                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.onScrollUpAppSwitcher?()
-                    }
-                }
-            case .ended, .cancelled:
-                accumulatedUp = 0
-                accumulatedX = 0
-                triggeredHome = false
-                triggeredAppSwitcher = false
             default:
                 break
             }
