@@ -113,7 +113,7 @@ public struct AndonHUDIconButtonStyle: ButtonStyle {
 
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(5)
+            .padding(4)
             .background(
                 Circle()
                     .fill(Color.white.opacity(configuration.isPressed ? 0.24 : (isHovered ? 0.14 : 0.0)))

@@ -44,24 +44,39 @@ public final class AppState: ObservableObject {
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
     @AppStorage("showFrontCamera") public var showFrontCamera: Bool = true
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
-    @AppStorage("maxFps") public var maxFps: Int = 60
+    @AppStorage("maxFps") public var maxFps: Int = 120
+    @AppStorage("showPerformanceHUD") public var showPerformanceHUD: Bool = false
+    @AppStorage("autoHotspotOnIsolation") public var autoHotspotOnIsolation: Bool = true
     @AppStorage("autoConnect") public var autoConnect: Bool = true
     @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
+    @AppStorage("deviceProfilesData") private var deviceProfilesData: Data = Data()
+    @AppStorage("hideDockIcon") public var hideDockIcon: Bool = false
+    @AppStorage("continuityBridgeEnabled") public var continuityBridgeEnabled: Bool = true
+    @AppStorage("mcpServerEnabled") public var mcpServerEnabled: Bool = false
+    @AppStorage("mcpServerPort") public var mcpServerPort: Int = 8765
 
     public var lang: AppLanguage {
         appLanguage.resolved
     }
     
     @Published public var knownDevices: [KnownDevice] = []
+    @Published public var deviceProfiles: [String: DeviceProfile] = [:]
     @Published public var statusMessage: String = L10n.tr("Готов к работе", "Ready")
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
     @Published public var showPhotoDrawer: Bool = false
     @Published public var drawerMode: SideDrawerMode = .gallery
     @Published public var photoTransferNotice: String? = nil
+    @Published public var isRecording: Bool = false
+    @Published public var isOCROverlayActive: Bool = false
+    @Published public var installedApps: [AndroidAppItem] = []
+    @Published public var isLoadingApps: Bool = false
+    @Published public var isMCPRunning: Bool = false
+    @Published public var isMCPAgentPaused: Bool = false
+    @Published public var mcpAgentActivity: String? = nil
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
@@ -128,11 +143,57 @@ public final class AppState: ObservableObject {
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { _ in
             MirrorService.shared.stopMirroring()
+            MirrorService.shared.stopRecording()
+            AndroidAppLauncherService.shared.stopAllAppWindows()
+            ContinuityBridge.shared.stop()
+            MCPHTTPServer.shared.stop()
+        }
+        loadDeviceProfiles()
+        applyDockVisibility()
+        syncContinuityBridgeState()
+        setupMCPCallbacks()
+        if mcpServerEnabled {
+            syncMCPServerState()
         }
         startNotificationListener()
         startDiscoveryListener()
+        setupConnectionAndPerformanceEngines()
         refreshDevices()
         startPeriodicPoll()
+    }
+
+    private func setupConnectionAndPerformanceEngines() {
+        ConnectionManager.shared.onWakeReconnectRequested = { [weak self] in
+            Task { @MainActor in
+                self?.attemptAutoWifiReconnect()
+            }
+        }
+        ConnectionManager.shared.startLifecycleObservers()
+
+        PerformanceEngine.shared.onABRStepChange = { [weak self] bitRate, maxSize, reduced in
+            Task { @MainActor in
+                guard let self = self, self.isMirroring, let device = self.selectedDevice else { return }
+                let prof = self.profile(for: device.id)
+                self.statusMessage = reduced
+                    ? L10n.tr("Wi-Fi перегружен — снижение битрейта (6 Мбит/с)", "Wi-Fi congested — ABR step down (6 Mbps)", lang: self.lang)
+                    : L10n.tr("Связь стабильна — восстановление 120Hz (16 Мбит/с)", "Link stable — restoring 120Hz (16 Mbps)", lang: self.lang)
+                try? MirrorService.shared.startMirroring(
+                    for: device,
+                    turnScreenOff: self.turnScreenOff,
+                    forwardAudio: self.forwardAudio,
+                    stayAwake: self.stayAwake,
+                    maxFps: prof.maxFps,
+                    bitRate: bitRate,
+                    maxSize: maxSize
+                ) { [weak self] in
+                    Task { @MainActor in
+                        self?.isMirroring = false
+                        self?.statusMessage = "Mirroring session ended"
+                        KeyboardLanguageSyncService.shared.stopSync()
+                    }
+                }
+            }
+        }
     }
     
     private func startDiscoveryListener() {
@@ -141,8 +202,9 @@ public final class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.lastKnownWifiIP = ip
-                // Do not aggressively auto-connect here in an infinite loop.
-                // Dynamic port is cached and ready for explicit connection or safe reconnection.
+                if self.devices.isEmpty {
+                    await RouterlessBypassService.shared.checkReachabilityIfNeeded(host: ip, port: port)
+                }
             }
         }
     }
@@ -272,14 +334,18 @@ public final class AppState: ObservableObject {
         NotificationService.shared.startServer()
     }
     
+    private var lastLockStateCheck: Date = .distantPast
+
     public func startPeriodicPoll() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        let pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self, !self.isRefreshing else { return }
                 self.refreshDevices()
             }
         }
+        pollTimer.tolerance = 1.2
+        timer = pollTimer
     }
     
     public func refreshDevices() {
@@ -308,7 +374,10 @@ public final class AppState: ObservableObject {
                 self.isPhoneLocked = false
                 self.attemptAutoWifiReconnect()
             } else {
-                if let ready = list.first(where: { $0.state == .ready }) {
+                let lockCheckInterval: TimeInterval = mirrorActive ? 4.0 : 12.0
+                if let ready = list.first(where: { $0.state == .ready }),
+                   Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
+                    self.lastLockStateCheck = Date()
                     let lockState = await ADBService.shared.fetchScreenAndLockState(serial: ready.id)
                     if self.isPhoneScreenOff != lockState.isScreenOff {
                         self.isPhoneScreenOff = lockState.isScreenOff
@@ -327,30 +396,9 @@ public final class AppState: ObservableObject {
     private var lastReconnectAttemptTime: Date = .distantPast
     
     private func attemptAutoWifiReconnect() {
-        guard !isAttemptingWifiReconnect else { return }
-        guard Date().timeIntervalSince(lastReconnectAttemptTime) > 8.0 else { return }
-        
-        let autoDevices = knownDevices.filter { $0.autoConnect }
-        guard !autoDevices.isEmpty else { return }
-        
-        isAttemptingWifiReconnect = true
-        lastReconnectAttemptTime = Date()
-        
-        Task {
-            defer { self.isAttemptingWifiReconnect = false }
-            for device in autoDevices.prefix(2) {
-                // If phone is in dynamic wireless debugging mode, prefer mDNS port over fixed 5555
-                let targetPort = DiscoveryService.shared.getConnectPort(for: device.ipAddress) ?? device.port
-                
-                if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(device.ipAddress):\(targetPort)"], timeoutSeconds: 2.0),
-                   ADBService.isConnectSuccess(output) {
-                    await MainActor.run {
-                        self.statusMessage = "Подключено к \(device.name) (\(device.ipAddress):\(targetPort))"
-                        self.refreshDevices()
-                    }
-                    return
-                }
-            }
+        ConnectionManager.shared.attemptAutoReconnect(knownDevices: knownDevices) { [weak self] target in
+            self?.statusMessage = "Подключено к \(target)"
+            self?.refreshDevices()
         }
     }
     
@@ -362,16 +410,15 @@ public final class AppState: ObservableObject {
         // Save to persistent known devices registry
         persistKnownDevice(device)
         
-        // Seamless Hand-off: If connected via USB, activate TCP/IP 5555 in the background
-        // so when the user unplugs the cable, the phone continues wirelessly!
-        // `adb tcpip` restarts adbd on the phone (drops Wireless Debugging and any live session),
-        // so it must run at most once per device per app session — never on every poll tick.
-        if device.connectionType == .usb && autoWirelessPromote && !isMirroring
-            && !tcpipPromotedSerials.contains(device.id) {
-            tcpipPromotedSerials.insert(device.id)
-            Task {
-                _ = try? await ADBService.shared.enableTcpIp(serial: device.id, port: 5555)
-            }
+        // Silent USB-to-Wi-Fi Handoff: activate TCP/IP 5555 once per USB serial when not mirroring;
+        // if Wi-Fi router isolation blocks peer-to-peer traffic, auto-enable phone Hotspot when configured.
+        ConnectionManager.shared.promoteUSBToWiFiIfNeeded(
+            device: device,
+            isMirroring: isMirroring,
+            autoHotspotOnIsolation: autoHotspotOnIsolation
+        ) { [weak self] message in
+            self?.statusMessage = message
+            self?.refreshDevices()
         }
         
         // Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
@@ -483,13 +530,16 @@ public final class AppState: ObservableObject {
                 statusMessage = "No device selected"
                 return
             }
+            let prof = profile(for: device.id)
             do {
                 try MirrorService.shared.startMirroring(
                     for: device,
                     turnScreenOff: turnScreenOff,
                     forwardAudio: forwardAudio,
                     stayAwake: stayAwake,
-                    maxFps: maxFps
+                    maxFps: prof.maxFps,
+                    bitRate: prof.bitRate,
+                    maxSize: prof.maxSize
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
@@ -502,6 +552,176 @@ public final class AppState: ObservableObject {
                 KeyboardLanguageSyncService.shared.startSync(for: device.id)
             } catch {
                 statusMessage = "Failed to start: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // MARK: - Dock Visibility, Continuity Bridge, Recording, App Launcher & Vision OCR
+
+    public func applyDockVisibility() {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        NSApp.setActivationPolicy(hideDockIcon ? .accessory : .regular)
+    }
+
+    public func syncContinuityBridgeState() {
+        if continuityBridgeEnabled {
+            ContinuityBridge.shared.onSyncEvent = { [weak self] msg in
+                Task { @MainActor in
+                    self?.photoTransferNotice = msg
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        if self?.photoTransferNotice == msg {
+                            self?.photoTransferNotice = nil
+                        }
+                    }
+                }
+            }
+            ContinuityBridge.shared.start { [weak self] in
+                return self?.selectedDeviceId
+            }
+        } else {
+            ContinuityBridge.shared.stop()
+        }
+    }
+
+    public func toggleRecording() {
+        if isRecording || MirrorService.shared.isRecording {
+            MirrorService.shared.stopRecording()
+            isRecording = false
+            if let url = MirrorService.shared.lastRecordingURL {
+                photoTransferNotice = L10n.tr("Запись сохранена: \(url.lastPathComponent)", "Saved: \(url.lastPathComponent)", lang: lang)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                    self.photoTransferNotice = nil
+                }
+            }
+        } else {
+            guard let device = selectedDevice else { return }
+            let prof = profile(for: device.id)
+            do {
+                _ = try MirrorService.shared.startRecording(serial: device.id, maxSize: prof.maxSize, bitRate: prof.bitRate)
+                isRecording = true
+                photoTransferNotice = L10n.tr("Идёт запись экрана...", "Recording screen...", lang: lang)
+            } catch {
+                statusMessage = "Recording failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func triggerScreenOCR() {
+        guard isMirroring else {
+            photoTransferNotice = L10n.tr("Сначала откройте экран телефона", "Start mirroring first", lang: lang)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                self.photoTransferNotice = nil
+            }
+            return
+        }
+        isOCROverlayActive.toggle()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func loadInstalledApps() {
+        guard let serial = selectedDevice?.id, !isLoadingApps else { return }
+        isLoadingApps = true
+        Task {
+            do {
+                let apps = try await AndroidAppLauncherService.shared.fetchInstalledApps(serial: serial)
+                await MainActor.run {
+                    self.installedApps = apps
+                    self.isLoadingApps = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoadingApps = false
+                }
+            }
+        }
+    }
+
+    public func launchStandaloneApp(_ app: AndroidAppItem) {
+        guard let serial = selectedDevice?.id else { return }
+        let prof = profile(for: serial)
+        do {
+            try AndroidAppLauncherService.shared.launchApp(
+                app,
+                serial: serial,
+                profile: prof,
+                turnScreenOff: turnScreenOff,
+                stayAwake: stayAwake
+            )
+            statusMessage = L10n.tr("Запущено окно: \(app.displayName)", "Launched \(app.displayName)", lang: lang)
+        } catch {
+            statusMessage = "Failed to launch \(app.displayName): \(error.localizedDescription)"
+        }
+    }
+
+    public func profile(for serial: String) -> DeviceProfile {
+        deviceProfiles[serial] ?? .default
+    }
+
+    public func updateProfile(_ profile: DeviceProfile, for serial: String) {
+        deviceProfiles[serial] = profile
+        if let encoded = try? JSONEncoder().encode(deviceProfiles) {
+            deviceProfilesData = encoded
+        }
+    }
+
+    private func loadDeviceProfiles() {
+        guard !deviceProfilesData.isEmpty,
+              let decoded = try? JSONDecoder().decode([String: DeviceProfile].self, from: deviceProfilesData) else { return }
+        deviceProfiles = decoded
+    }
+
+    // MARK: - Built-in MCP Server & AI Agent Kill-Switch
+
+    private func setupMCPCallbacks() {
+        MCPServerCore.shared.onAgentActivity = { [weak self] activity in
+            Task { @MainActor in
+                self?.mcpAgentActivity = activity
+            }
+        }
+    }
+
+    public func syncMCPServerState() {
+        if mcpServerEnabled {
+            let clampedPort = UInt16(max(1024, min(65535, mcpServerPort)))
+            MCPHTTPServer.shared.start(port: clampedPort) { [weak self] running in
+                Task { @MainActor in
+                    self?.isMCPRunning = running
+                }
+            }
+        } else {
+            MCPHTTPServer.shared.stop()
+            isMCPRunning = false
+        }
+    }
+
+    public func toggleMCPAgentPause() {
+        isMCPAgentPaused.toggle()
+        MCPServerCore.shared.isAgentPaused = isMCPAgentPaused
+        if isMCPAgentPaused {
+            mcpAgentActivity = nil
+        }
+    }
+
+    public func copyMCPConfigToClipboard() {
+        let executablePath = Bundle.main.executablePath
+            ?? "/Applications/AndOnMac.app/Contents/MacOS/AndOnMac"
+        let snippet = """
+        {
+          "mcpServers": {
+            "andonmac": {
+              "command": "\(executablePath)",
+              "args": ["--mcp-stdio"]
+            }
+          }
+        }
+        """
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(snippet, forType: .string)
+        photoTransferNotice = L10n.tr("MCP-конфиг скопирован", "MCP Config Copied", lang: lang)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if self.photoTransferNotice == L10n.tr("MCP-конфиг скопирован", "MCP Config Copied", lang: self.lang) {
+                self.photoTransferNotice = nil
             }
         }
     }

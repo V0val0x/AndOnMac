@@ -139,6 +139,13 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(map["en"], 1594443099)
         XCTAssertEqual(map["ru"], -1807566855)
         XCTAssertEqual(map["de"], 979167277)
+
+        let currentSubtypeOutput = "      mCurrentSubtype=android.view.inputmethod.InputMethodSubtype@9442b7f9"
+        XCTAssertEqual(KeyboardLanguageSyncService.parseCurrentSubtype(from: currentSubtypeOutput), -1807566855)
+        XCTAssertEqual(
+            KeyboardLanguageSyncService.parseSubtypes(from: "mSubtypeId=0 mSubtypeLocale=fr_FR mSubtypeHashCode=-123456")["fr"],
+            -123456
+        )
     }
     
     @MainActor
@@ -805,5 +812,321 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("IMG_001\0.jpg"), "IMG_001.jpg")
         XCTAssertTrue(PhotoTransferService.sanitizedCacheFilename("..").hasPrefix("file_"))
         XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("vacation.heic"), "vacation.heic")
+    }
+
+    func testAndroidAppLauncherParsingAndFriendlyNames() {
+        let raw = """
+        package:com.whatsapp
+        package:org.telegram.messenger
+        package:com.example.my_custom_notes
+        package:com.whatsapp
+        """
+        let apps = AndroidAppLauncherService.parsePackageList(raw)
+        XCTAssertEqual(apps.count, 3)
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.whatsapp" && $0.displayName == "WhatsApp" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "org.telegram.messenger" && $0.displayName == "Telegram" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.example.my_custom_notes" && $0.displayName == "My Custom Notes" }))
+    }
+
+    func testVisionOCRPixelCropRectAndContinuityImageEncoding() {
+        let crop = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.25),
+            imageWidth: 1080,
+            imageHeight: 2400
+        )
+        XCTAssertEqual(crop, CGRect(x: 270, y: 1200, width: 540, height: 600))
+
+        // Out-of-bounds crop must clamp safely
+        let clamped = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: -0.5, y: 0.9, width: 2.0, height: 0.5),
+            imageWidth: 1000,
+            imageHeight: 2000
+        )
+        XCTAssertEqual(clamped.origin.x, 0)
+        XCTAssertLessThanOrEqual(clamped.maxX, 1000)
+        XCTAssertLessThanOrEqual(clamped.maxY, 2000)
+
+        // TIFF -> PNG conversion for ContinuityBridge
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4,
+            pixelsHigh: 4,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let tiff = rep?.tiffRepresentation
+        let png = ContinuityBridge.encodePasteboardImageAsPNG(pngData: nil, tiffData: tiff)
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png?.count ?? 0, 8)
+    }
+
+    @MainActor
+    func testDeviceProfilePersistenceAndDefaults() {
+        let appState = AppState()
+        let serial = "test-serial-profile-\(UUID().uuidString)"
+        XCTAssertEqual(appState.profile(for: serial), .default)
+
+        let custom = DeviceProfile(bitRate: 16_000_000, maxFps: 120, maxSize: 1080)
+        appState.updateProfile(custom, for: serial)
+        XCTAssertEqual(appState.profile(for: serial), custom)
+    }
+
+    // MARK: - Built-in MCP Server & Android UI Tree Tests
+
+    func testMCPServerInitializeToolsListAndKillSwitch() async throws {
+        let core = MCPServerCore.shared
+        core.isAgentPaused = false
+
+        let initReq = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#
+        let initRespData = await core.handleRawRequestData(Data(initReq.utf8))
+        XCTAssertNotNil(initRespData)
+        let initJSON = try JSONSerialization.jsonObject(with: initRespData!) as? [String: Any]
+        let initResult = initJSON?["result"] as? [String: Any]
+        XCTAssertEqual(initResult?["protocolVersion"] as? String, "2024-11-05")
+
+        let listReq = #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
+        let listRespData = await core.handleRawRequestData(Data(listReq.utf8))
+        XCTAssertNotNil(listRespData)
+        let listJSON = try JSONSerialization.jsonObject(with: listRespData!) as? [String: Any]
+        let listResult = listJSON?["result"] as? [String: Any]
+        let tools = listResult?["tools"] as? [[String: Any]]
+        XCTAssertEqual(tools?.count, 9)
+
+        // Kill-switch must block tool calls while paused
+        core.isAgentPaused = true
+        defer { core.isAgentPaused = false }
+        let callReq = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"android_list_devices","arguments":{}}}"#
+        let callRespData = await core.handleRawRequestData(Data(callReq.utf8))
+        let callJSON = try JSONSerialization.jsonObject(with: callRespData!) as? [String: Any]
+        let callResult = callJSON?["result"] as? [String: Any]
+        XCTAssertEqual(callResult?["isError"] as? Bool, true)
+    }
+
+    func testAndroidUITreeParserStripsContainersAndComputesCenters() {
+        let xml = """
+        UI hierchary dumped to: /dev/tty
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="Confirm" resource-id="com.app:id/btn_confirm" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[100,200][500,300]" />
+            <node index="2" text="" resource-id="" class="android.view.ViewGroup" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,200]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        XCTAssertEqual(nodes.count, 1)
+        XCTAssertEqual(nodes[0].text, "Confirm")
+        XCTAssertEqual(nodes[0].resource_id, "com.app:id/btn_confirm")
+        XCTAssertEqual(nodes[0].class, "Button")
+        XCTAssertEqual(nodes[0].center_x, 300)
+        XCTAssertEqual(nodes[0].center_y, 250)
+    }
+
+    func testMCPNotificationsParser() {
+        let dumpsys = """
+        NotificationRecord(0x1234: pkg=org.telegram.messenger user=UserHandle{0} id=42)
+          when=1731624000000
+          android.title=String (Alice)
+          android.text=String (Your code is 482910)
+        NotificationRecord(0x5678: pkg=com.android.systemui user=UserHandle{0} id=1)
+        """
+        let parsed = AndroidMCPTools.parseNotifications(from: dumpsys)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].package, "org.telegram.messenger")
+        XCTAssertEqual(parsed[0].title, "Alice")
+        XCTAssertEqual(parsed[0].text, "Your code is 482910")
+    }
+
+    func testQRPairingPayloadFormat() {
+        let samplePin = String(repeating: "0", count: 8)
+        let payload = QRPairingService.buildQRPayload(serviceName: "ADB_WIFI_A1B2C3D4", password: samplePin)
+        XCTAssertEqual(payload, "WIFI:T:ADB;S:ADB_WIFI_A1B2C3D4;P:\(samplePin);;")
+    }
+
+    func testRouterlessBypassGatewayAndBluetoothPAN() {
+        let netstat = """
+        Routing tables
+        Internet:
+        Destination        Gateway            Flags               Netif Expire
+        default            192.168.43.1       UGScg                 en0
+        127.0.0.1          127.0.0.1          UH                    lo0
+        """
+        XCTAssertEqual(RouterlessBypassService.parseDefaultGateway(fromNetstatOutput: netstat), "192.168.43.1")
+        XCTAssertTrue(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["10.0.0.5", "192.168.44.128"]))
+        XCTAssertFalse(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["192.168.1.50"]))
+    }
+
+    func testHEVCNALTypeDetection() {
+        // HEVC NAL header byte: (nalType << 1)
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([32 << 1, 0x01])), 32) // VPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([33 << 1, 0x01])), 33) // SPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([34 << 1, 0x01])), 34) // PPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([19 << 1, 0x01])), 19) // IDR
+    }
+
+    @MainActor
+    func testPerformanceEngineABRStepDownAndRecovery() {
+        let engine = PerformanceEngine.shared
+        engine.endMirroringSession()
+
+        // 3 high-RTT samples should not trigger ABR yet
+        for _ in 0..<3 {
+            let res = engine.ingestProbeSample(rttMs: 145)
+            XCTAssertFalse(res.changed)
+            XCTAssertFalse(engine.isABRReduced)
+        }
+        // 4th consecutive sample >120ms (>2s) triggers step-down to 6M / 1280
+        let stepDown = engine.ingestProbeSample(rttMs: 150)
+        XCTAssertTrue(stepDown.changed)
+        XCTAssertEqual(stepDown.bitRate, 6_000_000)
+        XCTAssertEqual(stepDown.maxSize, 1280)
+        XCTAssertTrue(engine.isABRReduced)
+
+        // 7 low-RTT samples should not restore yet
+        for _ in 0..<7 {
+            let res = engine.ingestProbeSample(rttMs: 25)
+            XCTAssertFalse(res.changed)
+            XCTAssertTrue(engine.isABRReduced)
+        }
+        // 8th consecutive sample <60ms (4s) restores 16M / 1440
+        let restore = engine.ingestProbeSample(rttMs: 22)
+        XCTAssertTrue(restore.changed)
+        XCTAssertEqual(restore.bitRate, 16_000_000)
+        XCTAssertEqual(restore.maxSize, 1440)
+        XCTAssertFalse(engine.isABRReduced)
+        engine.endMirroringSession()
+    }
+
+    func testCommandInjectionResistanceAndPackageValidation() {
+        // Package name validation
+        XCTAssertTrue(ADBService.validatePackageName("com.whatsapp"))
+        XCTAssertTrue(ADBService.validatePackageName("org.telegram.messenger"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp; id"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp$(reboot)"))
+        XCTAssertFalse(ADBService.validatePackageName("-rf"))
+        XCTAssertFalse(ADBService.validatePackageName("nodot"))
+        XCTAssertFalse(ADBService.validatePackageName(""))
+
+        // POSIX shell quoting
+        let malicious = "hello'; rm -rf /; echo $(id) `uname` | cat > /tmp/x\0"
+        let quoted = ADBService.shellQuote(malicious)
+        XCTAssertTrue(quoted.hasPrefix("'"))
+        XCTAssertTrue(quoted.hasSuffix("'"))
+        XCTAssertFalse(quoted.contains("\0"))
+        XCTAssertEqual(quoted, "'hello'\\''; rm -rf /; echo $(id) `uname` | cat > /tmp/x'")
+
+        // android_type_text command builder
+        let asciiInject = AndroidMCPTools.buildSafeTypeTextCommand("hi; id > /sdcard/pwn")
+        XCTAssertFalse(asciiInject.useClipboard)
+        XCTAssertEqual(asciiInject.quotedArg, "'hi;%sid%s>%s/sdcard/pwn'")
+
+        let unicodeInject = AndroidMCPTools.buildSafeTypeTextCommand("Привет; $(reboot)\n")
+        XCTAssertTrue(unicodeInject.useClipboard)
+        XCTAssertEqual(unicodeInject.quotedArg, "'Привет; $(reboot)\n'")
+    }
+
+    func testMCPHTTPServerOriginHostAndBearerSecurity() async throws {
+        // Loopback Host & Origin allowed
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: [::1]:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: localhost:8765\r\nOrigin: http://localhost:3000\r\n"))
+
+        // External Origin, prefix-spoofed Origin, or DNS-rebinding Host rejected
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: evil.com:8765\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: https://evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://localhost.evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://127.0.0.1.evil.com\r\n"))
+
+        // Bearer token validation
+        let headersWithToken = "POST /message HTTP/1.1\r\nAuthorization: Bearer secret-session-token\r\n"
+        XCTAssertTrue(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "secret-session-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "wrong-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: "POST /message HTTP/1.1\r\n", expectedToken: "secret-session-token"))
+
+        // Live NWListener socket integration test with Bearer token
+        let server = MCPHTTPServer.shared
+        let testPort: UInt16 = 18765
+        let testToken = "live-session-secret-\(UUID().uuidString)"
+        server.bearerToken = testToken
+
+        final class ResumeOnce: @unchecked Sendable {
+            private let lock = NSLock()
+            private var resumed = false
+            func tryResume() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                guard !resumed else { return false }
+                resumed = true
+                return true
+            }
+        }
+        let resumeOnce = ResumeOnce()
+        let started = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            server.start(port: testPort) { isRunning in
+                if resumeOnce.tryResume() {
+                    cont.resume(returning: isRunning)
+                }
+            }
+        }
+        defer {
+            server.bearerToken = nil
+            server.stop()
+        }
+        XCTAssertTrue(started, "MCPHTTPServer should bind to 127.0.0.1:\(testPort)")
+
+        let url = URL(string: "http://127.0.0.1:\(testPort)/")!
+
+        // 1. Missing Bearer token -> 401
+        var unauthReq = URLRequest(url: url)
+        unauthReq.httpMethod = "GET"
+        let (_, unauthResp) = try await URLSession.shared.data(for: unauthReq)
+        XCTAssertEqual((unauthResp as? HTTPURLResponse)?.statusCode, 401)
+
+        // 2. Spoofed Origin -> 403
+        var badOriginReq = URLRequest(url: url)
+        badOriginReq.httpMethod = "GET"
+        badOriginReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        badOriginReq.setValue("http://localhost.evil.com", forHTTPHeaderField: "Origin")
+        let (_, badOriginResp) = try await URLSession.shared.data(for: badOriginReq)
+        XCTAssertEqual((badOriginResp as? HTTPURLResponse)?.statusCode, 403)
+
+        // 3. Valid Bearer token + loopback -> 200
+        var okReq = URLRequest(url: url)
+        okReq.httpMethod = "GET"
+        okReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        let (_, okResp) = try await URLSession.shared.data(for: okReq)
+        XCTAssertEqual((okResp as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testADBTaskCancellationAbortsImmediately() async {
+        let start = Date()
+        let task = Task {
+            try await ADBService.shared.execute(arguments: ["wait-for-device"], timeoutSeconds: 10.0)
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        task.cancel()
+        _ = await task.result
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "Cancelling Task must abort ADBService.execute immediately without waiting for 10s timeout")
+    }
+
+    func testProcessLifecycleManagerTerminatesChildCleanly() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["30"]
+        try? proc.run()
+        XCTAssertTrue(proc.isRunning)
+
+        ProcessLifecycleManager.shared.register(proc, tag: "test-sleep")
+        ProcessLifecycleManager.shared.terminateProcesses(withTag: "test-sleep", gracePeriodMs: 100)
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(proc.isRunning)
     }
 }

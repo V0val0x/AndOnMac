@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import CoreVideo
 import VideoToolbox
+import os
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
@@ -56,15 +57,19 @@ public final class ScrcpyDisplayNSView: NSView {
     
     private var trackingArea: NSTrackingArea?
     private var latestImage: CGImage?
+    private var metalRenderer: MetalVideoRenderer?
+    private var displayLink: CADisplayLink?
     public private(set) var hasRenderedFrame: Bool = false
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
+    private var touchStartTime: TimeInterval = 0
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
     private var isBottomScrollHomeTracking: Bool = false
     private var bottomScrollAccumulatedUp: CGFloat = 0
     private var bottomScrollAccumulatedX: CGFloat = 0
     private var bottomScrollTriggered: Bool = false
+    private var bottomScrollAppSwitcherTriggered: Bool = false
     private var isPinching: Bool = false
     private var pinchCenter: CGPoint = CGPoint(x: 0.5, y: 0.5)
     private var pinchSpread: CGFloat = 0.12
@@ -110,6 +115,16 @@ public final class ScrcpyDisplayNSView: NSView {
         return accumulatedUpwardDelta >= 22 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
     }
 
+    /// Detects whether a sustained two-finger trackpad upward scroll near the bottom edge should trigger App Switcher.
+    public static func shouldTriggerScrollAppSwitcher(
+        startNormalizedY: CGFloat,
+        accumulatedUpwardDelta: CGFloat,
+        horizontalDelta: CGFloat
+    ) -> Bool {
+        guard startNormalizedY >= 0.85 else { return false }
+        return accumulatedUpwardDelta >= 85 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
+    }
+
     /// Converts high-precision macOS trackpad deltas into damped, bounded normalized drag increments.
     public static func trackpadDragDelta(scrollingDeltaX: CGFloat, scrollingDeltaY: CGFloat, viewSize: CGSize) -> CGPoint {
         let w = max(1.0, viewSize.width)
@@ -144,6 +159,15 @@ public final class ScrcpyDisplayNSView: NSView {
         layer?.cornerRadius = 38
         layer?.masksToBounds = true
         layer?.contentsGravity = .resizeAspect
+
+        if let renderer = MetalVideoRenderer() {
+            self.metalRenderer = renderer
+            renderer.metalLayer.frame = bounds
+            renderer.metalLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            renderer.metalLayer.cornerRadius = 38
+            renderer.metalLayer.masksToBounds = true
+            layer?.addSublayer(renderer.metalLayer)
+        }
         
         // Register for file drops from Mac Finder / Desktop
         registerForDraggedTypes([.fileURL])
@@ -151,14 +175,55 @@ public final class ScrcpyDisplayNSView: NSView {
         // Subscribe to decoded video frames
         bindFrameCallback()
     }
+
+    private func ensureDisplayLink() {
+        if window != nil && displayLink == nil && metalRenderer != nil {
+            let link = self.displayLink(target: self, selector: #selector(handleDisplayLink))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            link.add(to: .main, forMode: .common)
+            self.displayLink = link
+        }
+    }
+
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            ensureDisplayLink()
+        } else {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+    }
+
+    @objc private func handleDisplayLink() {
+        metalRenderer?.renderLatestFrameIfAvailable()
+    }
     
     public func bindFrameCallback() {
-        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
-            DispatchQueue.main.async {
-                self?.renderCGImage(cgImage)
+        let renderer = self.metalRenderer
+        let firstFrameFlag = OSAllocatedUnfairLock(initialState: false)
+
+        ScrcpyClient.shared.onFrameDecoded = { [weak self, weak renderer] pixelBuffer in
+            if let renderer = renderer {
+                renderer.submit(pixelBuffer: pixelBuffer)
+                let shouldNotify = firstFrameFlag.withLock { notified in
+                    if notified { return false }
+                    notified = true
+                    return true
+                }
+
+                if shouldNotify {
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.hasRenderedFrame = true
+                        if self.displayLink == nil {
+                            self.ensureDisplayLink()
+                            renderer.renderLatestFrameIfAvailable()
+                        }
+                    }
+                }
+                return
             }
-        }
-        ScrcpyClient.shared.onFrameDecoded = { [weak self] pixelBuffer in
             var cgImage: CGImage?
             VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
             if let cgImage = cgImage {
@@ -168,14 +233,36 @@ public final class ScrcpyDisplayNSView: NSView {
                 }
             }
         }
-        if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
-            renderCGImage(cached)
+        if renderer == nil {
+            ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
+                DispatchQueue.main.async {
+                    guard let self = self, self.metalRenderer == nil else { return }
+                    self.renderCGImage(cgImage)
+                }
+            }
+            if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
+                renderCGImage(cached)
+            }
+        } else {
+            ScrcpyClient.shared.onFrameImageDecoded = nil
         }
     }
     
     override public func layout() {
         super.layout()
-        if let latestImage = latestImage {
+        ensureDisplayLink()
+        if let renderer = metalRenderer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            renderer.metalLayer.frame = bounds
+            renderer.metalLayer.contentsScale = scale
+            renderer.metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+            if let corner = layer?.cornerRadius {
+                renderer.metalLayer.cornerRadius = corner
+            }
+            CATransaction.commit()
+        } else if let latestImage = latestImage {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer?.contents = latestImage
@@ -266,6 +353,7 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = true
         let startPt = CGPoint(x: pt.x, y: pt.y)
         touchStartNormalized = startPt
+        touchStartTime = event.timestamp
         // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
         let clampedX: CGFloat = startPt.x <= 0.05 ? 0.0 : (startPt.x >= 0.95 ? 1.0 : startPt.x)
         let clampedY: CGFloat = startPt.y >= 0.94 ? 1.0 : (startPt.y <= 0.05 ? 0.0 : startPt.y)
@@ -284,7 +372,11 @@ public final class ScrcpyDisplayNSView: NSView {
         touchStartNormalized = nil
         guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
 
-        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+        if let start, var gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+            // Swipe-up-and-hold (>= 250ms) from bottom opens App Switcher (native Android gesture behavior)
+            if gesture == .home && (event.timestamp - touchStartTime) >= 0.25 {
+                gesture = .appSwitcher
+            }
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
             performEdgeGesture(gesture)
             return
@@ -326,6 +418,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 }
                 return
             }
@@ -338,6 +431,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 }
             }
 
@@ -358,11 +452,21 @@ public final class ScrcpyDisplayNSView: NSView {
                             self?.onHomeGestureTriggered?()
                         }
                     }
+                    if !bottomScrollAppSwitcherTriggered && Self.shouldTriggerScrollAppSwitcher(
+                        startNormalizedY: 0.90,
+                        accumulatedUpwardDelta: bottomScrollAccumulatedUp,
+                        horizontalDelta: bottomScrollAccumulatedX
+                    ) {
+                        bottomScrollAppSwitcherTriggered = true
+                        ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    }
                 case .ended, .cancelled:
                     isBottomScrollHomeTracking = false
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 default:
                     break
                 }
