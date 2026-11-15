@@ -163,14 +163,20 @@ public final class ScrcpyDisplayNSView: NSView {
         bindFrameCallback()
     }
 
-    override public func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
+    private func ensureDisplayLink() {
         if window != nil && displayLink == nil && metalRenderer != nil {
             let link = self.displayLink(target: self, selector: #selector(handleDisplayLink))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
             self.displayLink = link
-        } else if window == nil {
+        }
+    }
+
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            ensureDisplayLink()
+        } else {
             displayLink?.invalidate()
             displayLink = nil
         }
@@ -188,6 +194,10 @@ public final class ScrcpyDisplayNSView: NSView {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     self.hasRenderedFrame = true
+                    if self.displayLink == nil {
+                        self.ensureDisplayLink()
+                        renderer.renderLatestFrameIfAvailable()
+                    }
                 }
                 return
             }
@@ -213,6 +223,7 @@ public final class ScrcpyDisplayNSView: NSView {
     
     override public func layout() {
         super.layout()
+        ensureDisplayLink()
         if let renderer = metalRenderer {
             CATransaction.begin()
             CATransaction.setDisableActions(true)

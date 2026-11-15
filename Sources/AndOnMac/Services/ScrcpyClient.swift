@@ -421,13 +421,9 @@ public final class ScrcpyClient: @unchecked Sendable {
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
             while isRunning && videoSocket == socket && buffer.count >= 12 {
-                let ptsAndFlags = buffer.withUnsafeBytes { rawPtr -> UInt64 in
-                    rawPtr.loadUnaligned(fromByteOffset: 0, as: UInt64.self).bigEndian
-                }
                 let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
                     rawPtr.loadUnaligned(fromByteOffset: 8, as: UInt32.self).bigEndian
                 }
-                let isConfigOrKeyframe = (ptsAndFlags & (0xC000_0000_0000_0000 as UInt64)) != 0
                 
                 if packetSize > 0 && packetSize < 10_000_000 {
                     let totalFrameSize = 12 + Int(packetSize)
@@ -435,14 +431,9 @@ public final class ScrcpyClient: @unchecked Sendable {
                         let payload = Data(buffer.dropFirst(12).prefix(Int(packetSize)))
                         buffer = Data(buffer.dropFirst(totalFrameSize))
                         
-                        // Drop stale non-keyframe/non-config frames if decoder queue lags behind
-                        decoderLock.lock()
-                        let queueDepth = pendingDecodeFrames
-                        decoderLock.unlock()
-                        if queueDepth >= 3 && !isConfigOrKeyframe {
-                            continue
-                        }
-                        
+                        // Note: Never drop compressed P-frame packets before VideoToolbox decoding,
+                        // as dropping inter-frames breaks reference chains and freezes video until next IDR.
+                        // Frame-queue lag is eliminated post-decode by presenting only the newest CVPixelBuffer.
                         processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
                         continue
                     } else {
@@ -928,7 +919,6 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         guard sampleStatus == noErr, let sample = sampleBuffer else { return }
         
-        pendingDecodeFrames += 1
         var flags: VTDecodeInfoFlags = []
         VTDecompressionSessionDecodeFrame(
             session,
@@ -936,11 +926,6 @@ public final class ScrcpyClient: @unchecked Sendable {
             flags: [._1xRealTimePlayback, ._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
-            if let self = self {
-                self.decoderLock.lock()
-                self.pendingDecodeFrames = max(0, self.pendingDecodeFrames - 1)
-                self.decoderLock.unlock()
-            }
             guard decodeStatus == noErr, let pixelBuffer = imageBuffer else { return }
             self?.hasDecodedAnyFrame = true
             PerformanceEngine.recordPresentedFrame()

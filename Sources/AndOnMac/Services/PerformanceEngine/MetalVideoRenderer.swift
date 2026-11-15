@@ -124,6 +124,12 @@ public final class MetalVideoRenderer: @unchecked Sendable {
     /// Renders the latest pending pixel buffer onto the `CAMetalLayer` if one is available.
     public func renderLatestFrameIfAvailable() {
         autoreleasepool {
+            guard let cache = textureCache,
+                  metalLayer.drawableSize.width > 0,
+                  metalLayer.drawableSize.height > 0 else {
+                return
+            }
+
             frameLock.lock()
             guard let pb = pendingPixelBuffer else {
                 frameLock.unlock()
@@ -134,10 +140,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
             let vh = videoHeight
             frameLock.unlock()
 
-            guard let cache = textureCache,
-                  vw > 0, vh > 0,
-                  metalLayer.drawableSize.width > 0,
-                  metalLayer.drawableSize.height > 0,
+            guard vw > 0, vh > 0,
                   let drawable = metalLayer.nextDrawable() else {
                 return
             }
