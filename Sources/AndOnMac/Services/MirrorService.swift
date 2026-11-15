@@ -213,7 +213,9 @@ public final class MirrorService: @unchecked Sendable {
                 ProcessLifecycleManager.shared.unregister(trackedId)
             }
             try? pkill.run()
-            if waitUntilExit {
+            // `work` already runs on a background utility queue when `waitUntilExit == false`,
+            // so waiting here keeps the watchdog & ProcessLifecycleManager tracking valid until pkill exits.
+            if pkill.isRunning {
                 pkill.waitUntilExit()
             }
         }
