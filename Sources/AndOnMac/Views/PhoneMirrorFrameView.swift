@@ -838,10 +838,15 @@ public struct PhoneMirrorFrameView: View {
     // MARK: - Bottom Home Bar (Interactive)
     private var bottomHomeBarView: some View {
         ZStack {
-            BottomBarScrollCatcher {
-                appState.triggerHome()
-                triggerHomeBarPulse()
-            }
+            BottomBarScrollCatcher(
+                onScrollUpHome: {
+                    appState.triggerHome()
+                    triggerHomeBarPulse()
+                },
+                onScrollUpAppSwitcher: {
+                    appState.triggerAppSwitch()
+                }
+            )
             Capsule()
                 .fill(Color.white.opacity(homeBarPulse ? 1.0 : (isHoveringHome ? 0.95 : 0.6)))
                 .frame(width: 130, height: 5)
@@ -857,11 +862,11 @@ public struct PhoneMirrorFrameView: View {
                         }
                         .onEnded { value in
                             withAnimation(AndMotion.homePulseSpring) {
-                                if value.translation.height < -160 {
-                                    // Very tall drag -> App Switcher (Recents)
+                                if value.translation.height < -55 {
+                                    // Tall upward drag -> App Switcher (Recents)
                                     appState.triggerAppSwitch()
                                 } else if value.translation.height < -15 {
-                                    // Normal upward drag -> Home
+                                    // Short upward drag -> Home
                                     appState.triggerHome()
                                     triggerHomeBarPulse()
                                 }
@@ -869,6 +874,9 @@ public struct PhoneMirrorFrameView: View {
                             }
                         }
                 )
+                .onTapGesture(count: 2) {
+                    appState.triggerAppSwitch()
+                }
                 .onTapGesture {
                     appState.triggerHome()
                     triggerHomeBarPulse()
@@ -886,22 +894,27 @@ public struct PhoneMirrorFrameView: View {
 /// Captures click-free trackpad upward scroll swipes directly over the bottom Home bar capsule.
 private struct BottomBarScrollCatcher: NSViewRepresentable {
     let onScrollUpHome: () -> Void
+    let onScrollUpAppSwitcher: () -> Void
 
     func makeNSView(context: Context) -> ScrollCatcherNSView {
         let view = ScrollCatcherNSView()
         view.onScrollUpHome = onScrollUpHome
+        view.onScrollUpAppSwitcher = onScrollUpAppSwitcher
         return view
     }
 
     func updateNSView(_ nsView: ScrollCatcherNSView, context: Context) {
         nsView.onScrollUpHome = onScrollUpHome
+        nsView.onScrollUpAppSwitcher = onScrollUpAppSwitcher
     }
 
     final class ScrollCatcherNSView: NSView {
         var onScrollUpHome: (() -> Void)?
+        var onScrollUpAppSwitcher: (() -> Void)?
         private var accumulatedUp: CGFloat = 0
         private var accumulatedX: CGFloat = 0
-        private var triggered: Bool = false
+        private var triggeredHome: Bool = false
+        private var triggeredAppSwitcher: Bool = false
 
         override func scrollWheel(with event: NSEvent) {
             guard event.hasPreciseScrollingDeltas else {
@@ -911,7 +924,8 @@ private struct BottomBarScrollCatcher: NSViewRepresentable {
             guard event.momentumPhase == [] else {
                 accumulatedUp = 0
                 accumulatedX = 0
-                triggered = false
+                triggeredHome = false
+                triggeredAppSwitcher = false
                 return
             }
 
@@ -920,25 +934,38 @@ private struct BottomBarScrollCatcher: NSViewRepresentable {
             case .began:
                 accumulatedUp = upwardDelta
                 accumulatedX = event.scrollingDeltaX
-                triggered = false
+                triggeredHome = false
+                triggeredAppSwitcher = false
             case .changed, []:
                 accumulatedUp += upwardDelta
                 accumulatedX += event.scrollingDeltaX
-                if !triggered && ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                if !triggeredHome && ScrcpyDisplayNSView.shouldTriggerScrollHome(
                     startNormalizedY: 0.96,
                     accumulatedUpwardDelta: accumulatedUp,
                     horizontalDelta: accumulatedX
                 ) {
-                    triggered = true
+                    triggeredHome = true
                     NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     DispatchQueue.main.async { [weak self] in
                         self?.onScrollUpHome?()
                     }
                 }
+                if !triggeredAppSwitcher && ScrcpyDisplayNSView.shouldTriggerScrollAppSwitcher(
+                    startNormalizedY: 0.96,
+                    accumulatedUpwardDelta: accumulatedUp,
+                    horizontalDelta: accumulatedX
+                ) {
+                    triggeredAppSwitcher = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onScrollUpAppSwitcher?()
+                    }
+                }
             case .ended, .cancelled:
                 accumulatedUp = 0
                 accumulatedX = 0
-                triggered = false
+                triggeredHome = false
+                triggeredAppSwitcher = false
             default:
                 break
             }

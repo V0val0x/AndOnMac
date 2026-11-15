@@ -62,12 +62,14 @@ public final class ScrcpyDisplayNSView: NSView {
     public private(set) var hasRenderedFrame: Bool = false
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
+    private var touchStartTime: TimeInterval = 0
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
     private var isBottomScrollHomeTracking: Bool = false
     private var bottomScrollAccumulatedUp: CGFloat = 0
     private var bottomScrollAccumulatedX: CGFloat = 0
     private var bottomScrollTriggered: Bool = false
+    private var bottomScrollAppSwitcherTriggered: Bool = false
     private var isPinching: Bool = false
     private var pinchCenter: CGPoint = CGPoint(x: 0.5, y: 0.5)
     private var pinchSpread: CGFloat = 0.12
@@ -111,6 +113,16 @@ public final class ScrcpyDisplayNSView: NSView {
     ) -> Bool {
         guard startNormalizedY >= 0.85 else { return false }
         return accumulatedUpwardDelta >= 22 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
+    }
+
+    /// Detects whether a sustained two-finger trackpad upward scroll near the bottom edge should trigger App Switcher.
+    public static func shouldTriggerScrollAppSwitcher(
+        startNormalizedY: CGFloat,
+        accumulatedUpwardDelta: CGFloat,
+        horizontalDelta: CGFloat
+    ) -> Bool {
+        guard startNormalizedY >= 0.85 else { return false }
+        return accumulatedUpwardDelta >= 85 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
     }
 
     /// Converts high-precision macOS trackpad deltas into damped, bounded normalized drag increments.
@@ -341,6 +353,7 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = true
         let startPt = CGPoint(x: pt.x, y: pt.y)
         touchStartNormalized = startPt
+        touchStartTime = event.timestamp
         // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
         let clampedX: CGFloat = startPt.x <= 0.05 ? 0.0 : (startPt.x >= 0.95 ? 1.0 : startPt.x)
         let clampedY: CGFloat = startPt.y >= 0.94 ? 1.0 : (startPt.y <= 0.05 ? 0.0 : startPt.y)
@@ -359,7 +372,11 @@ public final class ScrcpyDisplayNSView: NSView {
         touchStartNormalized = nil
         guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
 
-        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+        if let start, var gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+            // Swipe-up-and-hold (>= 250ms) from bottom opens App Switcher (native Android gesture behavior)
+            if gesture == .home && (event.timestamp - touchStartTime) >= 0.25 {
+                gesture = .appSwitcher
+            }
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
             performEdgeGesture(gesture)
             return
@@ -401,6 +418,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 }
                 return
             }
@@ -413,6 +431,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 }
             }
 
@@ -433,11 +452,21 @@ public final class ScrcpyDisplayNSView: NSView {
                             self?.onHomeGestureTriggered?()
                         }
                     }
+                    if !bottomScrollAppSwitcherTriggered && Self.shouldTriggerScrollAppSwitcher(
+                        startNormalizedY: 0.90,
+                        accumulatedUpwardDelta: bottomScrollAccumulatedUp,
+                        horizontalDelta: bottomScrollAccumulatedX
+                    ) {
+                        bottomScrollAppSwitcherTriggered = true
+                        ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    }
                 case .ended, .cancelled:
                     isBottomScrollHomeTracking = false
                     bottomScrollAccumulatedUp = 0
                     bottomScrollAccumulatedX = 0
                     bottomScrollTriggered = false
+                    bottomScrollAppSwitcherTriggered = false
                 default:
                     break
                 }
