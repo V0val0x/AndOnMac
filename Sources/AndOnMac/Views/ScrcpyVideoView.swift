@@ -3,6 +3,46 @@ import AppKit
 import CoreVideo
 import VideoToolbox
 
+private final class FrameRenderCoalescer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pendingImage: CGImage?
+    private var isScheduled = false
+    private weak var target: ScrcpyDisplayNSView?
+
+    init(target: ScrcpyDisplayNSView) {
+        self.target = target
+    }
+
+    func enqueue(_ image: CGImage) {
+        lock.lock()
+        pendingImage = image
+        let shouldSchedule = !isScheduled
+        if shouldSchedule {
+            isScheduled = true
+        }
+        lock.unlock()
+
+        guard shouldSchedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.flushOnMain()
+        }
+    }
+
+    private func flushOnMain() {
+        lock.lock()
+        let nextImage = pendingImage
+        pendingImage = nil
+        isScheduled = false
+        lock.unlock()
+
+        if let nextImage = nextImage {
+            MainActor.assumeIsolated {
+                target?.renderCGImage(nextImage)
+            }
+        }
+    }
+}
+
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
     public var onFileDrop: (([URL]) -> Void)?
@@ -30,7 +70,9 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         nsView.serial = serial
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
-        nsView.bindFrameCallback()
+        if !nsView.hasBoundCallback {
+            nsView.bindFrameCallback()
+        }
     }
 }
 
@@ -46,6 +88,8 @@ public final class ScrcpyDisplayNSView: NSView {
     private var trackingArea: NSTrackingArea?
     private var latestImage: CGImage?
     public private(set) var hasRenderedFrame: Bool = false
+    public private(set) var hasBoundCallback: Bool = false
+    private lazy var frameCoalescer = FrameRenderCoalescer(target: self)
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
     private var isTrackpadPanning: Bool = false
@@ -127,21 +171,12 @@ public final class ScrcpyDisplayNSView: NSView {
     }
     
     public func bindFrameCallback() {
-        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
-            DispatchQueue.main.async {
-                self?.renderCGImage(cgImage)
-            }
+        hasBoundCallback = true
+        let coalescer = frameCoalescer
+        ScrcpyClient.shared.onFrameImageDecoded = { [weak coalescer] cgImage in
+            coalescer?.enqueue(cgImage)
         }
-        ScrcpyClient.shared.onFrameDecoded = { [weak self] pixelBuffer in
-            var cgImage: CGImage?
-            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-            if let cgImage = cgImage {
-                DispatchQueue.main.async {
-                    guard let self = self, !self.hasRenderedFrame else { return }
-                    self.renderCGImage(cgImage)
-                }
-            }
-        }
+        ScrcpyClient.shared.onFrameDecoded = nil
         if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
             renderCGImage(cached)
         }

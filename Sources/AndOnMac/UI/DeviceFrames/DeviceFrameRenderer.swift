@@ -115,7 +115,7 @@ public struct DeviceFrameRenderer<ScreenContent: View>: View {
     public let showCameraPunchHole: Bool
     public let matchDeviceColor: Bool
     public let enableAmbilight: Bool
-    public let ambilightPalette: AmbilightPalette
+    public let ambilightPalette: AmbilightPalette?
     @ViewBuilder public let screenContent: () -> ScreenContent
 
     public static var fluidSpring: Animation {
@@ -133,7 +133,7 @@ public struct DeviceFrameRenderer<ScreenContent: View>: View {
         showCameraPunchHole: Bool,
         matchDeviceColor: Bool,
         enableAmbilight: Bool,
-        ambilightPalette: AmbilightPalette,
+        ambilightPalette: AmbilightPalette? = nil,
         @ViewBuilder screenContent: @escaping () -> ScreenContent
     ) {
         self.spec = spec
@@ -169,9 +169,9 @@ public struct DeviceFrameRenderer<ScreenContent: View>: View {
         ZStack {
             // Adaptive Ambilight or subtle natural shadow beneath chassis
             AmbilightGlowView(
-                palette: ambilightPalette,
                 cornerRadius: outerRadius,
-                isEnabled: enableAmbilight
+                isEnabled: enableAmbilight,
+                palette: ambilightPalette
             )
 
             // Programmatic Vector Chassis
@@ -198,26 +198,19 @@ public struct DeviceFrameRenderer<ScreenContent: View>: View {
                 .shadow(color: Color.black.opacity(enableAmbilight ? 0.40 : 0.50), radius: 22, x: 0, y: 12)
                 .makeWindowDraggable()
 
-            // Inner Display Substrate + Vector-Masked Screen + Camera Optics
+            // Inner Display Substrate + Hardware Corner Clip + Camera Optics
             ZStack {
                 RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
                     .fill(Color.black)
-                    .makeWindowDraggable()
 
                 screenContent()
                     .frame(width: screenSize.width, height: screenSize.height)
-                    .clipShape(
-                        DeviceScreenCutoutShape(
-                            cornerRadius: screenRadius,
-                            punchHoleCenter: holeCenter,
-                            punchHoleRadius: holeRadius
-                        ),
-                        style: FillStyle(eoFill: true)
-                    )
+                    .clipShape(RoundedRectangle(cornerRadius: screenRadius, style: .continuous))
                     .overlay {
                         if let center = holeCenter, holeRadius > 0 {
                             DeviceCameraLensView(radius: holeRadius)
                                 .position(center)
+                                .allowsHitTesting(false)
                         }
                     }
             }

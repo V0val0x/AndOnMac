@@ -196,10 +196,18 @@ public final class AppState: ObservableObject {
             return
         }
         
-        self.lastKnownWifiIP = ip
+        if self.lastKnownWifiIP != ip {
+            self.lastKnownWifiIP = ip
+        }
         addSavedIP(ip)
         
         if let index = knownDevices.firstIndex(where: { $0.ipAddress == ip || $0.id == device.id }) {
+            let existing = knownDevices[index]
+            let portChanged = resolvedPort != nil && existing.port != resolvedPort
+            let nameChanged = existing.name != device.displayName
+            let ipChanged = existing.ipAddress != ip
+            let staleTimestamp = Date().timeIntervalSince(existing.lastConnected) >= 60.0
+            guard portChanged || nameChanged || ipChanged || staleTimestamp else { return }
             knownDevices[index].lastConnected = Date()
             knownDevices[index].name = device.displayName
             knownDevices[index].ipAddress = ip

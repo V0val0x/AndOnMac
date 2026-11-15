@@ -138,6 +138,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     /// Connects videoSocket (verifying 1 dummy byte) and controlSocket on `127.0.0.1:port` and starts concurrent stream readers.
     public func connectAndStartStreams(port: Int, turnScreenOff: Bool = false) throws {
         self.isRunning = true
+        let currentGen = sessionGeneration
         let vSock = try connectVideoSocket(port: port)
         let cSock: Int32
         do {
@@ -159,7 +160,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         // 7. Start reading raw video stream on dedicated videoQueue
         videoQueue.async { [weak self] in
-            self?.readRawVideoStream(socket: vSock)
+            self?.readRawVideoStream(socket: vSock, generation: currentGen)
         }
         
         // 8. Start automatic Universal Clipboard Sync (Mac -> Phone)
@@ -229,11 +230,15 @@ public final class ScrcpyClient: @unchecked Sendable {
         activeSPS = nil
         activePPS = nil
         latestFrameImage = nil
-        if let session = session {
-            VTDecompressionSessionWaitForAsynchronousFrames(session)
-            VTDecompressionSessionInvalidate(session)
-        }
         decoderLock.unlock()
+
+        if let session = session {
+            nonisolated(unsafe) let sessionToInvalidate = session
+            DispatchQueue.global(qos: .utility).async {
+                VTDecompressionSessionWaitForAsynchronousFrames(sessionToInvalidate)
+                VTDecompressionSessionInvalidate(sessionToInvalidate)
+            }
+        }
         
         if wasRunning {
             onSessionStateChanged?(false)
@@ -320,14 +325,14 @@ public final class ScrcpyClient: @unchecked Sendable {
     }
     
     // MARK: - Video Stream Reader & Low-Latency Frame Parser
-    private func readRawVideoStream(socket: Int32) {
+    private func readRawVideoStream(socket: Int32, generation: UInt64) {
         var buffer = Data()
         var temp = [UInt8](repeating: 0, count: 65536)
         
         var sps: Data?
         var pps: Data?
         
-        while isRunning && videoSocket == socket {
+        while isRunning && sessionGeneration == generation && videoSocket == socket {
             let bytesRead = recv(socket, &temp, temp.count, 0)
             if bytesRead < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
@@ -341,7 +346,7 @@ public final class ScrcpyClient: @unchecked Sendable {
             
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
-            while isRunning && videoSocket == socket && buffer.count >= 12 {
+            while isRunning && sessionGeneration == generation && videoSocket == socket && buffer.count >= 12 {
                 let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
                     rawPtr.loadUnaligned(fromByteOffset: 8, as: UInt32.self).bigEndian
                 }
@@ -370,7 +375,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         }
         
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.videoSocket == socket else { return }
+            guard let self = self, self.sessionGeneration == generation, self.videoSocket == socket else { return }
             self.stop()
         }
     }
@@ -721,19 +726,21 @@ public final class ScrcpyClient: @unchecked Sendable {
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
             guard decodeStatus == noErr, let pixelBuffer = imageBuffer else { return }
-            AmbilightEngine.submitPixelBuffer(pixelBuffer)
-            var cgImage: CGImage?
-            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-            if let cgImage = cgImage {
-                self?.latestFrameImage = cgImage
-            }
-            nonisolated(unsafe) let pb = pixelBuffer
-            DispatchQueue.main.async { [weak self] in
+            autoreleasepool {
+                AmbilightEngine.submitPixelBuffer(pixelBuffer)
+                var cgImage: CGImage?
+                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
                 guard let self = self else { return }
                 if let cgImage = cgImage {
+                    self.latestFrameImage = cgImage
                     self.onFrameImageDecoded?(cgImage)
                 }
-                self.onFrameDecoded?(pb)
+                if let onFrameDecoded = self.onFrameDecoded {
+                    nonisolated(unsafe) let pb = pixelBuffer
+                    DispatchQueue.main.async {
+                        onFrameDecoded(pb)
+                    }
+                }
             }
         }
     }

@@ -3,7 +3,6 @@ import AppKit
 
 public struct PhoneMirrorFrameView: View {
     @ObservedObject var appState: AppState
-    @ObservedObject private var ambilight = AmbilightEngine.shared
     @State private var isHoveringTop: Bool = false
     @State private var isHoveringHome: Bool = false
     @State private var dragOffset: CGFloat = 0
@@ -46,21 +45,15 @@ public struct PhoneMirrorFrameView: View {
             showDeviceBezel: appState.showDeviceBezel,
             showCameraPunchHole: appState.showFrontCamera,
             matchDeviceColor: appState.matchDeviceColor,
-            enableAmbilight: appState.enableAmbilight && appState.isMirroring,
-            ambilightPalette: ambilight.palette
+            enableAmbilight: appState.enableAmbilight && appState.isMirroring
         ) {
             Group {
                 if appState.isMirroring {
                     liveScreenView
                 } else if appState.showPairingSheet {
                     WirelessPairingView(appState: appState)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .move(edge: .bottom).combined(with: .opacity)
-                        ))
                 } else {
                     standbyScreenView
-                        .transition(.opacity)
                 }
             }
         }

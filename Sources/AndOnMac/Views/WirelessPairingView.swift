@@ -19,7 +19,6 @@ public enum PairingTab: String, CaseIterable, Identifiable {
 public struct WirelessPairingView: View {
     @ObservedObject var appState: AppState
     @ObservedObject var discovery = DiscoveryService.shared
-    @Environment(\.dismiss) private var dismiss
     
     @State private var selectedTab: PairingTab = .wifiPin
     
@@ -49,10 +48,8 @@ public struct WirelessPairingView: View {
     }
     
     private func closePairing() {
-        withAnimation(.easeInOut(duration: 0.25)) {
-            appState.showPairingSheet = false
-        }
-        dismiss()
+        focusedField = nil
+        appState.showPairingSheet = false
     }
     
     public var body: some View {

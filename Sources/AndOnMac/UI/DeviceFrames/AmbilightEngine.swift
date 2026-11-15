@@ -222,28 +222,32 @@ private final class AmbilightSampler: @unchecked Sendable {
 }
 
 /// Soft ambient halo rendered behind the phone chassis based on edge colors extracted from the stream.
+/// Isolates `@ObservedObject` subscription to this leaf view so parent views and `ScrcpyVideoView` never re-render per frame.
 public struct AmbilightGlowView: View {
-    public let palette: AmbilightPalette
+    @ObservedObject private var engine = AmbilightEngine.shared
     public let cornerRadius: CGFloat
     public let isEnabled: Bool
 
-    public init(palette: AmbilightPalette, cornerRadius: CGFloat, isEnabled: Bool) {
-        self.palette = palette
+    public init(cornerRadius: CGFloat, isEnabled: Bool, palette: AmbilightPalette? = nil) {
         self.cornerRadius = cornerRadius
         self.isEnabled = isEnabled
+        self._explicitPalette = palette
     }
 
+    private let _explicitPalette: AmbilightPalette?
+
     public var body: some View {
+        let activePalette = _explicitPalette ?? engine.palette
         ZStack {
             if isEnabled {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                palette.leading.color.opacity(0.52),
-                                palette.top.color.opacity(0.45),
-                                palette.trailing.color.opacity(0.52),
-                                palette.bottom.color.opacity(0.45)
+                                activePalette.leading.color.opacity(0.52),
+                                activePalette.top.color.opacity(0.45),
+                                activePalette.trailing.color.opacity(0.52),
+                                activePalette.bottom.color.opacity(0.45)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -251,7 +255,7 @@ public struct AmbilightGlowView: View {
                     )
                     .blur(radius: 26)
                     .padding(-6)
-                    .animation(.easeOut(duration: 0.25), value: palette)
+                    .animation(.easeOut(duration: 0.25), value: activePalette)
             }
         }
         .allowsHitTesting(false)

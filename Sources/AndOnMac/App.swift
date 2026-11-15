@@ -206,6 +206,9 @@ private struct MenuBarPopoverView: View {
                 .buttonStyle(.borderless)
 
                 Button {
+                    if appState.isMirroring {
+                        appState.toggleMirroring()
+                    }
                     appState.showPairingSheet = true
                     NSApp.activate(ignoringOtherApps: true)
                 } label: {

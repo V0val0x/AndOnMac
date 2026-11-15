@@ -56,11 +56,22 @@ private struct WindowConfigurator: NSViewRepresentable {
     let aspect: CGFloat
     let configure: (NSWindow) -> Void
     
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    final class Coordinator {
+        weak var configuredWindow: NSWindow?
+    }
+    
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
-                configure(window)
+                if context.coordinator.configuredWindow !== window {
+                    configure(window)
+                    context.coordinator.configuredWindow = window
+                }
                 updateWindowSize(window: window, animated: false)
             }
         }
@@ -69,7 +80,10 @@ private struct WindowConfigurator: NSViewRepresentable {
     
     func updateNSView(_ nsView: NSView, context: Context) {
         if let window = nsView.window {
-            configure(window)
+            if context.coordinator.configuredWindow !== window {
+                configure(window)
+                context.coordinator.configuredWindow = window
+            }
             updateWindowSize(window: window, animated: true)
         }
     }
@@ -116,14 +130,8 @@ public struct WindowDraggableModifier: ViewModifier {
     public init() {}
     
     public func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content
-                .background(WindowDragRepresentable())
-                .gesture(WindowDragGesture())
-        } else {
-            content
-                .background(WindowDragRepresentable())
-        }
+        content
+            .background(WindowDragRepresentable())
     }
 }
 
