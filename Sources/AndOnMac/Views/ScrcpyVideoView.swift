@@ -92,6 +92,8 @@ public final class ScrcpyDisplayNSView: NSView {
     private lazy var frameCoalescer = FrameRenderCoalescer(target: self)
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
+    private var lastReportedTopHover: Bool = false
+    private var lastReportedBottomHover: Bool = false
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
     private var isPinching: Bool = false
@@ -118,9 +120,9 @@ public final class ScrcpyDisplayNSView: NSView {
         if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
             return .back
         }
-        // Bottom edge swipe up -> Home (normal swipe) or App Switcher (tall swipe > 50% screen)
-        if startNormalized.y >= 0.90, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
-            return dy <= -0.50 ? .appSwitcher : .home
+        // Bottom edge swipe up -> Home (short/medium) or App Switcher (tall swipe >= 40% screen)
+        if startNormalized.y >= 0.88, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
+            return dy <= -0.40 ? .appSwitcher : .home
         }
         // Top edge swipe down -> Notification Shade
         if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {
@@ -222,11 +224,19 @@ public final class ScrcpyDisplayNSView: NSView {
         let loc = convert(event.locationInWindow, from: nil)
         let isTop = loc.y >= 0 && loc.y <= 42
         let isBottom = loc.y >= bounds.height - 38 && loc.y <= bounds.height
-        onHoverZonesChanged?(isTop, isBottom)
+        if isTop != lastReportedTopHover || isBottom != lastReportedBottomHover {
+            lastReportedTopHover = isTop
+            lastReportedBottomHover = isBottom
+            onHoverZonesChanged?(isTop, isBottom)
+        }
     }
     
     override public func mouseExited(with event: NSEvent) {
-        onHoverZonesChanged?(false, false)
+        if lastReportedTopHover || lastReportedBottomHover {
+            lastReportedTopHover = false
+            lastReportedBottomHover = false
+            onHoverZonesChanged?(false, false)
+        }
     }
     
     // MARK: - Video Display Rect Calculator (Handles Letterbox & Pillarbox)
@@ -264,10 +274,12 @@ public final class ScrcpyDisplayNSView: NSView {
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let loc = convert(event.locationInWindow, from: nil)
+        let vRect = videoRect()
+        let inBottomEdgeExtension = loc.y >= vRect.maxY - 2 && loc.y <= bounds.height && loc.x >= vRect.minX - 10 && loc.x <= vRect.maxX + 10
         guard hasRenderedFrame,
               loc.y > 38,
-              let pt = normalizedPoint(from: event, allowClamping: false) else {
-            // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/letterbox margin moves the macOS window
+              let pt = normalizedPoint(from: event, allowClamping: inBottomEdgeExtension) else {
+            // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/side margin moves the macOS window
             isTrackingTouch = false
             window?.performDrag(with: event)
             return

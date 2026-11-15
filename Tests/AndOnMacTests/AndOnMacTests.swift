@@ -618,12 +618,29 @@ final class AndOnMacTests: XCTestCase {
             .appSwitcher
         )
         XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.72)),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.45)),
+            .appSwitcher
+        )
+        XCTAssertEqual(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), endNormalized: CGPoint(x: 0.5, y: 0.20)),
             .notifications
         )
         XCTAssertNil(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.5), endNormalized: CGPoint(x: 0.7, y: 0.5))
         )
+    }
+
+    func testHomeBarDragClassificationAndNonDraggableArea() {
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -5), .none)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -20), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -59), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -60), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -90), .appSwitcher)
+        XCTAssertFalse(NonDraggableNSView().mouseDownCanMoveWindow)
     }
 
     func testTrackpadDragAndMouseWheelClamping() {

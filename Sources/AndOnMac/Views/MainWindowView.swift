@@ -153,6 +153,21 @@ private final class WindowDragNSView: NSView {
     }
 }
 
+public struct NonDraggableAreaRepresentable: NSViewRepresentable {
+    public init() {}
+
+    public func makeNSView(context: Context) -> NonDraggableNSView {
+        NonDraggableNSView()
+    }
+
+    public func updateNSView(_ nsView: NonDraggableNSView, context: Context) {}
+}
+
+public final class NonDraggableNSView: NSView {
+    override public var mouseDownCanMoveWindow: Bool { false }
+    override public func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 public extension View {
     func makeWindowDraggable() -> some View {
         self.modifier(WindowDraggableModifier())

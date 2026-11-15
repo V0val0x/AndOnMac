@@ -4,9 +4,15 @@ import AppKit
 public struct PhoneMirrorFrameView: View {
     @ObservedObject var appState: AppState
     @State private var isHoveringTop: Bool = false
+    @State private var isHoveringTopBar: Bool = false
     @State private var isHoveringHome: Bool = false
+    @State private var isHoveringHomePill: Bool = false
+    @State private var isDraggingHomeBar: Bool = false
     @State private var dragOffset: CGFloat = 0
     @State private var pulseAnimation: Bool = false
+
+    private var showTopHUD: Bool { isHoveringTop || isHoveringTopBar }
+    private var showHomeBar: Bool { isHoveringHome || isHoveringHomePill || isDraggingHomeBar }
     
     public init(appState: AppState) {
         self.appState = appState
@@ -79,9 +85,11 @@ public struct PhoneMirrorFrameView: View {
                     }
                 },
                 onHoverZonesChanged: { isTop, isBottom in
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        self.isHoveringTop = isTop
-                        self.isHoveringHome = isBottom
+                    if self.isHoveringTop != isTop || self.isHoveringHome != isBottom {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            self.isHoveringTop = isTop
+                            self.isHoveringHome = isBottom
+                        }
                     }
                 }
             )
@@ -91,17 +99,20 @@ public struct PhoneMirrorFrameView: View {
                 topHoverHUDView
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
-                    .opacity(isHoveringTop ? 1.0 : 0.0)
-                    .allowsHitTesting(isHoveringTop)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringTop)
+                    .onHover { hovering in
+                        isHoveringTopBar = hovering
+                    }
+                    .opacity(showTopHUD ? 1.0 : 0.0)
+                    .allowsHitTesting(showTopHUD)
+                    .animation(.easeInOut(duration: 0.15), value: showTopHUD)
                 
                 Spacer()
                 
                 bottomHomeBarView
                     .padding(.bottom, 6)
-                    .opacity(isHoveringHome ? 1.0 : 0.0)
-                    .allowsHitTesting(isHoveringHome)
-                    .animation(.easeInOut(duration: 0.15), value: isHoveringHome)
+                    .opacity(showHomeBar ? 1.0 : 0.0)
+                    .allowsHitTesting(showHomeBar)
+                    .animation(.easeInOut(duration: 0.15), value: showHomeBar)
             }
             
             // Photo Transfer Toast Alert
@@ -200,7 +211,7 @@ public struct PhoneMirrorFrameView: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 7, weight: .black))
                             .foregroundColor(.black.opacity(0.7))
-                            .opacity(isHoveringTop ? 1 : 0)
+                            .opacity(showTopHUD ? 1 : 0)
                     )
             }
             .buttonStyle(.plain)
@@ -665,43 +676,67 @@ public struct PhoneMirrorFrameView: View {
         }
     }
     
+    public enum HomeBarGestureAction: Equatable, Sendable {
+        case none
+        case home
+        case appSwitcher
+    }
+
+    public static func classifyHomeBarDrag(translationHeight: CGFloat) -> HomeBarGestureAction {
+        if translationHeight <= -60 {
+            return .appSwitcher
+        }
+        if translationHeight <= -12 {
+            return .home
+        }
+        return .none
+    }
+
     // MARK: - Bottom Home Bar (Interactive)
     private var bottomHomeBarView: some View {
         VStack {
             Capsule()
-                .fill(Color.white.opacity(isHoveringHome ? 0.95 : 0.6))
+                .fill(Color.white.opacity(showHomeBar ? 0.95 : 0.6))
                 .frame(width: 130, height: 5)
                 .shadow(color: .black.opacity(0.5), radius: 2)
                 .offset(y: dragOffset)
-                .gesture(
-                    DragGesture(minimumDistance: 5)
-                        .onChanged { value in
-                            if value.translation.height < 0 {
-                                dragOffset = max(value.translation.height, -70)
-                            }
-                        }
-                        .onEnded { value in
-                            withAnimation(.spring()) {
-                                if value.translation.height < -160 {
-                                    // Very tall drag -> App Switcher (Recents)
-                                    appState.triggerAppSwitch()
-                                } else if value.translation.height < -15 {
-                                    // Normal upward drag -> Home
-                                    appState.triggerHome()
-                                }
-                                dragOffset = 0
-                            }
-                        }
-                )
-                .onTapGesture {
-                    appState.triggerHome()
-                }
-                .onHover { hovering in
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isHoveringHome = hovering
+        }
+        .frame(width: 150, height: 24)
+        .contentShape(Rectangle())
+        .background(NonDraggableAreaRepresentable())
+        .onTapGesture {
+            appState.triggerHome()
+        }
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .local)
+                .onChanged { value in
+                    isDraggingHomeBar = true
+                    if value.translation.height < 0 {
+                        dragOffset = max(value.translation.height, -75)
+                    } else {
+                        dragOffset = 0
                     }
                 }
+                .onEnded { value in
+                    let action = Self.classifyHomeBarDrag(translationHeight: value.translation.height)
+                    isDraggingHomeBar = false
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
+                        dragOffset = 0
+                    }
+                    switch action {
+                    case .appSwitcher:
+                        appState.triggerAppSwitch()
+                    case .home:
+                        appState.triggerHome()
+                    case .none:
+                        break
+                    }
+                }
+        )
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHoveringHomePill = hovering
+            }
         }
-        .frame(height: 18)
     }
 }
