@@ -4,6 +4,11 @@ import CoreMedia
 import CoreVideo
 import AppKit
 
+public enum ScrcpyVideoCodec: String, Sendable {
+    case h265 = "h265"
+    case h264 = "h264"
+}
+
 public final class ScrcpyClient: @unchecked Sendable {
     public static let shared = ScrcpyClient()
     
@@ -22,6 +27,9 @@ public final class ScrcpyClient: @unchecked Sendable {
     private var activeLocalPort: Int?
     private var activeSerial: String?
     private var didTurnScreenOff = false
+    public private(set) var activeCodec: ScrcpyVideoCodec = .h265
+    public private(set) var hasDecodedAnyFrame: Bool = false
+    private var pendingDecodeFrames: Int = 0
     public static let maxVideoBufferBytes = 16 * 1024 * 1024
 
     private let videoQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.video", qos: .userInteractive)
@@ -32,6 +40,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     // VideoToolbox
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
+    private var activeVPS: Data?
     private var activeSPS: Data?
     private var activePPS: Data?
     public private(set) var latestFrameImage: CGImage?
@@ -66,14 +75,18 @@ public final class ScrcpyClient: @unchecked Sendable {
     public func start(
         serial: String,
         maxSize: Int = 1440,
-        maxFps: Int = 60,
-        bitRate: Int = 8_000_000,
+        maxFps: Int = 120,
+        bitRate: Int = 16_000_000,
+        videoCodec: ScrcpyVideoCodec = .h265,
         turnScreenOff: Bool = true,
         stayAwake: Bool = true
     ) async throws {
         stop()
         sessionGeneration &+= 1
         let myGen = sessionGeneration
+        self.activeCodec = videoCodec
+        self.hasDecodedAnyFrame = false
+        self.pendingDecodeFrames = 0
         
         // 1. Wake up screen on start so user doesn't see a black locked screen
         _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
@@ -119,6 +132,7 @@ public final class ScrcpyClient: @unchecked Sendable {
             "max_size=\(maxSize)",
             "max_fps=\(maxFps)",
             "video_bit_rate=\(bitRate)",
+            "video_codec=\(videoCodec.rawValue)",
             "stay_awake=\(stayAwake ? "true" : "false")"
         ]
         
@@ -143,11 +157,12 @@ public final class ScrcpyClient: @unchecked Sendable {
         guard sessionGeneration == myGen && isRunning else {
             throw CancellationError()
         }
-        try connectAndStartStreams(port: localPort, turnScreenOff: turnScreenOff)
+        try connectAndStartStreams(port: localPort, turnScreenOff: turnScreenOff, codec: videoCodec)
     }
     
     /// Connects videoSocket (verifying 1 dummy byte) and controlSocket on `127.0.0.1:port` and starts concurrent stream readers.
-    public func connectAndStartStreams(port: Int, turnScreenOff: Bool = false) throws {
+    public func connectAndStartStreams(port: Int, turnScreenOff: Bool = false, codec: ScrcpyVideoCodec = .h264) throws {
+        self.activeCodec = codec
         socketLock.lock()
         self.isRunning = true
         socketLock.unlock()
@@ -272,9 +287,11 @@ public final class ScrcpyClient: @unchecked Sendable {
         let session = decompressionSession
         decompressionSession = nil
         formatDescription = nil
+        activeVPS = nil
         activeSPS = nil
         activePPS = nil
         latestFrameImage = nil
+        pendingDecodeFrames = 0
         if let session = session {
             VTDecompressionSessionWaitForAsynchronousFrames(session)
             VTDecompressionSessionInvalidate(session)
@@ -378,6 +395,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         var buffer = Data()
         var temp = [UInt8](repeating: 0, count: 65536)
         
+        var vps: Data?
         var sps: Data?
         var pps: Data?
         
@@ -399,9 +417,13 @@ public final class ScrcpyClient: @unchecked Sendable {
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
             while isRunning && videoSocket == socket && buffer.count >= 12 {
+                let ptsAndFlags = buffer.withUnsafeBytes { rawPtr -> UInt64 in
+                    rawPtr.loadUnaligned(fromByteOffset: 0, as: UInt64.self).bigEndian
+                }
                 let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
                     rawPtr.loadUnaligned(fromByteOffset: 8, as: UInt32.self).bigEndian
                 }
+                let isConfigOrKeyframe = (ptsAndFlags & (0xC000_0000_0000_0000 as UInt64)) != 0
                 
                 if packetSize > 0 && packetSize < 10_000_000 {
                     let totalFrameSize = 12 + Int(packetSize)
@@ -409,7 +431,15 @@ public final class ScrcpyClient: @unchecked Sendable {
                         let payload = Data(buffer.dropFirst(12).prefix(Int(packetSize)))
                         buffer = Data(buffer.dropFirst(totalFrameSize))
                         
-                        processPacketPayload(payload, sps: &sps, pps: &pps)
+                        // Drop stale non-keyframe/non-config frames if decoder queue lags behind
+                        decoderLock.lock()
+                        let queueDepth = pendingDecodeFrames
+                        decoderLock.unlock()
+                        if queueDepth >= 3 && !isConfigOrKeyframe {
+                            continue
+                        }
+                        
+                        processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
                         continue
                     } else {
                         break
@@ -418,7 +448,7 @@ public final class ScrcpyClient: @unchecked Sendable {
                     // Fallback to raw Annex-B NAL parser if not 12-byte framed
                     if let (nalData, nextIdx) = extractNextNAL(from: buffer) {
                         buffer = Data(buffer.dropFirst(nextIdx))
-                        handleNAL(nalData, sps: &sps, pps: &pps)
+                        handleNAL(nalData, vps: &vps, sps: &sps, pps: &pps)
                     } else {
                         break
                     }
@@ -512,51 +542,104 @@ public final class ScrcpyClient: @unchecked Sendable {
         }
     }
     
-    /// Parses all NAL units in packet payload, extracts SPS/PPS, and submits AVCC frame to VideoToolbox
-    private func processPacketPayload(_ payload: Data, sps: inout Data?, pps: inout Data?) {
+    /// Extracts HEVC NAL unit type (`(header >> 1) & 0x3F`).
+    public static func hevcNALType(for nal: Data) -> UInt8? {
+        guard let first = nal.first else { return nil }
+        return (first >> 1) & 0x3F
+    }
+
+    /// Parses all NAL units in packet payload, extracts parameter sets (H.264 SPS/PPS or HEVC VPS/SPS/PPS), and submits AVCC/HVCC frame to VideoToolbox
+    private func processPacketPayload(_ payload: Data, vps: inout Data?, sps: inout Data?, pps: inout Data?) {
         guard !payload.isEmpty else { return }
         
         let nals = Self.parseAnnexBNALUnits(from: payload)
         var avccBuffer = Data()
         
-        if nals.isEmpty {
-            // Raw single NAL without start code
-            let nalType = payload[payload.startIndex] & 0x1F
-            if nalType == 7 {
-                sps = payload
-                createDecompressionSessionIfReady(sps: sps, pps: pps)
-            } else if nalType == 8 {
-                pps = payload
-                createDecompressionSessionIfReady(sps: sps, pps: pps)
-            } else {
-                var len = UInt32(payload.count).bigEndian
-                avccBuffer.append(Data(bytes: &len, count: 4))
-                avccBuffer.append(payload)
-            }
-        } else {
-            var spsOrPpsUpdated = false
-            for nal in nals {
-                guard !nal.isEmpty else { continue }
-                let nalType = nal[nal.startIndex] & 0x1F
-                if nalType == 7 { // SPS
-                    sps = nal
-                    spsOrPpsUpdated = true
-                } else if nalType == 8 { // PPS
-                    pps = nal
-                    spsOrPpsUpdated = true
-                } else if nalType == 1 || nalType == 5 || nalType == 6 {
-                    // Non-IDR Slice, IDR Keyframe Slice, or SEI
-                    if spsOrPpsUpdated {
-                        createDecompressionSessionIfReady(sps: sps, pps: pps)
-                        spsOrPpsUpdated = false
+        if activeCodec == .h265 {
+            if nals.isEmpty {
+                if let nalType = Self.hevcNALType(for: payload) {
+                    if nalType == 32 {
+                        vps = payload
+                        createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+                    } else if nalType == 33 {
+                        sps = payload
+                        createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+                    } else if nalType == 34 {
+                        pps = payload
+                        createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+                    } else {
+                        var len = UInt32(payload.count).bigEndian
+                        avccBuffer.append(Data(bytes: &len, count: 4))
+                        avccBuffer.append(payload)
                     }
-                    var len = UInt32(nal.count).bigEndian
-                    avccBuffer.append(Data(bytes: &len, count: 4))
-                    avccBuffer.append(nal)
+                }
+            } else {
+                var paramUpdated = false
+                for nal in nals {
+                    guard let nalType = Self.hevcNALType(for: nal) else { continue }
+                    if nalType == 32 {
+                        vps = nal
+                        paramUpdated = true
+                    } else if nalType == 33 {
+                        sps = nal
+                        paramUpdated = true
+                    } else if nalType == 34 {
+                        pps = nal
+                        paramUpdated = true
+                    } else {
+                        if paramUpdated {
+                            createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+                            paramUpdated = false
+                        }
+                        var len = UInt32(nal.count).bigEndian
+                        avccBuffer.append(Data(bytes: &len, count: 4))
+                        avccBuffer.append(nal)
+                    }
+                }
+                if paramUpdated {
+                    createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
                 }
             }
-            if spsOrPpsUpdated {
-                createDecompressionSessionIfReady(sps: sps, pps: pps)
+        } else {
+            if nals.isEmpty {
+                // Raw single NAL without start code
+                let nalType = payload[payload.startIndex] & 0x1F
+                if nalType == 7 {
+                    sps = payload
+                    createDecompressionSessionIfReady(sps: sps, pps: pps)
+                } else if nalType == 8 {
+                    pps = payload
+                    createDecompressionSessionIfReady(sps: sps, pps: pps)
+                } else {
+                    var len = UInt32(payload.count).bigEndian
+                    avccBuffer.append(Data(bytes: &len, count: 4))
+                    avccBuffer.append(payload)
+                }
+            } else {
+                var spsOrPpsUpdated = false
+                for nal in nals {
+                    guard !nal.isEmpty else { continue }
+                    let nalType = nal[nal.startIndex] & 0x1F
+                    if nalType == 7 { // SPS
+                        sps = nal
+                        spsOrPpsUpdated = true
+                    } else if nalType == 8 { // PPS
+                        pps = nal
+                        spsOrPpsUpdated = true
+                    } else if nalType == 1 || nalType == 5 || nalType == 6 {
+                        // Non-IDR Slice, IDR Keyframe Slice, or SEI
+                        if spsOrPpsUpdated {
+                            createDecompressionSessionIfReady(sps: sps, pps: pps)
+                            spsOrPpsUpdated = false
+                        }
+                        var len = UInt32(nal.count).bigEndian
+                        avccBuffer.append(Data(bytes: &len, count: 4))
+                        avccBuffer.append(nal)
+                    }
+                }
+                if spsOrPpsUpdated {
+                    createDecompressionSessionIfReady(sps: sps, pps: pps)
+                }
             }
         }
         
@@ -622,10 +705,27 @@ public final class ScrcpyClient: @unchecked Sendable {
         }
     }
     
-    private func handleNAL(_ nal: Data, sps: inout Data?, pps: inout Data?) {
+    private func handleNAL(_ nal: Data, vps: inout Data?, sps: inout Data?, pps: inout Data?) {
         guard !nal.isEmpty else { return }
+        if activeCodec == .h265 {
+            guard let nalType = Self.hevcNALType(for: nal) else { return }
+            switch nalType {
+            case 32:
+                vps = nal
+                createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+            case 33:
+                sps = nal
+                createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+            case 34:
+                pps = nal
+                createHEVCDecompressionSessionIfReady(vps: vps, sps: sps, pps: pps)
+            default:
+                decodeSlice(nal: nal)
+            }
+            return
+        }
+
         let nalType = nal[nal.startIndex] & 0x1F
-        
         switch nalType {
         case 7: // SPS
             sps = nal
@@ -637,6 +737,60 @@ public final class ScrcpyClient: @unchecked Sendable {
             decodeSlice(nal: nal)
         default:
             break
+        }
+    }
+
+    private func createHEVCDecompressionSessionIfReady(vps: Data?, sps: Data?, pps: Data?) {
+        guard let vps = vps, let sps = sps, let pps = pps else { return }
+        decoderLock.lock()
+        defer { decoderLock.unlock() }
+        guard isRunning else { return }
+        if decompressionSession != nil && activeVPS == vps && activeSPS == sps && activePPS == pps {
+            return
+        }
+
+        var formatDesc: CMVideoFormatDescription?
+        let vpsBytes = [UInt8](vps)
+        let spsBytes = [UInt8](sps)
+        let ppsBytes = [UInt8](pps)
+
+        vpsBytes.withUnsafeBufferPointer { vpsBuf in
+            spsBytes.withUnsafeBufferPointer { spsBuf in
+                ppsBytes.withUnsafeBufferPointer { ppsBuf in
+                    guard let vBase = vpsBuf.baseAddress,
+                          let sBase = spsBuf.baseAddress,
+                          let pBase = ppsBuf.baseAddress else { return }
+                    let pointers: [UnsafePointer<UInt8>] = [vBase, sBase, pBase]
+                    let sizes: [Int] = [vpsBuf.count, spsBuf.count, ppsBuf.count]
+
+                    let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        allocator: kCFAllocatorDefault,
+                        parameterSetCount: 3,
+                        parameterSetPointers: pointers,
+                        parameterSetSizes: sizes,
+                        nalUnitHeaderLength: 4,
+                        extensions: nil,
+                        formatDescriptionOut: &formatDesc
+                    )
+
+                    if status == noErr, let format = formatDesc {
+                        self.formatDescription = format
+                        let dim = CMVideoFormatDescriptionGetDimensions(format)
+                        self.deviceWidth = Int(dim.width)
+                        self.deviceHeight = Int(dim.height)
+
+                        DispatchQueue.main.async {
+                            self.onDeviceSizeKnown?(Int(dim.width), Int(dim.height))
+                        }
+
+                        if self.setupDecompressionSession(formatDescription: format) {
+                            self.activeVPS = vps
+                            self.activeSPS = sps
+                            self.activePPS = pps
+                        }
+                    }
+                }
+            }
         }
     }
     
@@ -770,14 +924,22 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         guard sampleStatus == noErr, let sample = sampleBuffer else { return }
         
+        pendingDecodeFrames += 1
         var flags: VTDecodeInfoFlags = []
         VTDecompressionSessionDecodeFrame(
             session,
             sampleBuffer: sample,
-            flags: [._1xRealTimePlayback],
+            flags: [._1xRealTimePlayback, ._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
+            if let self = self {
+                self.decoderLock.lock()
+                self.pendingDecodeFrames = max(0, self.pendingDecodeFrames - 1)
+                self.decoderLock.unlock()
+            }
             guard decodeStatus == noErr, let pixelBuffer = imageBuffer else { return }
+            self?.hasDecodedAnyFrame = true
+            PerformanceEngine.recordPresentedFrame()
             var cgImage: CGImage?
             VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
             if let cgImage = cgImage {
@@ -786,10 +948,10 @@ public final class ScrcpyClient: @unchecked Sendable {
             nonisolated(unsafe) let pb = pixelBuffer
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                self.onFrameDecoded?(pb)
                 if let cgImage = cgImage {
                     self.onFrameImageDecoded?(cgImage)
                 }
-                self.onFrameDecoded?(pb)
             }
         }
     }

@@ -39,6 +39,9 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 ## Features Implemented in This Codebase
 
 ### Signature Standout Features (Beyond Raw `scrcpy` & Competing Wrappers)
+- **120Hz ProMotion Apple Silicon Optimization:** Hardware-accelerated `HEVC` (`--max-fps=120`, 16 Mbps) with automatic `H.264` fallback, zero-copy `CAMetalLayer` + `CVMetalTextureCache` + `120Hz CADisplayLink` rendering, macOS `latencyCritical` activity locking, 500ms wireless RTT/jitter probing with Adaptive Bitrate (ABR), and a toggleable **Metal Performance HUD**.
+- **QR-Code Wireless Pairing & Silent USB-to-Wi-Fi Handoff:** Native Android 11+ QR code pairing (`NWListener` + `_adb-tls-pairing._tcp` Bonjour + `CoreImage`), silent `adb tcpip 5555` promotion on USB plug-in, and automatic wake-from-sleep reconnection.
+- **Router-Isolation Bypass (Direct Hotspot & Bluetooth PAN):** Automatically detects AP/Client Isolation on public/university/corporate Wi-Fi and offers a 1-click switch to **Direct Hotspot** or **Bluetooth PAN** (`192.168.44.1:5555`).
 - **Standalone Android App Windows (Virtual Displays):** Search and launch any installed Android app directly from the Menu Bar (`Launch Android App`) into its own native-style macOS window (`scrcpy --new-display --start-app=...`) while the physical phone screen stays off.
 - **Background Apple Continuity Bridge (Text + Image Sync):** Lightweight background `ContinuityBridge` runs even when the mirror window is closed — syncing copied Mac text and **copied images/screenshots** (`NSPasteboard` PNG/TIFF → `/sdcard/Pictures/AndOnMac/` + MediaScanner) straight to Android.
 - **On-Device Apple Vision Screen OCR (`Cmd+Shift+X`):** Press `Cmd+Shift+X` or click *"Grab Text from Screen"*, drag over any unselectable text on the mirrored phone display, and extract it locally on Apple Silicon Neural Engine via `VNRecognizeTextRequest` straight into your Mac clipboard.

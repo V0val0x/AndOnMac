@@ -1,0 +1,91 @@
+import Foundation
+import AppKit
+
+/// Coordinates QR pairing, silent USB-to-Wi-Fi handoff (`adb tcpip 5555` + IP caching),
+/// wake-from-sleep auto-reconnect, and router-isolation bypasses.
+@MainActor
+public final class ConnectionManager: ObservableObject {
+    public static let shared = ConnectionManager()
+
+    private var promotedUSBSerials: Set<String> = []
+    private var wakeObserver: NSObjectProtocol?
+    private var isReconnecting = false
+    private var lastReconnectAttempt: Date = .distantPast
+
+    public var onWakeReconnectRequested: (@Sendable () -> Void)?
+
+    private init() {}
+
+    /// Installs the `NSWorkspace.didWakeNotification` observer for seamless reconnect after Mac sleep.
+    public func startLifecycleObservers() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.lastReconnectAttempt = .distantPast
+                self?.onWakeReconnectRequested?()
+            }
+        }
+    }
+
+    /// Silently promotes a ready USB device to `adb tcpip 5555` once per session (when not actively mirroring)
+    /// so unplugging the cable seamlessly transitions to Wi-Fi.
+    public func promoteUSBToWiFiIfNeeded(device: Device, isMirroring: Bool) {
+        guard device.connectionType == .usb,
+              device.state == .ready,
+              !isMirroring,
+              !promotedUSBSerials.contains(device.id) else {
+            return
+        }
+        promotedUSBSerials.insert(device.id)
+        let serial = device.id
+        Task {
+            _ = try? await ADBService.shared.enableTcpIp(serial: serial, port: 5555)
+        }
+    }
+
+    /// Attempts fast TCP/IP reconnection to cached `KnownDevice` entries and active routerless links.
+    public func attemptAutoReconnect(
+        knownDevices: [KnownDevice],
+        onConnected: @escaping @MainActor (String) -> Void
+    ) {
+        guard !isReconnecting else { return }
+        guard Date().timeIntervalSince(lastReconnectAttempt) > 8.0 else { return }
+
+        let autoDevices = knownDevices.filter { $0.autoConnect }
+        isReconnecting = true
+        lastReconnectAttempt = Date()
+
+        Task {
+            defer { Task { @MainActor in self.isReconnecting = false } }
+
+            // 1. Try cached KnownDevice Wi-Fi endpoints (mDNS connect port first, then cached port / 5555)
+            for device in autoDevices.prefix(3) {
+                let targetPort = DiscoveryService.shared.getConnectPort(for: device.ipAddress) ?? device.port
+                let endpoint = "\(device.ipAddress):\(targetPort)"
+                if let out = try? await ADBService.shared.execute(arguments: ["connect", endpoint], timeoutSeconds: 2.0),
+                   ADBService.isConnectSuccess(out) {
+                    await MainActor.run {
+                        onConnected("\(device.name) (\(endpoint))")
+                    }
+                    return
+                }
+            }
+
+            // 2. Fallback to Bluetooth PAN if active on 192.168.44.0/24
+            let localIPs = RouterlessBypassService.localInterfaceIPv4Addresses()
+            if RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: localIPs) {
+                let (ok, msg) = await RouterlessBypassService.shared.connectBluetoothPAN()
+                if ok {
+                    await MainActor.run {
+                        onConnected("Bluetooth PAN (\(msg))")
+                    }
+                    return
+                }
+            }
+        }
+    }
+}

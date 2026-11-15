@@ -5,7 +5,10 @@ import AppKit
 public struct MenuBarView: View {
     @ObservedObject var appState: AppState
     @ObservedObject private var discovery = DiscoveryService.shared
+    @ObservedObject private var qrPairing = QRPairingService.shared
+    @ObservedObject private var routerBypass = RouterlessBypassService.shared
     @State private var appSearchQuery: String = ""
+    @State private var showQRPairing: Bool = false
 
     public init(appState: AppState) {
         self.appState = appState
@@ -87,10 +90,91 @@ public struct MenuBarView: View {
                     .onChange(of: appState.continuityBridgeEnabled) { _, _ in
                         appState.syncContinuityBridgeState()
                     }
+                Toggle(L10n.tr("120Hz Performance HUD", "120Hz Performance HUD", lang: lang), isOn: $appState.showPerformanceHUD)
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
             .font(.system(size: 12))
+
+            if routerBypass.isRouterIsolationDetected {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(
+                        L10n.tr("Изоляция роутера — прямой канал", "Router Isolation Detected — Switch to Direct Link", lang: lang),
+                        systemImage: "wifi.exclamationmark"
+                    )
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.orange)
+
+                    HStack(spacing: 6) {
+                        Button(L10n.tr("Hotspot телефона", "Direct Hotspot", lang: lang)) {
+                            Task {
+                                let (ok, msg) = await routerBypass.connectDirectHotspot()
+                                appState.statusMessage = ok ? "Hotspot: \(msg)" : msg
+                                if ok { appState.refreshDevices() }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+
+                        Button("BT PAN") {
+                            Task {
+                                let (ok, msg) = await routerBypass.connectBluetoothPAN()
+                                appState.statusMessage = ok ? "BT PAN: \(msg)" : msg
+                                if ok { appState.refreshDevices() }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
+            }
+
+            if appState.selectedDevice == nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        showQRPairing.toggle()
+                        if showQRPairing {
+                            qrPairing.onPairedSuccessfully = { _ in
+                                Task { @MainActor in
+                                    appState.refreshDevices()
+                                }
+                            }
+                            qrPairing.startSession()
+                        } else {
+                            qrPairing.stopSession()
+                        }
+                    } label: {
+                        HStack {
+                            Label(L10n.tr("Беспроводной QR-код (Android 11+)", "QR Code Wireless Pairing", lang: lang), systemImage: "qrcode")
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                            Image(systemName: showQRPairing ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10))
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    if showQRPairing && !qrPairing.qrPayload.isEmpty {
+                        HStack(spacing: 10) {
+                            QRCodeView(payload: qrPairing.qrPayload, size: 104)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L10n.tr("Откройте «Отладка по Wi-Fi» → «Подключить по QR»", "Open Wireless Debugging → Pair with QR code", lang: lang))
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(qrPairing.serviceName)
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.cyan)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+            }
 
             if appState.selectedDevice != nil {
                 HStack(spacing: 8) {

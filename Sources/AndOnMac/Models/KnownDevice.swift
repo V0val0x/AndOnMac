@@ -6,9 +6,9 @@ public struct DeviceProfile: Codable, Hashable, Sendable {
     public var maxFps: Int
     public var maxSize: Int
 
-    public static let `default` = DeviceProfile(bitRate: 8_000_000, maxFps: 60, maxSize: 1440)
+    public static let `default` = DeviceProfile(bitRate: 16_000_000, maxFps: 120, maxSize: 1440)
 
-    public init(bitRate: Int = 8_000_000, maxFps: Int = 60, maxSize: Int = 1440) {
+    public init(bitRate: Int = 16_000_000, maxFps: Int = 120, maxSize: Int = 1440) {
         self.bitRate = bitRate
         self.maxFps = maxFps
         self.maxSize = maxSize

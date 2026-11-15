@@ -40,14 +40,16 @@ public final class MirrorService: @unchecked Sendable {
     
     private init() {}
     
-    /// Starts embedded native mirroring inside AndOnMac window
+    /// Starts embedded native mirroring inside AndOnMac window with 120Hz HEVC + automatic H.264 fallback.
     public func startMirroring(
         for device: Device,
         turnScreenOff: Bool = true,
         forwardAudio: Bool = true,
         stayAwake: Bool = true,
-        maxFps: Int = 60,
-        bitRate: Int = 8_000_000,
+        maxFps: Int = 120,
+        bitRate: Int = 16_000_000,
+        maxSize: Int = 1440,
+        videoCodec: ScrcpyVideoCodec = .h265,
         onTermination: (@Sendable () -> Void)? = nil
     ) throws {
         // Detach the previous session's callback first so tearing it down
@@ -56,10 +58,15 @@ public final class MirrorService: @unchecked Sendable {
         stopMirroring()
         self.activeDeviceSerial = device.id
         setStarting(true)
+
+        awaitMainBeginSession(device: device, codec: videoCodec == .h265 ? .hevc : .h264)
         
         ScrcpyClient.shared.onSessionStateChanged = { [weak self] active in
             self?.setStarting(false)
             if !active {
+                Task { @MainActor in
+                    PerformanceEngine.shared.endMirroringSession()
+                }
                 DispatchQueue.main.async {
                     onTermination?()
                 }
@@ -70,28 +77,94 @@ public final class MirrorService: @unchecked Sendable {
             do {
                 try await ScrcpyClient.shared.start(
                     serial: device.id,
-                    maxSize: 1440,
+                    maxSize: maxSize,
                     maxFps: maxFps,
                     bitRate: bitRate,
+                    videoCodec: videoCodec,
                     turnScreenOff: turnScreenOff,
                     stayAwake: stayAwake
                 )
+
+                // If HEVC was selected, verify at least one decoded frame arrives within 2.5s;
+                // otherwise fall back automatically to H.264 for SoCs lacking 120fps HEVC hardware encoding.
+                if videoCodec == .h265 {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    if ScrcpyClient.shared.isConnected && !ScrcpyClient.shared.hasDecodedAnyFrame {
+                        ScrcpyClient.shared.onSessionStateChanged = nil
+                        ScrcpyClient.shared.stop()
+                        try await ScrcpyClient.shared.start(
+                            serial: device.id,
+                            maxSize: maxSize,
+                            maxFps: maxFps,
+                            bitRate: bitRate,
+                            videoCodec: .h264,
+                            turnScreenOff: turnScreenOff,
+                            stayAwake: stayAwake
+                        )
+                        await MainActor.run {
+                            PerformanceEngine.shared.updateActiveCodec(.h264)
+                        }
+                        ScrcpyClient.shared.onSessionStateChanged = { [weak self] active in
+                            self?.setStarting(false)
+                            if !active {
+                                Task { @MainActor in
+                                    PerformanceEngine.shared.endMirroringSession()
+                                }
+                                DispatchQueue.main.async {
+                                    onTermination?()
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Launch background headless audio forwarder AFTER video/control session has connected
                 // so two concurrent scrcpy-server pushes/starts do not contend on the ADB transport.
                 if forwardAudio && ScrcpyClient.shared.isConnected {
                     self.startBackgroundAudio(serial: device.id)
                 }
             } catch {
+                if videoCodec == .h265 {
+                    do {
+                        try await ScrcpyClient.shared.start(
+                            serial: device.id,
+                            maxSize: maxSize,
+                            maxFps: maxFps,
+                            bitRate: bitRate,
+                            videoCodec: .h264,
+                            turnScreenOff: turnScreenOff,
+                            stayAwake: stayAwake
+                        )
+                        await MainActor.run {
+                            PerformanceEngine.shared.updateActiveCodec(.h264)
+                        }
+                        if forwardAudio && ScrcpyClient.shared.isConnected {
+                            self.startBackgroundAudio(serial: device.id)
+                        }
+                        return
+                    } catch {
+                        // Fall through to cleanup
+                    }
+                }
                 print("Failed to start ScrcpyClient: \(error)")
                 self.setStarting(false)
                 // Tear down the half-started server/forward so the next attempt starts clean
                 ScrcpyClient.shared.onSessionStateChanged = nil
                 ScrcpyClient.shared.stop()
                 self.stopBackgroundAudio()
+                Task { @MainActor in
+                    PerformanceEngine.shared.endMirroringSession()
+                }
                 DispatchQueue.main.async {
                     onTermination?()
                 }
             }
+        }
+    }
+
+    private func awaitMainBeginSession(device: Device, codec: PerformanceEngine.CodecLabel) {
+        Task { @MainActor in
+            PerformanceEngine.shared.beginMirroringSession(device: device, codec: codec)
         }
     }
     
@@ -101,6 +174,9 @@ public final class MirrorService: @unchecked Sendable {
         ScrcpyClient.shared.stop()
         stopBackgroundAudio()
         activeDeviceSerial = nil
+        Task { @MainActor in
+            PerformanceEngine.shared.endMirroringSession()
+        }
     }
     
     // MARK: - Starting state (thread-safe)

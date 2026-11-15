@@ -933,4 +933,63 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(parsed[0].title, "Alice")
         XCTAssertEqual(parsed[0].text, "Your code is 482910")
     }
+
+    func testQRPairingPayloadFormat() {
+        let payload = QRPairingService.buildQRPayload(serviceName: "ADB_WIFI_A1B2C3D4", password: "XYZ98765")
+        XCTAssertEqual(payload, "WIFI:T:ADB;S:ADB_WIFI_A1B2C3D4;P:XYZ98765;;")
+    }
+
+    func testRouterlessBypassGatewayAndBluetoothPAN() {
+        let netstat = """
+        Routing tables
+        Internet:
+        Destination        Gateway            Flags               Netif Expire
+        default            192.168.43.1       UGScg                 en0
+        127.0.0.1          127.0.0.1          UH                    lo0
+        """
+        XCTAssertEqual(RouterlessBypassService.parseDefaultGateway(fromNetstatOutput: netstat), "192.168.43.1")
+        XCTAssertTrue(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["10.0.0.5", "192.168.44.128"]))
+        XCTAssertFalse(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["192.168.1.50"]))
+    }
+
+    func testHEVCNALTypeDetection() {
+        // HEVC NAL header byte: (nalType << 1)
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([32 << 1, 0x01])), 32) // VPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([33 << 1, 0x01])), 33) // SPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([34 << 1, 0x01])), 34) // PPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([19 << 1, 0x01])), 19) // IDR
+    }
+
+    @MainActor
+    func testPerformanceEngineABRStepDownAndRecovery() {
+        let engine = PerformanceEngine.shared
+        engine.endMirroringSession()
+
+        // 3 high-RTT samples should not trigger ABR yet
+        for _ in 0..<3 {
+            let res = engine.ingestProbeSample(rttMs: 145)
+            XCTAssertFalse(res.changed)
+            XCTAssertFalse(engine.isABRReduced)
+        }
+        // 4th consecutive sample >120ms (>2s) triggers step-down to 6M / 1280
+        let stepDown = engine.ingestProbeSample(rttMs: 150)
+        XCTAssertTrue(stepDown.changed)
+        XCTAssertEqual(stepDown.bitRate, 6_000_000)
+        XCTAssertEqual(stepDown.maxSize, 1280)
+        XCTAssertTrue(engine.isABRReduced)
+
+        // 7 low-RTT samples should not restore yet
+        for _ in 0..<7 {
+            let res = engine.ingestProbeSample(rttMs: 25)
+            XCTAssertFalse(res.changed)
+            XCTAssertTrue(engine.isABRReduced)
+        }
+        // 8th consecutive sample <60ms (4s) restores 16M / 1440
+        let restore = engine.ingestProbeSample(rttMs: 22)
+        XCTAssertTrue(restore.changed)
+        XCTAssertEqual(restore.bitRate, 16_000_000)
+        XCTAssertEqual(restore.maxSize, 1440)
+        XCTAssertFalse(engine.isABRReduced)
+        engine.endMirroringSession()
+    }
 }

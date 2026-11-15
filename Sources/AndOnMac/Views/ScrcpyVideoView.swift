@@ -56,6 +56,8 @@ public final class ScrcpyDisplayNSView: NSView {
     
     private var trackingArea: NSTrackingArea?
     private var latestImage: CGImage?
+    private var metalRenderer: MetalVideoRenderer?
+    private var displayLink: CADisplayLink?
     public private(set) var hasRenderedFrame: Bool = false
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
@@ -144,6 +146,15 @@ public final class ScrcpyDisplayNSView: NSView {
         layer?.cornerRadius = 38
         layer?.masksToBounds = true
         layer?.contentsGravity = .resizeAspect
+
+        if let renderer = MetalVideoRenderer() {
+            self.metalRenderer = renderer
+            renderer.metalLayer.frame = bounds
+            renderer.metalLayer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            renderer.metalLayer.cornerRadius = 38
+            renderer.metalLayer.masksToBounds = true
+            layer?.addSublayer(renderer.metalLayer)
+        }
         
         // Register for file drops from Mac Finder / Desktop
         registerForDraggedTypes([.fileURL])
@@ -151,14 +162,35 @@ public final class ScrcpyDisplayNSView: NSView {
         // Subscribe to decoded video frames
         bindFrameCallback()
     }
+
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil && displayLink == nil && metalRenderer != nil {
+            let link = self.displayLink(target: self, selector: #selector(handleDisplayLink))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+            link.add(to: .main, forMode: .common)
+            self.displayLink = link
+        } else if window == nil {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+    }
+
+    @objc private func handleDisplayLink() {
+        metalRenderer?.renderLatestFrameIfAvailable()
+    }
     
     public func bindFrameCallback() {
-        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
-            DispatchQueue.main.async {
-                self?.renderCGImage(cgImage)
+        let renderer = self.metalRenderer
+        ScrcpyClient.shared.onFrameDecoded = { [weak self, weak renderer] pixelBuffer in
+            if let renderer = renderer {
+                renderer.submit(pixelBuffer: pixelBuffer)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.hasRenderedFrame = true
+                }
+                return
             }
-        }
-        ScrcpyClient.shared.onFrameDecoded = { [weak self] pixelBuffer in
             var cgImage: CGImage?
             VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
             if let cgImage = cgImage {
@@ -168,14 +200,31 @@ public final class ScrcpyDisplayNSView: NSView {
                 }
             }
         }
-        if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
+        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
+            DispatchQueue.main.async {
+                guard let self = self, self.metalRenderer == nil else { return }
+                self.renderCGImage(cgImage)
+            }
+        }
+        if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage, metalRenderer == nil {
             renderCGImage(cached)
         }
     }
     
     override public func layout() {
         super.layout()
-        if let latestImage = latestImage {
+        if let renderer = metalRenderer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+            renderer.metalLayer.frame = bounds
+            renderer.metalLayer.contentsScale = scale
+            renderer.metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+            if let corner = layer?.cornerRadius {
+                renderer.metalLayer.cornerRadius = corner
+            }
+            CATransaction.commit()
+        } else if let latestImage = latestImage {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer?.contents = latestImage

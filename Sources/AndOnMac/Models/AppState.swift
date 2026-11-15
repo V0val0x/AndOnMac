@@ -44,7 +44,8 @@ public final class AppState: ObservableObject {
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
     @AppStorage("showFrontCamera") public var showFrontCamera: Bool = true
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
-    @AppStorage("maxFps") public var maxFps: Int = 60
+    @AppStorage("maxFps") public var maxFps: Int = 120
+    @AppStorage("showPerformanceHUD") public var showPerformanceHUD: Bool = false
     @AppStorage("autoConnect") public var autoConnect: Bool = true
     @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
@@ -155,8 +156,43 @@ public final class AppState: ObservableObject {
         }
         startNotificationListener()
         startDiscoveryListener()
+        setupConnectionAndPerformanceEngines()
         refreshDevices()
         startPeriodicPoll()
+    }
+
+    private func setupConnectionAndPerformanceEngines() {
+        ConnectionManager.shared.onWakeReconnectRequested = { [weak self] in
+            Task { @MainActor in
+                self?.attemptAutoWifiReconnect()
+            }
+        }
+        ConnectionManager.shared.startLifecycleObservers()
+
+        PerformanceEngine.shared.onABRStepChange = { [weak self] bitRate, maxSize, reduced in
+            Task { @MainActor in
+                guard let self = self, self.isMirroring, let device = self.selectedDevice else { return }
+                let prof = self.profile(for: device.id)
+                self.statusMessage = reduced
+                    ? L10n.tr("Wi-Fi перегружен — снижение битрейта (6 Мбит/с)", "Wi-Fi congested — ABR step down (6 Mbps)", lang: self.lang)
+                    : L10n.tr("Связь стабильна — восстановление 120Hz (16 Мбит/с)", "Link stable — restoring 120Hz (16 Mbps)", lang: self.lang)
+                try? MirrorService.shared.startMirroring(
+                    for: device,
+                    turnScreenOff: self.turnScreenOff,
+                    forwardAudio: self.forwardAudio,
+                    stayAwake: self.stayAwake,
+                    maxFps: prof.maxFps,
+                    bitRate: bitRate,
+                    maxSize: maxSize
+                ) { [weak self] in
+                    Task { @MainActor in
+                        self?.isMirroring = false
+                        self?.statusMessage = "Mirroring session ended"
+                        KeyboardLanguageSyncService.shared.stopSync()
+                    }
+                }
+            }
+        }
     }
     
     private func startDiscoveryListener() {
@@ -165,8 +201,9 @@ public final class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 self.lastKnownWifiIP = ip
-                // Do not aggressively auto-connect here in an infinite loop.
-                // Dynamic port is cached and ready for explicit connection or safe reconnection.
+                if self.devices.isEmpty {
+                    await RouterlessBypassService.shared.checkReachabilityIfNeeded(host: ip, port: port)
+                }
             }
         }
     }
@@ -351,30 +388,9 @@ public final class AppState: ObservableObject {
     private var lastReconnectAttemptTime: Date = .distantPast
     
     private func attemptAutoWifiReconnect() {
-        guard !isAttemptingWifiReconnect else { return }
-        guard Date().timeIntervalSince(lastReconnectAttemptTime) > 8.0 else { return }
-        
-        let autoDevices = knownDevices.filter { $0.autoConnect }
-        guard !autoDevices.isEmpty else { return }
-        
-        isAttemptingWifiReconnect = true
-        lastReconnectAttemptTime = Date()
-        
-        Task {
-            defer { self.isAttemptingWifiReconnect = false }
-            for device in autoDevices.prefix(2) {
-                // If phone is in dynamic wireless debugging mode, prefer mDNS port over fixed 5555
-                let targetPort = DiscoveryService.shared.getConnectPort(for: device.ipAddress) ?? device.port
-                
-                if let output = try? await ADBService.shared.execute(arguments: ["connect", "\(device.ipAddress):\(targetPort)"], timeoutSeconds: 2.0),
-                   ADBService.isConnectSuccess(output) {
-                    await MainActor.run {
-                        self.statusMessage = "Подключено к \(device.name) (\(device.ipAddress):\(targetPort))"
-                        self.refreshDevices()
-                    }
-                    return
-                }
-            }
+        ConnectionManager.shared.attemptAutoReconnect(knownDevices: knownDevices) { [weak self] target in
+            self?.statusMessage = "Подключено к \(target)"
+            self?.refreshDevices()
         }
     }
     
@@ -386,17 +402,8 @@ public final class AppState: ObservableObject {
         // Save to persistent known devices registry
         persistKnownDevice(device)
         
-        // Seamless Hand-off: If connected via USB, activate TCP/IP 5555 in the background
-        // so when the user unplugs the cable, the phone continues wirelessly!
-        // `adb tcpip` restarts adbd on the phone (drops Wireless Debugging and any live session),
-        // so it must run at most once per device per app session — never on every poll tick.
-        if device.connectionType == .usb && autoWirelessPromote && !isMirroring
-            && !tcpipPromotedSerials.contains(device.id) {
-            tcpipPromotedSerials.insert(device.id)
-            Task {
-                _ = try? await ADBService.shared.enableTcpIp(serial: device.id, port: 5555)
-            }
-        }
+        // Silent USB-to-Wi-Fi Handoff: activate TCP/IP 5555 once per USB serial when not mirroring
+        ConnectionManager.shared.promoteUSBToWiFiIfNeeded(device: device, isMirroring: isMirroring)
         
         // Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
         if autoConnect && !isMirroring && !hasAutoConnectedThisSession {
@@ -515,7 +522,8 @@ public final class AppState: ObservableObject {
                     forwardAudio: forwardAudio,
                     stayAwake: stayAwake,
                     maxFps: prof.maxFps,
-                    bitRate: prof.bitRate
+                    bitRate: prof.bitRate,
+                    maxSize: prof.maxSize
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false

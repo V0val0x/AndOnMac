@@ -264,6 +264,16 @@ public struct PhoneMirrorFrameView: View {
                 }
                 .animation(AndMotion.hudSpring, value: appState.photoTransferNotice)
             }
+
+            // Toggleable Metal-style 120Hz Performance HUD
+            if appState.showPerformanceHUD && appState.isMirroring {
+                PerformanceHUDView()
+                    .padding(.bottom, 22)
+                    .padding(.leading, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
             
             // Phone Screen Off / Locked Overlay (1-in-1 with macOS Sequoia iPhone Mirroring)
             if appState.isPhoneScreenOff || appState.isPhoneLocked {
@@ -932,5 +942,47 @@ private struct BottomBarScrollCatcher: NSViewRepresentable {
                 break
             }
         }
+    }
+}
+
+private struct PerformanceHUDView: View {
+    @ObservedObject private var perf = PerformanceEngine.shared
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(perf.liveFPS >= 90 ? Color.green : (perf.liveFPS >= 45 ? Color.cyan : Color.orange))
+                .frame(width: 6, height: 6)
+            Text("\(perf.liveFPS) FPS")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text("\(perf.rttMs) ms")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(perf.rttMs > 120 ? .orange : .cyan)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text(perf.activeCodec.rawValue)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(.green)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text(perf.isABRReduced ? "\(perf.transportLabel) ABR" : perf.transportLabel)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(perf.isABRReduced ? .orange : .white.opacity(0.85))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial)
+        .background(Color.black.opacity(0.55))
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.75)
+        )
     }
 }
