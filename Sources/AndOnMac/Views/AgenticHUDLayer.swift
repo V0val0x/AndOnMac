@@ -144,6 +144,7 @@ public final class AgenticHUDViewModel: ObservableObject {
     @Published public private(set) var toastSubtitle: String?
     @Published public private(set) var toastPhase: AgenticToastPhase = .idle
     @Published public private(set) var activeReticle: AgenticTargetReticle?
+    @Published public private(set) var prefersTopToastDock: Bool = false
 
     private var streamTask: Task<Void, Never>?
     private var reticleClearTask: Task<Void, Never>?
@@ -205,6 +206,7 @@ public final class AgenticHUDViewModel: ObservableObject {
             toastTitle = "🤖 A* Path Computed: \(totalSteps) \(unit). Executing..."
             toastSubtitle = targetHint?.isEmpty == false ? "Target: \(targetHint!)" : nil
             toastPhase = .executing
+            prefersTopToastDock = false
 
         case .executionStarted(let totalSteps):
             toastDismissTask?.cancel()
@@ -217,8 +219,8 @@ public final class AgenticHUDViewModel: ObservableObject {
 
         case .willExecuteAction(let stepIndex, let totalSteps, let action):
             toastDismissTask?.cancel()
-            let unit = totalSteps == 1 ? "step" : "steps"
-            toastTitle = "🤖 A* Path Computed: \(totalSteps) \(unit). Step \(stepIndex + 1)/\(totalSteps)..."
+            let actionVerb = (action.kind == .swipe) ? "Scrolling" : "A* Routing"
+            toastTitle = "🤖 Step \(stepIndex + 1)/\(totalSteps) · \(actionVerb)"
             let label = action.targetDescription.isEmpty ? action.signature : action.targetDescription
             toastSubtitle = label
             toastPhase = .executing
@@ -232,10 +234,12 @@ public final class AgenticHUDViewModel: ObservableObject {
                     kind: action.kind,
                     label: label
                 ))
+            } else {
+                prefersTopToastDock = false
             }
 
         case .stepSettled:
-            break
+            scheduleReticleClear(afterSeconds: 0.08)
 
         case .completed(let report):
             lastPathComputedStepCount = nil
@@ -243,7 +247,8 @@ public final class AgenticHUDViewModel: ObservableObject {
             toastTitle = "🤖 Arrived in \(report.totalElapsedMs)ms (\(report.steps.count) \(unit))"
             toastSubtitle = nil
             toastPhase = .completed
-            scheduleReticleClear(afterSeconds: 0.45)
+            prefersTopToastDock = false
+            scheduleReticleClear(afterSeconds: 0.16)
             scheduleToastDismiss(afterSeconds: 2.8)
 
         case .failed(let message):
@@ -251,7 +256,8 @@ public final class AgenticHUDViewModel: ObservableObject {
             toastTitle = "🤖 Path Execution Stopped"
             toastSubtitle = message
             toastPhase = .failed
-            scheduleReticleClear(afterSeconds: 0.5)
+            prefersTopToastDock = false
+            scheduleReticleClear(afterSeconds: 0.25)
             scheduleToastDismiss(afterSeconds: 3.5)
         }
     }
@@ -263,13 +269,26 @@ public final class AgenticHUDViewModel: ObservableObject {
         toastTitle = nil
         toastSubtitle = nil
         toastPhase = .idle
+        prefersTopToastDock = false
         lastPathComputedStepCount = nil
+    }
+
+    public func updateToastDocking(deviceHeight: Int, inputHeight: Int?) {
+        guard toastPhase == .executing, let reticle = activeReticle else { return }
+        let refHeight = CGFloat(max(1, inputHeight ?? deviceHeight))
+        let endNY = CGFloat(reticle.y) / refHeight
+        let startNY = reticle.startY.map { CGFloat($0) / refHeight } ?? endNY
+        let shouldDockTop = max(endNY, startNY) >= 0.70
+        if prefersTopToastDock != shouldDockTop {
+            prefersTopToastDock = shouldDockTop
+        }
     }
 
     private func showReticle(_ reticle: AgenticTargetReticle) {
         reticleClearTask?.cancel()
         activeReticle = reticle
-        scheduleReticleClear(afterSeconds: 0.90)
+        let duration: Double = (reticle.kind == .swipe) ? 0.48 : 0.30
+        scheduleReticleClear(afterSeconds: duration)
     }
 
     private func scheduleReticleClear(afterSeconds seconds: Double) {
@@ -354,7 +373,17 @@ public final class AgenticCrosshairNSView: NSView {
     private let innerRingLayer = CAShapeLayer()
     private let crosshairLayer = CAShapeLayer()
     private let centerDotLayer = CAShapeLayer()
+    private let swipeStartDotLayer = CAShapeLayer()
     private let swipeLineLayer = CAShapeLayer()
+    private let swipeArrowLayer = CAShapeLayer()
+
+    public var isShowingTapReticleForTesting: Bool {
+        !reticleContainerLayer.isHidden
+    }
+
+    public var isShowingSwipeVectorForTesting: Bool {
+        !swipeLineLayer.isHidden && !swipeArrowLayer.isHidden && !swipeStartDotLayer.isHidden
+    }
 
     override public init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -378,14 +407,41 @@ public final class AgenticCrosshairNSView: NSView {
 
         let red = NSColor(srgbRed: 1.0, green: 0.23, blue: 0.19, alpha: 1.0).cgColor
         let softRedFill = NSColor(srgbRed: 1.0, green: 0.23, blue: 0.19, alpha: 0.16).cgColor
+        let skyCyan = NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 1.0).cgColor
+        let skyCyanFill = NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 0.22).cgColor
 
         swipeLineLayer.fillColor = nil
-        swipeLineLayer.strokeColor = NSColor(srgbRed: 1.0, green: 0.23, blue: 0.19, alpha: 0.72).cgColor
-        swipeLineLayer.lineWidth = 2.0
-        swipeLineLayer.lineDashPattern = [5, 4]
+        swipeLineLayer.strokeColor = NSColor(srgbRed: 0.22, green: 0.74, blue: 0.97, alpha: 0.92).cgColor
+        swipeLineLayer.lineWidth = 3.0
         swipeLineLayer.lineCap = .round
+        swipeLineLayer.shadowColor = skyCyan
+        swipeLineLayer.shadowRadius = 5.0
+        swipeLineLayer.shadowOpacity = 0.85
+        swipeLineLayer.shadowOffset = .zero
         swipeLineLayer.isHidden = true
         layer?.addSublayer(swipeLineLayer)
+
+        swipeStartDotLayer.fillColor = skyCyanFill
+        swipeStartDotLayer.strokeColor = skyCyan
+        swipeStartDotLayer.lineWidth = 2.0
+        swipeStartDotLayer.shadowColor = skyCyan
+        swipeStartDotLayer.shadowRadius = 4.0
+        swipeStartDotLayer.shadowOpacity = 0.80
+        swipeStartDotLayer.shadowOffset = .zero
+        swipeStartDotLayer.isHidden = true
+        layer?.addSublayer(swipeStartDotLayer)
+
+        swipeArrowLayer.fillColor = nil
+        swipeArrowLayer.strokeColor = NSColor.white.withAlphaComponent(0.95).cgColor
+        swipeArrowLayer.lineWidth = 2.8
+        swipeArrowLayer.lineCap = .round
+        swipeArrowLayer.lineJoin = .round
+        swipeArrowLayer.shadowColor = skyCyan
+        swipeArrowLayer.shadowRadius = 5.0
+        swipeArrowLayer.shadowOpacity = 0.95
+        swipeArrowLayer.shadowOffset = .zero
+        swipeArrowLayer.isHidden = true
+        layer?.addSublayer(swipeArrowLayer)
 
         reticleContainerLayer.bounds = CGRect(x: 0, y: 0, width: 56, height: 56)
         reticleContainerLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
@@ -487,8 +543,16 @@ public final class AgenticCrosshairNSView: NSView {
         positionLayers(for: reticle)
 
         if isNewReticle {
-            start120HzPulseAnimations()
+            start120HzPulseAnimations(isSwipe: isSwipeVector(reticle))
         }
+    }
+
+    private func isSwipeVector(_ reticle: AgenticTargetReticle) -> Bool {
+        guard reticle.kind == .swipe,
+              let sx = reticle.startX, let sy = reticle.startY else {
+            return false
+        }
+        return sx != reticle.x || sy != reticle.y
     }
 
     override public func viewDidMoveToWindow() {
@@ -509,7 +573,10 @@ public final class AgenticCrosshairNSView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer?.contentsScale = scale
-        for sub in [reticleContainerLayer, pulseHaloLayer, innerRingLayer, crosshairLayer, centerDotLayer, swipeLineLayer] {
+        for sub in [
+            reticleContainerLayer, pulseHaloLayer, innerRingLayer, crosshairLayer, centerDotLayer,
+            swipeStartDotLayer, swipeLineLayer, swipeArrowLayer
+        ] {
             sub.contentsScale = scale
         }
         CATransaction.commit()
@@ -528,13 +595,11 @@ public final class AgenticCrosshairNSView: NSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        reticleContainerLayer.position = targetPt
-        reticleContainerLayer.isHidden = false
-        reticleContainerLayer.opacity = 1.0
 
-        if reticle.kind == .swipe,
-           let sx = reticle.startX, let sy = reticle.startY,
-           (sx != reticle.x || sy != reticle.y) {
+        if isSwipeVector(reticle), let sx = reticle.startX, let sy = reticle.startY {
+            // Render a directional swipe trajectory + chevron instead of a tap crosshair at endPt
+            reticleContainerLayer.isHidden = true
+
             let startPt = AgenticHUDCoordinateMapper.viewPoint(
                 deviceX: sx,
                 deviceY: sy,
@@ -544,15 +609,52 @@ public final class AgenticCrosshairNSView: NSView {
                 inputWidth: inputWidth,
                 inputHeight: inputHeight
             )
+
+            let originR: CGFloat = 6.5
+            swipeStartDotLayer.frame = bounds
+            swipeStartDotLayer.path = CGPath(
+                ellipseIn: CGRect(x: startPt.x - originR, y: startPt.y - originR, width: originR * 2, height: originR * 2),
+                transform: nil
+            )
+            swipeStartDotLayer.isHidden = false
+
             let linePath = CGMutablePath()
             linePath.move(to: startPt)
             linePath.addLine(to: targetPt)
             swipeLineLayer.frame = bounds
             swipeLineLayer.path = linePath
+            swipeLineLayer.strokeEnd = 1.0
             swipeLineLayer.isHidden = false
+
+            let angle = atan2(targetPt.y - startPt.y, targetPt.x - startPt.x)
+            let wingLength: CGFloat = 11.0
+            let spread: CGFloat = .pi / 5.2
+            let wing1 = CGPoint(
+                x: targetPt.x - wingLength * cos(angle - spread),
+                y: targetPt.y - wingLength * sin(angle - spread)
+            )
+            let wing2 = CGPoint(
+                x: targetPt.x - wingLength * cos(angle + spread),
+                y: targetPt.y - wingLength * sin(angle + spread)
+            )
+            let chevronPath = CGMutablePath()
+            chevronPath.move(to: wing1)
+            chevronPath.addLine(to: targetPt)
+            chevronPath.addLine(to: wing2)
+            swipeArrowLayer.frame = bounds
+            swipeArrowLayer.path = chevronPath
+            swipeArrowLayer.isHidden = false
         } else {
+            reticleContainerLayer.position = targetPt
+            reticleContainerLayer.isHidden = false
+            reticleContainerLayer.opacity = 1.0
+
+            swipeStartDotLayer.isHidden = true
+            swipeStartDotLayer.path = nil
             swipeLineLayer.isHidden = true
             swipeLineLayer.path = nil
+            swipeArrowLayer.isHidden = true
+            swipeArrowLayer.path = nil
         }
         CATransaction.commit()
     }
@@ -561,20 +663,51 @@ public final class AgenticCrosshairNSView: NSView {
         pulseHaloLayer.removeAllAnimations()
         innerRingLayer.removeAllAnimations()
         reticleContainerLayer.removeAllAnimations()
+        swipeLineLayer.removeAllAnimations()
+        swipeArrowLayer.removeAllAnimations()
+        swipeStartDotLayer.removeAllAnimations()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         reticleContainerLayer.isHidden = true
+        swipeStartDotLayer.isHidden = true
+        swipeStartDotLayer.path = nil
         swipeLineLayer.isHidden = true
         swipeLineLayer.path = nil
+        swipeArrowLayer.isHidden = true
+        swipeArrowLayer.path = nil
         CATransaction.commit()
     }
 
-    private func start120HzPulseAnimations() {
+    private func start120HzPulseAnimations(isSwipe: Bool) {
         pulseHaloLayer.removeAllAnimations()
         innerRingLayer.removeAllAnimations()
         reticleContainerLayer.removeAllAnimations()
+        swipeLineLayer.removeAllAnimations()
+        swipeArrowLayer.removeAllAnimations()
+        swipeStartDotLayer.removeAllAnimations()
 
         let proMotionRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+
+        if isSwipe {
+            let strokeAnim = CABasicAnimation(keyPath: "strokeEnd")
+            strokeAnim.fromValue = 0.0
+            strokeAnim.toValue = 1.0
+            strokeAnim.duration = 0.24
+            strokeAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            strokeAnim.preferredFrameRateRange = proMotionRange
+            swipeLineLayer.add(strokeAnim, forKey: "agenticSwipeStroke")
+
+            let arrowFade = CABasicAnimation(keyPath: "opacity")
+            arrowFade.fromValue = 0.0
+            arrowFade.toValue = 1.0
+            arrowFade.duration = 0.18
+            arrowFade.beginTime = CACurrentMediaTime() + 0.10
+            arrowFade.fillMode = .backwards
+            arrowFade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            arrowFade.preferredFrameRateRange = proMotionRange
+            swipeArrowLayer.add(arrowFade, forKey: "agenticSwipeArrowFade")
+            return
+        }
 
         // Outer ripple ring expansion (120Hz)
         let haloScale = CABasicAnimation(keyPath: "transform.scale")
@@ -722,8 +855,12 @@ public struct AgenticHUDLayer: View {
         self.bottomInset = bottomInset
     }
 
+    private var shouldDockToastAtTop: Bool {
+        viewModel.toastPhase == .executing && viewModel.prefersTopToastDock
+    }
+
     public var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: shouldDockToastAtTop ? .topTrailing : .bottomTrailing) {
             AgenticCrosshairOverlayView(
                 reticle: viewModel.activeReticle,
                 deviceWidth: deviceWidth,
@@ -740,9 +877,13 @@ public struct AgenticHUDLayer: View {
                     phase: viewModel.toastPhase
                 )
                 .padding(.trailing, 10)
-                .padding(.bottom, bottomInset)
+                .padding(.top, shouldDockToastAtTop ? 84 : 0)
+                .padding(.bottom, shouldDockToastAtTop ? 0 : bottomInset)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
+        }
+        .onChange(of: viewModel.activeReticle) { _, _ in
+            viewModel.updateToastDocking(deviceHeight: deviceHeight, inputHeight: inputHeight)
         }
         .animation(AndMotion.hudSpring, value: viewModel.toastPhase != .idle)
         .allowsHitTesting(false)

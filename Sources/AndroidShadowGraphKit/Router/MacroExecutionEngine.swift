@@ -170,7 +170,12 @@ public actor MacroExecutionEngine {
                 emit(.stepSettled(stepIndex: stepIndex, totalSteps: path.count, report: stepReport))
 
                 if stepIndex + 1 < path.count && configuration.postSettleQuiescenceMs > 0 {
-                    try await Task.sleep(for: .milliseconds(configuration.postSettleQuiescenceMs))
+                    // Wait for scroll deceleration / RecyclerView fling inertia after swipes
+                    // before resolving live bounds for the subsequent step.
+                    let quiescenceMs = (resolvedAction.kind == .swipe)
+                        ? max(configuration.postSettleQuiescenceMs, 280)
+                        : configuration.postSettleQuiescenceMs
+                    try await Task.sleep(for: .milliseconds(quiescenceMs))
                 }
             }
 

@@ -1863,13 +1863,40 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(vm.toastPhase, .failed)
         XCTAssertEqual(vm.toastSubtitle, "Timeout")
 
-        // Verify AgenticCrosshairNSView is top-left flipped and never intercepts mouse events
+        // Verify AgenticCrosshairNSView is top-left flipped, never intercepts mouse events,
+        // renders tap reticle on .tap and directional swipe vector (without tap crosshair) on .swipe
         let crosshairView = AgenticCrosshairNSView(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
         XCTAssertTrue(crosshairView.isFlipped)
         XCTAssertNil(crosshairView.hitTest(NSPoint(x: 160, y: 350)))
-        crosshairView.update(reticle: vm.activeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        let tapReticle = AgenticTargetReticle(x: 540, y: 1200, kind: .tap, label: "Tap Target")
+        crosshairView.update(reticle: tapReticle, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertTrue(crosshairView.isShowingTapReticleForTesting)
+        XCTAssertFalse(crosshairView.isShowingSwipeVectorForTesting)
+
+        let swipeReticle = AgenticTargetReticle(x: 350, y: 1292, startX: 353, startY: 1938, kind: .swipe, label: "Swipe Up")
+        crosshairView.update(reticle: swipeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertFalse(crosshairView.isShowingTapReticleForTesting)
+        XCTAssertTrue(crosshairView.isShowingSwipeVectorForTesting)
+
         crosshairView.layout()
         crosshairView.update(reticle: nil, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertFalse(crosshairView.isShowingTapReticleForTesting)
+        XCTAssertFalse(crosshairView.isShowingSwipeVectorForTesting)
+
+        // Verify .stepSettled clears stale reticle promptly instead of lingering onto next screen
+        vm.handle(event: .willExecuteAction(stepIndex: 0, totalSteps: 2, action: action))
+        XCTAssertNotNil(vm.activeReticle)
+        let settledReport = MacroStepReport(
+            stepIndex: 0,
+            edgeId: UUID(),
+            actionSignature: "tap:Battery Share",
+            targetHash: 42,
+            elapsedMs: 120,
+            matchedByExactHash: true
+        )
+        vm.handle(event: .stepSettled(stepIndex: 0, totalSteps: 2, report: settledReport))
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(vm.activeReticle)
 
         vm.clear()
         XCTAssertEqual(vm.toastPhase, .idle)

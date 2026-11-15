@@ -41,7 +41,13 @@ public final class AppState: ObservableObject {
     // Preferences
     @AppStorage(L10n.storageKey) public var appLanguage: AppLanguage = .system
     @AppStorage("turnScreenOff") public var turnScreenOff: Bool = true
-    @AppStorage("forwardAudio") public var forwardAudio: Bool = true
+    @AppStorage("forwardAudio") public var forwardAudio: Bool = true {
+        didSet {
+            if isMirroring {
+                MirrorService.shared.setAudioForwardingEnabled(forwardAudio)
+            }
+        }
+    }
     @AppStorage("stayAwake") public var stayAwake: Bool = true
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
     @AppStorage("showDeviceBezel") public var showDeviceBezel: Bool = true

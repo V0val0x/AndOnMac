@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public final class MirrorService: @unchecked Sendable {
     public static let shared = MirrorService()
@@ -6,6 +7,7 @@ public final class MirrorService: @unchecked Sendable {
     private var audioProcess: Process?
     private var recordingProcess: Process?
     private var activeDeviceSerial: String?
+    private let audioLifecycleLock = NSLock()
     public private(set) var lastRecordingURL: URL?
 
     public var isMirroring: Bool {
@@ -196,28 +198,9 @@ public final class MirrorService: @unchecked Sendable {
     /// Kills scrcpy audio forwarders left over from previous runs / crashes of AndOnMac without blocking @MainActor
     public func killOrphanAudioProcesses(waitUntilExit: Bool = false) {
         let work = {
-            let pkill = Process()
-            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            pkill.arguments = ["-f", "scrcpy .*--no-video --no-control"]
-            pkill.standardOutput = FileHandle.nullDevice
-            pkill.standardError = FileHandle.nullDevice
-            let trackedId = ProcessLifecycleManager.shared.register(pkill, tag: "cleanup-pkill")
-            let timeoutItem = DispatchWorkItem {
-                if pkill.isRunning {
-                    ProcessLifecycleManager.shared.terminateProcess(pkill, gracePeriodMs: 150)
-                }
-            }
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0, execute: timeoutItem)
-            defer {
-                timeoutItem.cancel()
-                ProcessLifecycleManager.shared.unregister(trackedId)
-            }
-            try? pkill.run()
-            // `work` already runs on a background utility queue when `waitUntilExit == false`,
-            // so waiting here keeps the watchdog & ProcessLifecycleManager tracking valid until pkill exits.
-            if pkill.isRunning {
-                pkill.waitUntilExit()
-            }
+            self.audioLifecycleLock.lock()
+            defer { self.audioLifecycleLock.unlock() }
+            self.killOrphanAudioProcessesLocked()
         }
         if waitUntilExit {
             work()
@@ -225,10 +208,67 @@ public final class MirrorService: @unchecked Sendable {
             DispatchQueue.global(qos: .utility).async(execute: work)
         }
     }
+
+    private func killOrphanAudioProcessesLocked() {
+        let pgrep = Process()
+        let outPipe = Pipe()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-f", "scrcpy .*--no-video --no-control"]
+        pgrep.standardOutput = outPipe
+        pgrep.standardError = FileHandle.nullDevice
+        let trackedId = ProcessLifecycleManager.shared.register(pgrep, tag: "cleanup-pgrep")
+        let timeoutItem = DispatchWorkItem {
+            if pgrep.isRunning {
+                ProcessLifecycleManager.shared.terminateProcess(pgrep, gracePeriodMs: 150)
+            }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0, execute: timeoutItem)
+        defer {
+            timeoutItem.cancel()
+            ProcessLifecycleManager.shared.unregister(trackedId)
+        }
+        do {
+            try pgrep.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            if pgrep.isRunning {
+                pgrep.waitUntilExit()
+            }
+            guard let output = String(data: data, encoding: .utf8) else { return }
+            stateLock.lock()
+            let activePid = (audioProcess?.isRunning == true) ? audioProcess?.processIdentifier : nil
+            stateLock.unlock()
+            for token in output.split(whereSeparator: \.isNewline) {
+                if let pid = Int32(token.trimmingCharacters(in: .whitespaces)),
+                   pid > 1,
+                   pid != activePid {
+                    Darwin.kill(pid, SIGTERM)
+                }
+            }
+        } catch {
+            // Best-effort orphan cleanup
+        }
+    }
+
+    /// Toggles audio forwarding on an active mirroring session without restarting the video stream.
+    public func setAudioForwardingEnabled(_ enabled: Bool) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard ScrcpyClient.shared.isConnected else { return }
+            self.stateLock.lock()
+            let serial = self.activeDeviceSerial
+            self.stateLock.unlock()
+            if enabled, let serial {
+                self.startBackgroundAudio(serial: serial)
+            } else {
+                self.stopBackgroundAudio()
+            }
+        }
+    }
     
     private func startBackgroundAudio(serial: String) {
+        audioLifecycleLock.lock()
+        defer { audioLifecycleLock.unlock() }
         stopBackgroundAudio()
-        killOrphanAudioProcesses(waitUntilExit: false)
+        killOrphanAudioProcessesLocked()
         guard ADBService.validateSerial(serial) else { return }
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else { return }
