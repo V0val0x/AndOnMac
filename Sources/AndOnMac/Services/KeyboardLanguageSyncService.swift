@@ -208,8 +208,10 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
     // MARK: - Periodic Polling Fallback
     private func startPeriodicSync() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.checkAndSyncLanguage()
         }
+        timer.tolerance = 0.25
+        pollTimer = timer
     }
 }

@@ -9,7 +9,15 @@ public final class MCPHTTPServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.andonmac.mcp.http", qos: .userInitiated)
     private let lock = NSLock()
     private var sseConnections: [String: NWConnection] = [:]
+    private var _bearerToken: String?
     public private(set) var activePort: UInt16 = 8765
+
+    /// Optional per-session Bearer token. When non-empty, every HTTP/SSE request must present
+    /// `Authorization: Bearer <token>`.
+    public var bearerToken: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _bearerToken }
+        set { lock.lock(); _bearerToken = newValue; lock.unlock() }
+    }
 
     private init() {}
 
@@ -114,6 +122,18 @@ public final class MCPHTTPServer: @unchecked Sendable {
         let method = parts.first.map(String.init) ?? "GET"
         let path = parts.dropFirst().first.map(String.init) ?? "/"
 
+        guard Self.validateOriginAndHost(headers: headers) else {
+            sendHTTPResponse(connection: connection, status: "403 Forbidden", contentType: "application/json", body: Data("{\"error\":\"Forbidden origin or host\"}".utf8))
+            return
+        }
+
+        if let expectedToken = bearerToken, !expectedToken.isEmpty {
+            guard Self.validateBearerToken(headers: headers, expectedToken: expectedToken) else {
+                sendHTTPResponse(connection: connection, status: "401 Unauthorized", contentType: "application/json", body: Data("{\"error\":\"Unauthorized\"}".utf8))
+                return
+            }
+        }
+
         if method == "OPTIONS" {
             sendHTTPResponse(connection: connection, status: "204 No Content", contentType: "text/plain", body: Data())
             return
@@ -125,11 +145,21 @@ public final class MCPHTTPServer: @unchecked Sendable {
             sseConnections[sessionId] = connection
             lock.unlock()
 
+            connection.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .failed, .cancelled:
+                    self?.lock.lock()
+                    self?.sseConnections.removeValue(forKey: sessionId)
+                    self?.lock.unlock()
+                default:
+                    break
+                }
+            }
+
             let handshake = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: text/event-stream\r\n" +
                 "Cache-Control: no-cache\r\n" +
-                "Connection: keep-alive\r\n" +
-                "Access-Control-Allow-Origin: *\r\n\r\n" +
+                "Connection: keep-alive\r\n\r\n" +
                 "event: endpoint\ndata: /message?sessionId=\(sessionId)\n\n"
             connection.send(content: Data(handshake.utf8), completion: .contentProcessed { _ in })
             return
@@ -168,9 +198,7 @@ public final class MCPHTTPServer: @unchecked Sendable {
         let header = "HTTP/1.1 \(status)\r\n" +
             "Content-Type: \(contentType)\r\n" +
             "Content-Length: \(body.count)\r\n" +
-            "Access-Control-Allow-Origin: *\r\n" +
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
-            "Access-Control-Allow-Headers: Content-Type\r\n" +
+            "X-Content-Type-Options: nosniff\r\n" +
             "Connection: close\r\n\r\n"
         var full = Data(header.utf8)
         full.append(body)
@@ -179,12 +207,66 @@ public final class MCPHTTPServer: @unchecked Sendable {
         })
     }
 
+    /// Validates `Host` (must be loopback `127.0.0.1` / `localhost` / `[::1]` if present) and `Origin`
+    /// (must be absent or exact loopback host) to block browser CSRF and DNS-rebinding attacks.
+    public static func validateOriginAndHost(headers: String) -> Bool {
+        for line in headers.components(separatedBy: "\r\n") {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            let val = parts[1].trimmingCharacters(in: .whitespaces).lowercased()
+
+            if key == "host" {
+                guard let parsedHost = URL(string: "http://\(val)")?.host?.lowercased(),
+                      parsedHost == "127.0.0.1" || parsedHost == "localhost" || parsedHost == "::1" || parsedHost == "[::1]" else {
+                    return false
+                }
+            } else if key == "origin" {
+                guard let url = URL(string: val),
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https",
+                      let originHost = url.host?.lowercased(),
+                      originHost == "127.0.0.1" || originHost == "localhost" || originHost == "::1" || originHost == "[::1]" else {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /// Constant-time Bearer token check against `Authorization: Bearer <token>`.
+    public static func validateBearerToken(headers: String, expectedToken: String) -> Bool {
+        for line in headers.components(separatedBy: "\r\n") {
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "authorization" {
+                let val = parts[1].trimmingCharacters(in: .whitespaces)
+                guard val.lowercased().hasPrefix("bearer ") else { return false }
+                let provided = String(val.dropFirst("bearer ".count)).trimmingCharacters(in: .whitespaces)
+                return constantTimeEquals(provided, expectedToken)
+            }
+        }
+        return false
+    }
+
+    private static func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8)
+        let b = Array(rhs.utf8)
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<a.count {
+            diff |= a[i] ^ b[i]
+        }
+        return diff == 0
+    }
+
     private static func extractContentLength(from headers: String) -> Int {
         for line in headers.components(separatedBy: "\r\n") {
             let lower = line.lowercased()
             if lower.hasPrefix("content-length:") {
                 let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                return Int(val) ?? 0
+                return max(0, Int(val) ?? 0)
             }
         }
         return 0

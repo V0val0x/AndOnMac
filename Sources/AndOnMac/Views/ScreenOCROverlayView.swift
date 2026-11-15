@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Interactive selection rectangle overlay on the mirror screen for on-device Apple Vision OCR (`Cmd+Shift+X`).
 public struct ScreenOCROverlayView: View {
@@ -6,6 +7,8 @@ public struct ScreenOCROverlayView: View {
     @State private var dragStart: CGPoint? = nil
     @State private var dragCurrent: CGPoint? = nil
     @State private var isProcessing: Bool = false
+    @State private var dashPhase: CGFloat = 0
+    @State private var isHovering: Bool = false
 
     public init(appState: AppState) {
         self.appState = appState
@@ -14,24 +17,31 @@ public struct ScreenOCROverlayView: View {
     public var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.black.opacity(0.32)
+                Color.black.opacity(0.36)
                     .contentShape(Rectangle())
 
                 if let rect = currentSelectionRect(in: geo.size) {
                     Rectangle()
-                        .fill(Color.cyan.opacity(0.14))
+                        .fill(Color.cyan.opacity(0.16))
                         .overlay(
                             Rectangle()
-                                .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+                                .stroke(
+                                    Color.cyan,
+                                    style: StrokeStyle(lineWidth: 2, dash: [6, 4], dashPhase: dashPhase)
+                                )
                         )
+                        .shadow(color: .cyan.opacity(0.35), radius: 8)
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
+                        .transition(.scale(scale: 0.96).combined(with: .opacity))
                 }
 
                 VStack {
                     HStack(spacing: 8) {
-                        Image(systemName: "text.viewfinder")
+                        Image(systemName: isProcessing ? "sparkles" : "text.viewfinder")
+                            .symbolRenderingMode(.hierarchical)
                             .foregroundColor(.cyan)
+                            .symbolEffect(.pulse, isActive: isProcessing)
                         Text(isProcessing
                              ? L10n.tr("Распознавание...", "Recognizing...", lang: appState.lang)
                              : L10n.tr("Выделите область с текстом", "Drag over text to copy", lang: appState.lang))
@@ -39,9 +49,12 @@ public struct ScreenOCROverlayView: View {
                             .foregroundColor(.white)
 
                         Button {
-                            appState.isOCROverlayActive = false
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                appState.isOCROverlayActive = false
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
+                                .symbolRenderingMode(.hierarchical)
                                 .foregroundColor(.white.opacity(0.75))
                         }
                         .buttonStyle(.plain)
@@ -54,6 +67,26 @@ public struct ScreenOCROverlayView: View {
                     Spacer()
                 }
             }
+            .onAppear {
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                    dashPhase = -20
+                }
+            }
+            .onHover { hovering in
+                if hovering && !isHovering {
+                    isHovering = true
+                    NSCursor.crosshair.push()
+                } else if !hovering && isHovering {
+                    isHovering = false
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if isHovering {
+                    isHovering = false
+                    NSCursor.pop()
+                }
+            }
             .gesture(
                 DragGesture(minimumDistance: 4)
                     .onChanged { value in
@@ -63,8 +96,10 @@ public struct ScreenOCROverlayView: View {
                     .onEnded { value in
                         guard let start = dragStart else { return }
                         let rect = normalizedRect(from: start, to: value.location, in: geo.size)
-                        dragStart = nil
-                        dragCurrent = nil
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            dragStart = nil
+                            dragCurrent = nil
+                        }
                         runOCR(normalizedRect: rect)
                     }
             )

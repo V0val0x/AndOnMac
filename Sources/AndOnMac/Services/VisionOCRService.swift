@@ -45,24 +45,26 @@ public final class VisionOCRService: @unchecked Sendable {
 
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let request = VNRecognizeTextRequest { request, error in
-                    if let error = error {
-                        continuation.resume(throwing: error)
-                        return
+                autoreleasepool {
+                    let request = VNRecognizeTextRequest { request, error in
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+                        let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+                        continuation.resume(returning: lines.joined(separator: "\n"))
                     }
-                    let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-                    let lines = observations.compactMap { $0.topCandidates(1).first?.string }
-                    continuation.resume(returning: lines.joined(separator: "\n"))
-                }
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = true
-                request.automaticallyDetectsLanguage = true
+                    request.recognitionLevel = .accurate
+                    request.usesLanguageCorrection = true
+                    request.automaticallyDetectsLanguage = true
 
-                let handler = VNImageRequestHandler(cgImage: targetImage, options: [:])
-                do {
-                    try handler.perform([request])
-                } catch {
-                    continuation.resume(throwing: error)
+                    let handler = VNImageRequestHandler(cgImage: targetImage, options: [:])
+                    do {
+                        try handler.perform([request])
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
         }

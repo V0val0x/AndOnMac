@@ -29,6 +29,8 @@ public struct MenuBarView: View {
             // Header: Connection status, Battery & USB/Wi-Fi badge
             HStack(spacing: 10) {
                 Image(systemName: appState.selectedDevice?.connectionType == .wifi ? "wifi" : "cable.connector")
+                    .symbolRenderingMode(.hierarchical)
+                    .symbolEffect(.pulse, isActive: appState.selectedDevice != nil && appState.isMirroring)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(appState.selectedDevice != nil ? .green : .secondary)
 
@@ -140,7 +142,9 @@ public struct MenuBarView: View {
             if appState.selectedDevice == nil {
                 VStack(alignment: .leading, spacing: 6) {
                     Button {
-                        showQRPairing.toggle()
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            showQRPairing.toggle()
+                        }
                         if showQRPairing {
                             qrPairing.onPairedSuccessfully = { _ in
                                 Task { @MainActor in
@@ -177,6 +181,7 @@ public struct MenuBarView: View {
                             }
                         }
                         .padding(.top, 2)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }

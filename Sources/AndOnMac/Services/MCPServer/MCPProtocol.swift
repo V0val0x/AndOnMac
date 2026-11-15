@@ -164,11 +164,27 @@ public final class MCPServerCore: @unchecked Sendable {
 
     private let lock = NSLock()
     private var _isAgentPaused: Bool = false
+    private var inFlightTasks: [UUID: Task<MCPToolResult, Never>] = [:]
     public var onAgentActivity: (@Sendable (String?) -> Void)?
 
     public var isAgentPaused: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _isAgentPaused }
-        set { lock.lock(); _isAgentPaused = newValue; lock.unlock() }
+        set {
+            lock.lock()
+            _isAgentPaused = newValue
+            let tasksToAbort = newValue ? Array(inFlightTasks.values) : []
+            if newValue {
+                inFlightTasks.removeAll()
+            }
+            lock.unlock()
+
+            if newValue {
+                for task in tasksToAbort {
+                    task.cancel()
+                }
+                onAgentActivity?(nil)
+            }
+        }
     }
 
     private init() {}
@@ -239,9 +255,46 @@ public final class MCPServerCore: @unchecked Sendable {
             }
             let args = params["arguments"]?.objectValue ?? [:]
             onAgentActivity?(Self.activityLabel(for: toolName, args: args))
-            let result = await AndroidMCPTools.execute(name: toolName, arguments: args)
+            let taskId = UUID()
+            let execTask = Task<MCPToolResult, Never> {
+                await AndroidMCPTools.execute(name: toolName, arguments: args)
+            }
+            let registered = lock.withLock { () -> Bool in
+                if _isAgentPaused {
+                    return false
+                }
+                inFlightTasks[taskId] = execTask
+                return true
+            }
+            if !registered {
+                execTask.cancel()
+                onAgentActivity?(nil)
+                return MCPJSONRPCResponse(
+                    id: id,
+                    result: MCPToolResult.text(
+                        "Agent access is currently paused by the user in AndOnMac.",
+                        isError: true
+                    ).toJSONValue()
+                )
+            }
+
+            let result = await execTask.value
+            let aborted = lock.withLock { () -> Bool in
+                inFlightTasks.removeValue(forKey: taskId)
+                return _isAgentPaused || execTask.isCancelled
+            }
+
             DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
                 self?.onAgentActivity?(nil)
+            }
+            if aborted {
+                return MCPJSONRPCResponse(
+                    id: id,
+                    result: MCPToolResult.text(
+                        "Tool execution aborted: Agent access was paused/revoked by the user.",
+                        isError: true
+                    ).toJSONValue()
+                )
             }
             return MCPJSONRPCResponse(id: id, result: result.toJSONValue())
 

@@ -212,7 +212,9 @@ public struct PhoneMirrorFrameView: View {
             if let activity = appState.mcpAgentActivity {
                 VStack {
                     HStack(spacing: 8) {
-                        Image(systemName: "sparkles")
+                        Image(systemName: "waveform")
+                            .symbolRenderingMode(.hierarchical)
+                            .symbolEffect(.variableColor.iterative, isActive: true)
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.cyan)
                         Text(activity)
@@ -237,11 +239,11 @@ public struct PhoneMirrorFrameView: View {
                     .padding(.vertical, 6)
                     .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.45, shadowRadius: 10)
                     .padding(.top, 44)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .top).combined(with: .scale(scale: 0.94)).combined(with: .opacity))
 
                     Spacer()
                 }
-                .animation(AndMotion.hudSpring, value: appState.mcpAgentActivity)
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: appState.mcpAgentActivity)
             }
 
             // Photo Transfer Toast Alert

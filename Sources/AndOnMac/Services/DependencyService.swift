@@ -21,8 +21,8 @@ public final class DependencyService: @unchecked Sendable {
         let adb = ADBService.shared.adbPath
         let scrcpy = MirrorService.shared.scrcpyPath
         
-        let hasAdb = FileManager.default.isExecutableFile(atPath: adb) || canExecute(command: adb)
-        let hasScrcpy = FileManager.default.isExecutableFile(atPath: scrcpy) || canExecute(command: scrcpy)
+        let hasAdb = FileManager.default.isExecutableFile(atPath: adb)
+        let hasScrcpy = FileManager.default.isExecutableFile(atPath: scrcpy)
         
         return DependencyStatus(
             hasAdb: hasAdb,
@@ -31,38 +31,28 @@ public final class DependencyService: @unchecked Sendable {
             scrcpyPath: hasScrcpy ? scrcpy : nil
         )
     }
-    
-    private func canExecute(command: String) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = [command]
-        
-        var env = ProcessInfo.processInfo.environment
-        let existingPath = env["PATH"] ?? ""
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
-        process.environment = env
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
+
+    private func resolveBrewPath() -> String? {
+        let candidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     }
     
-    /// Automates the installation of missing dependencies via Homebrew in background
+    /// Automates the installation of missing dependencies via Homebrew in background (no shell interpolation).
     public func autoInstallDependencies(onOutput: @escaping @Sendable (String) -> Void) async -> Bool {
+        guard let brewPath = resolveBrewPath() else {
+            onOutput("Homebrew не найден. Установите Homebrew с https://brew.sh и выполните: brew install scrcpy android-platform-tools\n")
+            return false
+        }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                process.arguments = [
-                    "-c",
-                    "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; which brew >/dev/null || (/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"); brew install scrcpy android-platform-tools"
-                ]
+                process.executableURL = URL(fileURLWithPath: brewPath)
+                process.arguments = ["install", "scrcpy", "android-platform-tools"]
+
+                var env = ProcessInfo.processInfo.environment
+                let existingPath = env["PATH"] ?? ""
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
+                process.environment = env
                 
                 let pipe = Pipe()
                 process.standardOutput = pipe
@@ -75,12 +65,15 @@ public final class DependencyService: @unchecked Sendable {
                     }
                 }
                 
+                let trackedId = ProcessLifecycleManager.shared.register(process, tag: "brew")
                 do {
                     try process.run()
                     process.waitUntilExit()
+                    ProcessLifecycleManager.shared.unregister(trackedId)
                     pipe.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(returning: process.terminationStatus == 0)
                 } catch {
+                    ProcessLifecycleManager.shared.unregister(trackedId)
                     pipe.fileHandleForReading.readabilityHandler = nil
                     onOutput("Ошибка запуска авто-установщика: \(error.localizedDescription)\n")
                     continuation.resume(returning: false)

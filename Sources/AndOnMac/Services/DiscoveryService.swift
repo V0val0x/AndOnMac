@@ -122,11 +122,13 @@ public final class DiscoveryService: NSObject, ObservableObject, @unchecked Send
     // MARK: - ADB mDNS Fallback / Sync
     private func startPeriodicAdbMdnsPoll() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
             Task {
                 await self?.pollAdbMdns()
             }
         }
+        timer.tolerance = 2.0
+        pollTimer = timer
         Task {
             await pollAdbMdns()
         }

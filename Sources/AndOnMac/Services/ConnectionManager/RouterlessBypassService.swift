@@ -281,7 +281,7 @@ public final class RouterlessBypassService: ObservableObject {
 
         // Try Android 11+ `cmd wifi start-softap` via ADB shell
         let startOut = (try? await ADBService.shared.execute(
-            arguments: ["-s", serial, "shell", "cmd", "wifi", "start-softap", ssid, "wpa2", password],
+            arguments: ["-s", serial, "shell", "cmd", "wifi", "start-softap", ADBService.shellQuote(ssid), "wpa2", ADBService.shellQuote(password)],
             timeoutSeconds: 4.0
         )) ?? ""
 
@@ -323,19 +323,23 @@ public final class RouterlessBypassService: ObservableObject {
     }
 
     private nonisolated static func runQuickCommand(_ path: String, arguments: [String]) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
         proc.arguments = arguments
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
+        let trackedId = ProcessLifecycleManager.shared.register(proc, tag: "network-probe")
         do {
             try proc.run()
-            proc.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            ProcessLifecycleManager.shared.unregister(trackedId)
             let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         } catch {
+            ProcessLifecycleManager.shared.unregister(trackedId)
             return nil
         }
     }

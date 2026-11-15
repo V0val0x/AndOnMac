@@ -66,6 +66,8 @@ cat <<EOF > "${CONTENTS_DIR}/Info.plist"
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>AndOnMac использует локальную сеть для обнаружения и беспроводного подключения к вашему телефону Android (ADB Wireless Debugging).</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>AndOnMac использует локальный захват кадров зеркалирования для распознавания текста (Apple Vision OCR) и передачи изображений.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>AndOnMac использует Bluetooth PAN для прямого подключения к вашему телефону Android при изоляции Wi-Fi.</string>
     <key>NSBonjourServices</key>

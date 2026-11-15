@@ -23,11 +23,13 @@ public final class ContinuityBridge: @unchecked Sendable {
             self.isEnabled = true
             self.lastChangeCount = NSPasteboard.general.changeCount
             self.timer?.invalidate()
-            self.timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            let t = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.pollPasteboard()
                 }
             }
+            t.tolerance = 0.35
+            self.timer = t
         }
     }
 
@@ -42,26 +44,28 @@ public final class ContinuityBridge: @unchecked Sendable {
 
     /// Converts raw pasteboard image data (PNG or TIFF) into PNG `Data`.
     public static func encodePasteboardImageAsPNG(pngData: Data?, tiffData: Data?) -> Data? {
-        if let pngData, !pngData.isEmpty {
-            return pngData
+        return autoreleasepool {
+            if let pngData, !pngData.isEmpty {
+                return pngData
+            }
+            if let tiffData,
+               let bitmap = NSBitmapImageRep(data: tiffData),
+               let converted = bitmap.representation(using: .png, properties: [:]) {
+                return converted
+            }
+            return nil
         }
-        if let tiffData,
-           let bitmap = NSBitmapImageRep(data: tiffData),
-           let converted = bitmap.representation(using: .png, properties: [:]) {
-            return converted
-        }
-        return nil
     }
 
     @MainActor
     private func pollPasteboard() {
         guard isEnabled else { return }
+        guard let serial = activeSerialProvider?(), ADBService.validateSerial(serial) else { return }
+
         let pb = NSPasteboard.general
         let currentCount = pb.changeCount
         guard currentCount != lastChangeCount else { return }
         lastChangeCount = currentCount
-
-        guard let serial = activeSerialProvider?(), ADBService.validateSerial(serial) else { return }
 
         // 1. Check for image / screenshot in clipboard first (skip if file URLs are handled by drag-and-drop)
         let pngData = pb.data(forType: .png)
@@ -83,9 +87,10 @@ public final class ContinuityBridge: @unchecked Sendable {
 
     private func syncTextViaADB(_ text: String, serial: String) {
         let trimmed = String(text.prefix(4000))
+        let quoted = ADBService.shellQuote(trimmed)
         Task.detached { [weak self] in
             _ = try? await ADBService.shared.execute(
-                arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", trimmed],
+                arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", quoted],
                 timeoutSeconds: 3.0
             )
             DispatchQueue.main.async {
@@ -95,16 +100,19 @@ public final class ContinuityBridge: @unchecked Sendable {
     }
 
     private func syncImageToAndroid(_ pngData: Data, serial: String) {
-        let filename = "clipboard_\(Int(Date().timeIntervalSince1970)).png"
+        let filename = "clipboard_\(UUID().uuidString).png"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
         do {
             try pngData.write(to: tempURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
         } catch {
             return
         }
 
         Task.detached { [weak self] in
-            defer { try? FileManager.default.removeItem(at: tempURL) }
+            defer {
+                try? FileManager.default.removeItem(at: tempURL)
+            }
             let result = await PhotoTransferService.shared.pushFiles(urls: [tempURL], serial: serial)
             if result.success {
                 DispatchQueue.main.async {

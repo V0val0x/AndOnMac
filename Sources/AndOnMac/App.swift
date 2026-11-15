@@ -12,7 +12,19 @@ enum AndOnMacEntryPoint {
     }
 }
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        MirrorService.shared.stopMirroring()
+        MirrorService.shared.stopRecording()
+        AndroidAppLauncherService.shared.stopAllAppWindows()
+        ContinuityBridge.shared.stop()
+        MCPHTTPServer.shared.stop()
+        ProcessLifecycleManager.shared.terminateAllProcesses(synchronousWait: true, gracePeriodMs: 250)
+    }
+}
+
 struct AndOnMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
     
     init() {

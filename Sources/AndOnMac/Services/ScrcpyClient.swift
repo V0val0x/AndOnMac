@@ -81,6 +81,9 @@ public final class ScrcpyClient: @unchecked Sendable {
         turnScreenOff: Bool = true,
         stayAwake: Bool = true
     ) async throws {
+        guard ADBService.validateSerial(serial) else {
+            throw NSError(domain: "ScrcpyClient", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid ADB device serial."])
+        }
         stop()
         sessionGeneration &+= 1
         let myGen = sessionGeneration
@@ -146,6 +149,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         proc.standardError = FileHandle.nullDevice
         
         try proc.run()
+        ProcessLifecycleManager.shared.register(proc, tag: "scrcpy-server")
         self.serverProcess = proc
         self.activeSerial = serial
         self.activeLocalPort = localPort
@@ -265,8 +269,8 @@ public final class ScrcpyClient: @unchecked Sendable {
             close(cSock)
         }
         
-        if let proc = serverProcess, proc.isRunning {
-            proc.terminate()
+        if let proc = serverProcess {
+            ProcessLifecycleManager.shared.terminateProcess(proc)
         }
         serverProcess = nil
         
@@ -1114,7 +1118,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     private func startClipboardSync() {
         stopClipboardSync()
         lastPasteboardChangeCount = NSPasteboard.general.changeCount
-        clipboardTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self = self, self.isConnected else { return }
             let currentCount = NSPasteboard.general.changeCount
             if currentCount != self.lastPasteboardChangeCount {
@@ -1125,6 +1129,8 @@ public final class ScrcpyClient: @unchecked Sendable {
                 }
             }
         }
+        timer.tolerance = 0.2
+        clipboardTimer = timer
     }
     
     private func stopClipboardSync() {

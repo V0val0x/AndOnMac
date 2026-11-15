@@ -267,10 +267,13 @@ public final class FileBrowserService: @unchecked Sendable {
     }
 
     public func pushItems(serial: String, localURLs: [URL], to remoteDirectory: String) async -> (succeeded: Int, failed: Int) {
+        guard let safeRemoteDir = try? Self.validateRemotePath(remoteDirectory) else {
+            return (0, localURLs.count)
+        }
         var succeeded = 0
         var failed = 0
         for url in localURLs {
-            let dest = (remoteDirectory as NSString).appendingPathComponent(url.lastPathComponent)
+            let dest = (safeRemoteDir as NSString).appendingPathComponent(url.lastPathComponent)
             do {
                 _ = try await ADBService.shared.execute(
                     arguments: ["-s", serial, "push", url.path, dest],
@@ -280,7 +283,7 @@ public final class FileBrowserService: @unchecked Sendable {
                 _ = try? await ADBService.shared.execute(arguments: [
                     "-s", serial, "shell",
                     "content", "call", "--method", "scan_file", "--uri", "content://media",
-                    "--extra", "file:--string=\(dest)"
+                    "--extra", ADBService.shellQuote("file:--string=\(dest)")
                 ], timeoutSeconds: 3.0)
                 succeeded += 1
             } catch {

@@ -107,6 +107,9 @@ public final class AndroidAppLauncherService: @unchecked Sendable {
         guard ADBService.validateSerial(serial) else {
             throw NSError(domain: "AndroidAppLauncher", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid device serial"])
         }
+        guard ADBService.validatePackageName(app.packageName) else {
+            throw NSError(domain: "AndroidAppLauncher", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid Android package name"])
+        }
         let scrcpy = MirrorService.shared.scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: scrcpy) else {
             throw NSError(
@@ -152,6 +155,7 @@ public final class AndroidAppLauncherService: @unchecked Sendable {
         }
 
         try proc.run()
+        ProcessLifecycleManager.shared.register(proc, tag: "app-launcher")
         lock.lock()
         activeProcesses[key] = proc
         lock.unlock()
@@ -164,8 +168,8 @@ public final class AndroidAppLauncherService: @unchecked Sendable {
         let procs = Array(activeProcesses.values)
         activeProcesses.removeAll()
         lock.unlock()
-        for proc in procs where proc.isRunning {
-            proc.terminate()
+        for proc in procs {
+            ProcessLifecycleManager.shared.terminateProcess(proc)
         }
     }
 }

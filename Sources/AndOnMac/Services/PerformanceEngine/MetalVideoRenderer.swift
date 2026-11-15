@@ -123,72 +123,74 @@ public final class MetalVideoRenderer: @unchecked Sendable {
 
     /// Renders the latest pending pixel buffer onto the `CAMetalLayer` if one is available.
     public func renderLatestFrameIfAvailable() {
-        frameLock.lock()
-        guard let pb = pendingPixelBuffer else {
+        autoreleasepool {
+            frameLock.lock()
+            guard let pb = pendingPixelBuffer else {
+                frameLock.unlock()
+                return
+            }
+            pendingPixelBuffer = nil
+            let vw = videoWidth
+            let vh = videoHeight
             frameLock.unlock()
-            return
+
+            guard let cache = textureCache,
+                  vw > 0, vh > 0,
+                  metalLayer.drawableSize.width > 0,
+                  metalLayer.drawableSize.height > 0,
+                  let drawable = metalLayer.nextDrawable() else {
+                return
+            }
+
+            var cvTex: CVMetalTexture?
+            let status = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault,
+                cache,
+                pb,
+                nil,
+                .bgra8Unorm,
+                vw,
+                vh,
+                0,
+                &cvTex
+            )
+            guard status == kCVReturnSuccess,
+                  let cvTexture = cvTex,
+                  let mtlTexture = CVMetalTextureGetTexture(cvTexture) else {
+                return
+            }
+
+            let dw = Float(metalLayer.drawableSize.width)
+            let dh = Float(metalLayer.drawableSize.height)
+            let viewAspect = dw / max(1.0, dh)
+            let videoAspect = Float(vw) / Float(max(1, vh))
+            var scale: SIMD2<Float>
+            if viewAspect > videoAspect {
+                scale = SIMD2<Float>(videoAspect / viewAspect, 1.0)
+            } else {
+                scale = SIMD2<Float>(1.0, viewAspect / videoAspect)
+            }
+
+            let passDesc = MTLRenderPassDescriptor()
+            passDesc.colorAttachments[0].texture = drawable.texture
+            passDesc.colorAttachments[0].loadAction = .clear
+            passDesc.colorAttachments[0].storeAction = .store
+            passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+            guard let cmdBuffer = commandQueue.makeCommandBuffer(),
+                  let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+                return
+            }
+
+            encoder.setRenderPipelineState(pipelineState)
+            encoder.setVertexBytes(&scale, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
+            encoder.setFragmentTexture(mtlTexture, index: 0)
+            encoder.setFragmentSamplerState(samplerState, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            encoder.endEncoding()
+
+            cmdBuffer.present(drawable)
+            cmdBuffer.commit()
         }
-        pendingPixelBuffer = nil
-        let vw = videoWidth
-        let vh = videoHeight
-        frameLock.unlock()
-
-        guard let cache = textureCache,
-              vw > 0, vh > 0,
-              metalLayer.drawableSize.width > 0,
-              metalLayer.drawableSize.height > 0,
-              let drawable = metalLayer.nextDrawable() else {
-            return
-        }
-
-        var cvTex: CVMetalTexture?
-        let status = CVMetalTextureCacheCreateTextureFromImage(
-            kCFAllocatorDefault,
-            cache,
-            pb,
-            nil,
-            .bgra8Unorm,
-            vw,
-            vh,
-            0,
-            &cvTex
-        )
-        guard status == kCVReturnSuccess,
-              let cvTexture = cvTex,
-              let mtlTexture = CVMetalTextureGetTexture(cvTexture) else {
-            return
-        }
-
-        let dw = Float(metalLayer.drawableSize.width)
-        let dh = Float(metalLayer.drawableSize.height)
-        let viewAspect = dw / max(1.0, dh)
-        let videoAspect = Float(vw) / Float(max(1, vh))
-        var scale: SIMD2<Float>
-        if viewAspect > videoAspect {
-            scale = SIMD2<Float>(videoAspect / viewAspect, 1.0)
-        } else {
-            scale = SIMD2<Float>(1.0, viewAspect / videoAspect)
-        }
-
-        let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].texture = drawable.texture
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].storeAction = .store
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-
-        guard let cmdBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = cmdBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
-            return
-        }
-
-        encoder.setRenderPipelineState(pipelineState)
-        encoder.setVertexBytes(&scale, length: MemoryLayout<SIMD2<Float>>.size, index: 0)
-        encoder.setFragmentTexture(mtlTexture, index: 0)
-        encoder.setFragmentSamplerState(samplerState, index: 0)
-        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        encoder.endEncoding()
-
-        cmdBuffer.present(drawable)
-        cmdBuffer.commit()
     }
 }

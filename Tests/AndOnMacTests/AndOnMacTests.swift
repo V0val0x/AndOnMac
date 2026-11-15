@@ -992,4 +992,133 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertFalse(engine.isABRReduced)
         engine.endMirroringSession()
     }
+
+    func testCommandInjectionResistanceAndPackageValidation() {
+        // Package name validation
+        XCTAssertTrue(ADBService.validatePackageName("com.whatsapp"))
+        XCTAssertTrue(ADBService.validatePackageName("org.telegram.messenger"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp; id"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp$(reboot)"))
+        XCTAssertFalse(ADBService.validatePackageName("-rf"))
+        XCTAssertFalse(ADBService.validatePackageName("nodot"))
+        XCTAssertFalse(ADBService.validatePackageName(""))
+
+        // POSIX shell quoting
+        let malicious = "hello'; rm -rf /; echo $(id) `uname` | cat > /tmp/x\0"
+        let quoted = ADBService.shellQuote(malicious)
+        XCTAssertTrue(quoted.hasPrefix("'"))
+        XCTAssertTrue(quoted.hasSuffix("'"))
+        XCTAssertFalse(quoted.contains("\0"))
+        XCTAssertEqual(quoted, "'hello'\\''; rm -rf /; echo $(id) `uname` | cat > /tmp/x'")
+
+        // android_type_text command builder
+        let asciiInject = AndroidMCPTools.buildSafeTypeTextCommand("hi; id > /sdcard/pwn")
+        XCTAssertFalse(asciiInject.useClipboard)
+        XCTAssertEqual(asciiInject.quotedArg, "'hi;%sid%s>%s/sdcard/pwn'")
+
+        let unicodeInject = AndroidMCPTools.buildSafeTypeTextCommand("Привет; $(reboot)\n")
+        XCTAssertTrue(unicodeInject.useClipboard)
+        XCTAssertEqual(unicodeInject.quotedArg, "'Привет; $(reboot)\n'")
+    }
+
+    func testMCPHTTPServerOriginHostAndBearerSecurity() async throws {
+        // Loopback Host & Origin allowed
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: [::1]:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: localhost:8765\r\nOrigin: http://localhost:3000\r\n"))
+
+        // External Origin, prefix-spoofed Origin, or DNS-rebinding Host rejected
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: evil.com:8765\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: https://evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://localhost.evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://127.0.0.1.evil.com\r\n"))
+
+        // Bearer token validation
+        let headersWithToken = "POST /message HTTP/1.1\r\nAuthorization: Bearer secret-session-token\r\n"
+        XCTAssertTrue(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "secret-session-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "wrong-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: "POST /message HTTP/1.1\r\n", expectedToken: "secret-session-token"))
+
+        // Live NWListener socket integration test with Bearer token
+        let server = MCPHTTPServer.shared
+        let testPort: UInt16 = 18765
+        let testToken = "live-session-secret-\(UUID().uuidString)"
+        server.bearerToken = testToken
+
+        final class ResumeOnce: @unchecked Sendable {
+            private let lock = NSLock()
+            private var resumed = false
+            func tryResume() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                guard !resumed else { return false }
+                resumed = true
+                return true
+            }
+        }
+        let resumeOnce = ResumeOnce()
+        let started = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            server.start(port: testPort) { isRunning in
+                if resumeOnce.tryResume() {
+                    cont.resume(returning: isRunning)
+                }
+            }
+        }
+        defer {
+            server.bearerToken = nil
+            server.stop()
+        }
+        XCTAssertTrue(started, "MCPHTTPServer should bind to 127.0.0.1:\(testPort)")
+
+        let url = URL(string: "http://127.0.0.1:\(testPort)/")!
+
+        // 1. Missing Bearer token -> 401
+        var unauthReq = URLRequest(url: url)
+        unauthReq.httpMethod = "GET"
+        let (_, unauthResp) = try await URLSession.shared.data(for: unauthReq)
+        XCTAssertEqual((unauthResp as? HTTPURLResponse)?.statusCode, 401)
+
+        // 2. Spoofed Origin -> 403
+        var badOriginReq = URLRequest(url: url)
+        badOriginReq.httpMethod = "GET"
+        badOriginReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        badOriginReq.setValue("http://localhost.evil.com", forHTTPHeaderField: "Origin")
+        let (_, badOriginResp) = try await URLSession.shared.data(for: badOriginReq)
+        XCTAssertEqual((badOriginResp as? HTTPURLResponse)?.statusCode, 403)
+
+        // 3. Valid Bearer token + loopback -> 200
+        var okReq = URLRequest(url: url)
+        okReq.httpMethod = "GET"
+        okReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        let (_, okResp) = try await URLSession.shared.data(for: okReq)
+        XCTAssertEqual((okResp as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testADBTaskCancellationAbortsImmediately() async {
+        let start = Date()
+        let task = Task {
+            try await ADBService.shared.execute(arguments: ["wait-for-device"], timeoutSeconds: 10.0)
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        task.cancel()
+        _ = await task.result
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "Cancelling Task must abort ADBService.execute immediately without waiting for 10s timeout")
+    }
+
+    func testProcessLifecycleManagerTerminatesChildCleanly() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["30"]
+        try? proc.run()
+        XCTAssertTrue(proc.isRunning)
+
+        ProcessLifecycleManager.shared.register(proc, tag: "test-sleep")
+        ProcessLifecycleManager.shared.terminateProcesses(withTag: "test-sleep", gracePeriodMs: 100)
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(proc.isRunning)
+    }
 }

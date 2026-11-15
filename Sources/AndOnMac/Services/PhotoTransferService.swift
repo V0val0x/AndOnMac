@@ -298,14 +298,14 @@ public final class PhotoTransferService: @unchecked Sendable {
                     _ = try? await ADBService.shared.execute(arguments: [
                         "-s", serial, "shell",
                         "content", "call", "--method", "scan_file", "--uri", "content://media",
-                        "--extra", "file:--string=\(dest)"
+                        "--extra", ADBService.shellQuote("file:--string=\(dest)")
                     ])
                     // 2. Package-explicit broadcast fallback for Android 7-10
                     let uriString = URL(fileURLWithPath: dest).absoluteString
                     _ = try? await ADBService.shared.execute(arguments: [
                         "-s", serial, "shell",
                         "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                        "-d", uriString,
+                        "-d", ADBService.shellQuote(uriString),
                         "-p", "com.android.providers.media"
                     ])
                     pushedCount += 1

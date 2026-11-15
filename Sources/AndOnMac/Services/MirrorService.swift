@@ -215,7 +215,8 @@ public final class MirrorService: @unchecked Sendable {
     
     private func startBackgroundAudio(serial: String) {
         stopBackgroundAudio()
-        killOrphanAudioProcesses(waitUntilExit: true)
+        killOrphanAudioProcesses(waitUntilExit: false)
+        guard ADBService.validateSerial(serial) else { return }
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else { return }
         
@@ -244,20 +245,34 @@ public final class MirrorService: @unchecked Sendable {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         
-        try? proc.run()
-        self.audioProcess = proc
+        do {
+            try proc.run()
+            ProcessLifecycleManager.shared.register(proc, tag: "scrcpy-audio")
+            stateLock.lock()
+            self.audioProcess = proc
+            stateLock.unlock()
+        } catch {
+            self.audioProcess = nil
+        }
     }
     
     private func stopBackgroundAudio() {
-        if let proc = audioProcess, proc.isRunning {
-            proc.terminate()
-        }
+        stateLock.lock()
+        let proc = audioProcess
         audioProcess = nil
+        stateLock.unlock()
+        if let proc {
+            ProcessLifecycleManager.shared.terminateProcess(proc)
+        }
+        ProcessLifecycleManager.shared.terminateProcesses(withTag: "scrcpy-audio")
     }
 
     /// Starts headless MP4 screen recording via `scrcpy --no-video-playback --no-control --record=...`.
     @discardableResult
     public func startRecording(serial: String, maxSize: Int = 1440, bitRate: Int = 8_000_000) throws -> URL {
+        guard ADBService.validateSerial(serial) else {
+            throw NSError(domain: "MirrorService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid ADB device serial."])
+        }
         stopRecording()
         let binary = scrcpyPath
         guard FileManager.default.isExecutableFile(atPath: binary) else {
@@ -295,6 +310,7 @@ public final class MirrorService: @unchecked Sendable {
         proc.standardError = FileHandle.nullDevice
 
         try proc.run()
+        ProcessLifecycleManager.shared.register(proc, tag: "scrcpy-recording")
         stateLock.lock()
         recordingProcess = proc
         lastRecordingURL = outputURL

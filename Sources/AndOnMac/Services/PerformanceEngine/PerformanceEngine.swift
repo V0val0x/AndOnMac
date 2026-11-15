@@ -85,6 +85,7 @@ public final class PerformanceEngine: ObservableObject {
                 self.liveFPS = count
             }
         }
+        fpsTimer?.tolerance = 0.2
 
         if device.connectionType == .wifi, let (host, port) = Self.extractHostAndPort(from: device) {
             probeTask = Task { [weak self] in

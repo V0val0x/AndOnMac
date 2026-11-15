@@ -220,33 +220,35 @@ public enum AndroidMCPTools {
 
     /// Proportionally downscales PNG bytes so height <= `maxHeight` to minimize LLM vision token cost.
     public static func downscalePNGIfNeeded(_ data: Data, maxHeight: Int = 1080) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        guard image.height > maxHeight, image.height > 0 else { return data }
+        return autoreleasepool {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+            guard image.height > maxHeight, image.height > 0 else { return data }
 
-        let scale = CGFloat(maxHeight) / CGFloat(image.height)
-        let targetW = max(1, Int(CGFloat(image.width) * scale))
-        let targetH = maxHeight
+            let scale = CGFloat(maxHeight) / CGFloat(image.height)
+            let targetW = max(1, Int(CGFloat(image.width) * scale))
+            let targetH = maxHeight
 
-        guard let ctx = CGContext(
-            data: nil,
-            width: targetW,
-            height: targetH,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return data }
+            guard let ctx = CGContext(
+                data: nil,
+                width: targetW,
+                height: targetH,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return data }
 
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: targetW, height: targetH))
-        guard let scaledImage = ctx.makeImage() else { return data }
+            ctx.interpolationQuality = .high
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: targetW, height: targetH))
+            guard let scaledImage = ctx.makeImage() else { return data }
 
-        let outData = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(outData, UTType.png.identifier as CFString, 1, nil) else { return data }
-        CGImageDestinationAddImage(dest, scaledImage, nil)
-        guard CGImageDestinationFinalize(dest) else { return data }
-        return outData as Data
+            let outData = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(outData, UTType.png.identifier as CFString, 1, nil) else { return data }
+            CGImageDestinationAddImage(dest, scaledImage, nil)
+            guard CGImageDestinationFinalize(dest) else { return data }
+            return outData as Data
+        }
     }
 
     private static func tapElement(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
@@ -307,24 +309,33 @@ public enum AndroidMCPTools {
         return .text("Swiped (\(x1),\(y1)) -> (\(x2),\(y2)) in \(duration)ms.")
     }
 
+    /// Builds injection-safe `adb shell` text arguments for `android_type_text`.
+    /// Both ASCII (`input text`) and Unicode (`cmd clipboard set`) paths are strictly POSIX single-quoted
+    /// so Android `/system/bin/sh` never evaluates `;`, `|`, `&`, `$()`, backticks, redirects, or newlines.
+    public static func buildSafeTypeTextCommand(_ rawText: String) -> (useClipboard: Bool, quotedArg: String) {
+        let sanitized = rawText.replacingOccurrences(of: "\0", with: "")
+        let isSimpleASCII = sanitized.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && scalar.value >= 0x20 && scalar.value != 0x7F
+        }
+        if isSimpleASCII {
+            let spaceEncoded = sanitized.replacingOccurrences(of: " ", with: "%s")
+            return (false, ADBService.shellQuote(spaceEncoded))
+        } else {
+            return (true, ADBService.shellQuote(sanitized))
+        }
+    }
+
     private static func typeText(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
         guard let text = args["text"]?.stringValue, !text.isEmpty else {
             return .text("Missing 'text' parameter.", isError: true)
         }
         let pressEnter = args["press_enter"]?.boolValue ?? false
+        let cmd = buildSafeTypeTextCommand(text)
 
-        if text.allSatisfy({ $0.isASCII }) {
-            let escaped = text
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: " ", with: "%s")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "'", with: "\\'")
-                .replacingOccurrences(of: "&", with: "\\&")
-                .replacingOccurrences(of: "(", with: "\\(")
-                .replacingOccurrences(of: ")", with: "\\)")
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "text", escaped], timeoutSeconds: 6.0)
+        if !cmd.useClipboard {
+            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "text", cmd.quotedArg], timeoutSeconds: 6.0)
         } else {
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", text], timeoutSeconds: 4.0)
+            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", cmd.quotedArg], timeoutSeconds: 4.0)
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "279"], timeoutSeconds: 4.0)
         }
 
@@ -373,6 +384,10 @@ public enum AndroidMCPTools {
             } else {
                 return .text("Could not find installed app matching '\(query)'.", isError: true)
             }
+        }
+
+        guard ADBService.validatePackageName(targetPackage) else {
+            return .text("Invalid Android package name: '\(targetPackage)'.", isError: true)
         }
 
         _ = try await ADBService.shared.execute(

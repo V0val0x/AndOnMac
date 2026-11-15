@@ -334,14 +334,18 @@ public final class AppState: ObservableObject {
         NotificationService.shared.startServer()
     }
     
+    private var lastLockStateCheck: Date = .distantPast
+
     public func startPeriodicPoll() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        let pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self, !self.isRefreshing else { return }
                 self.refreshDevices()
             }
         }
+        pollTimer.tolerance = 1.2
+        timer = pollTimer
     }
     
     public func refreshDevices() {
@@ -370,7 +374,10 @@ public final class AppState: ObservableObject {
                 self.isPhoneLocked = false
                 self.attemptAutoWifiReconnect()
             } else {
-                if let ready = list.first(where: { $0.state == .ready }) {
+                let lockCheckInterval: TimeInterval = mirrorActive ? 4.0 : 12.0
+                if let ready = list.first(where: { $0.state == .ready }),
+                   Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
+                    self.lastLockStateCheck = Date()
                     let lockState = await ADBService.shared.fetchScreenAndLockState(serial: ready.id)
                     if self.isPhoneScreenOff != lockState.isScreenOff {
                         self.isPhoneScreenOff = lockState.isScreenOff
