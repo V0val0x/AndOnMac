@@ -36,6 +36,7 @@ public final class ScrcpyClient: @unchecked Sendable {
     private let controlQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.control", qos: .userInitiated)
     private let decoderLock = NSLock()
     private let socketLock = NSLock()
+    private let pixelBufferLock = NSLock()
     
     // VideoToolbox
     private var decompressionSession: VTDecompressionSession?
@@ -43,7 +44,19 @@ public final class ScrcpyClient: @unchecked Sendable {
     private var activeVPS: Data?
     private var activeSPS: Data?
     private var activePPS: Data?
-    public private(set) var latestFrameImage: CGImage?
+    private var latestPixelBuffer: CVPixelBuffer?
+
+    /// Lazily converts the latest decoded `CVPixelBuffer` to `CGImage` on demand (e.g., for Vision OCR),
+    /// avoiding expensive per-frame GPU->CPU readbacks during 60-120fps streaming.
+    public var latestFrameImage: CGImage? {
+        pixelBufferLock.lock()
+        let pb = latestPixelBuffer
+        pixelBufferLock.unlock()
+        guard let pb else { return nil }
+        var cgImage: CGImage?
+        VTCreateCGImageFromCVPixelBuffer(pb, options: nil, imageOut: &cgImage)
+        return cgImage
+    }
     
     // Dimensions
     public private(set) var deviceWidth: Int = 1080
@@ -294,7 +307,9 @@ public final class ScrcpyClient: @unchecked Sendable {
         activeVPS = nil
         activeSPS = nil
         activePPS = nil
-        latestFrameImage = nil
+        pixelBufferLock.lock()
+        latestPixelBuffer = nil
+        pixelBufferLock.unlock()
         pendingDecodeFrames = 0
         if let session = session {
             VTDecompressionSessionWaitForAsynchronousFrames(session)
@@ -926,20 +941,24 @@ public final class ScrcpyClient: @unchecked Sendable {
             flags: [._1xRealTimePlayback, ._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
-            guard decodeStatus == noErr, let pixelBuffer = imageBuffer else { return }
-            self?.hasDecodedAnyFrame = true
+            guard decodeStatus == noErr, let pixelBuffer = imageBuffer, let self = self else { return }
+            self.hasDecodedAnyFrame = true
             PerformanceEngine.recordPresentedFrame()
-            var cgImage: CGImage?
-            VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-            if let cgImage = cgImage {
-                self?.latestFrameImage = cgImage
-            }
+            self.pixelBufferLock.lock()
+            self.latestPixelBuffer = pixelBuffer
+            self.pixelBufferLock.unlock()
+
             nonisolated(unsafe) let pb = pixelBuffer
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.onFrameDecoded?(pb)
+            // Submit directly to MetalVideoRenderer with zero main-thread dispatch jitter
+            self.onFrameDecoded?(pb)
+
+            if let imageCallback = self.onFrameImageDecoded {
+                var cgImage: CGImage?
+                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
                 if let cgImage = cgImage {
-                    self.onFrameImageDecoded?(cgImage)
+                    DispatchQueue.main.async {
+                        imageCallback(cgImage)
+                    }
                 }
             }
         }

@@ -100,7 +100,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = true
         layer.displaySyncEnabled = true
-        layer.maximumDrawableCount = 2
+        layer.maximumDrawableCount = 3
         layer.presentsWithTransaction = false
         layer.backgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
@@ -131,6 +131,15 @@ public final class MetalVideoRenderer: @unchecked Sendable {
             }
 
             frameLock.lock()
+            let hasPending = (pendingPixelBuffer != nil && videoWidth > 0 && videoHeight > 0)
+            frameLock.unlock()
+
+            guard hasPending,
+                  let drawable = metalLayer.nextDrawable() else {
+                return
+            }
+
+            frameLock.lock()
             guard let pb = pendingPixelBuffer else {
                 frameLock.unlock()
                 return
@@ -140,8 +149,7 @@ public final class MetalVideoRenderer: @unchecked Sendable {
             let vh = videoHeight
             frameLock.unlock()
 
-            guard vw > 0, vh > 0,
-                  let drawable = metalLayer.nextDrawable() else {
+            guard vw > 0, vh > 0 else {
                 return
             }
 

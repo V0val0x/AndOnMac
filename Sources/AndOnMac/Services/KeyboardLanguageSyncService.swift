@@ -11,9 +11,11 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
     public var onLanguageChanged: ((String) -> Void)?
     
     private var languageToSubtypeMap: [String: Int] = [:]
+    private let mapLock = NSLock()
     private var lastSyncedLanguage: String = ""
     private var isSyncing: Bool = false
     private var pollTimer: Timer?
+    private var syncTask: Task<Void, Never>?
     
     private init() {
         setupObservers()
@@ -65,18 +67,22 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
         self.currentDeviceSerial = nil
         self.pollTimer?.invalidate()
         self.pollTimer = nil
+        self.syncTask?.cancel()
+        self.syncTask = nil
     }
     
     // MARK: - Subtype Discovery via ADB
     public func refreshDeviceSubtypes(serial: String) async {
         do {
             let output = try await ADBService.shared.execute(
-                arguments: ["-s", serial, "shell", "dumpsys input_method | grep -E 'mSubtypeId=[^0].*mSubtypeLocale='"],
+                arguments: ["-s", serial, "shell", "dumpsys input_method | grep -E 'mSubtypeLocale='"],
                 timeoutSeconds: 3.0
             )
             let map = Self.parseSubtypes(from: output)
             if !map.isEmpty {
-                self.languageToSubtypeMap = map
+                mapLock.withLock {
+                    self.languageToSubtypeMap = map
+                }
             }
         } catch {
             // Keep default/empty map
@@ -87,14 +93,24 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
         var map: [String: Int] = [:]
         let lines = output.components(separatedBy: .newlines)
         for line in lines {
-            guard line.contains("mSubtypeId=") && line.contains("mSubtypeLocale=") else { continue }
-            guard let idRange = line.range(of: "mSubtypeId="),
-                  let locRange = line.range(of: "mSubtypeLocale=") else { continue }
-            
-            let idSub = line[idRange.upperBound...]
-            let idTokens = idSub.components(separatedBy: " ")
-            guard let idStr = idTokens.first, let id = Int(idStr), id != 0 else { continue }
-            
+            guard line.contains("mSubtypeLocale=") else { continue }
+
+            var resolvedId: Int?
+            if let idRange = line.range(of: "mSubtypeId=") {
+                let idSub = line[idRange.upperBound...]
+                if let idStr = idSub.components(separatedBy: " ").first, let id = Int(idStr), id != 0 {
+                    resolvedId = id
+                }
+            }
+            if resolvedId == nil, let hashRange = line.range(of: "mSubtypeHashCode=") {
+                let hashSub = line[hashRange.upperBound...]
+                if let hashStr = hashSub.components(separatedBy: " ").first, let hash = Int(hashStr), hash != 0 {
+                    resolvedId = hash
+                }
+            }
+            guard let id = resolvedId else { continue }
+
+            guard let locRange = line.range(of: "mSubtypeLocale=") else { continue }
             let locSub = line[locRange.upperBound...]
             let locTokens = locSub.components(separatedBy: " ")
             guard let locStr = locTokens.first, !locStr.isEmpty else { continue }
@@ -105,6 +121,19 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
             }
         }
         return map
+    }
+
+    /// Parses `mCurrentSubtype=android.view.inputmethod.InputMethodSubtype@9442b7f9` into signed 32-bit hashCode (`-1807566855`).
+    public static func parseCurrentSubtype(from output: String) -> Int? {
+        for line in output.components(separatedBy: .newlines) {
+            guard let markerRange = line.range(of: "mCurrentSubtype="),
+                  let atRange = line[markerRange.upperBound...].range(of: "@") else { continue }
+            let hexPart = line[atRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            let hexToken = hexPart.components(separatedBy: CharacterSet.alphanumerics.inverted).first ?? ""
+            guard !hexToken.isEmpty, let raw = UInt32(hexToken, radix: 16) else { continue }
+            return Int(Int32(bitPattern: raw))
+        }
+        return nil
     }
     
     // MARK: - Current Mac Language Detection (Must be called on main thread for Carbon TIS thread-safety)
@@ -158,20 +187,57 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
             }
         }
         
-        Task {
-            if let targetSubtype = self.languageToSubtypeMap[currentLang] {
-                // Apply exact subtype to Android InputMethodManager
-                _ = try? await ADBService.shared.execute(
-                    arguments: ["-s", serial, "shell", "settings put secure selected_input_method_subtype \(targetSubtype)"],
-                    timeoutSeconds: 2.0
-                )
-                
-                // If mirroring is active, send KEYCODE_LANGUAGE_SWITCH (204) to refresh active IME
-                if ScrcpyClient.shared.isConnected {
-                    ScrcpyClient.shared.sendKeycode(204)
+        syncTask?.cancel()
+        syncTask = Task {
+            var (targetSubtype, mapCount) = mapLock.withLock {
+                (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
+            }
+
+            if targetSubtype == nil {
+                await self.refreshDeviceSubtypes(serial: serial)
+                (targetSubtype, mapCount) = mapLock.withLock {
+                    (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
                 }
-            } else {
-                // Universal fallback: send KEYCODE_LANGUAGE_SWITCH
+            }
+
+            guard !Task.isCancelled else { return }
+
+            if let targetSubtype = targetSubtype {
+                // Verify Android's actual live subtype before toggling so we never desync or toggle away from a matching layout
+                let currentOut = (try? await ADBService.shared.execute(
+                    arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
+                    timeoutSeconds: 1.5
+                )) ?? ""
+                if let currentAndroidSubtype = Self.parseCurrentSubtype(from: currentOut),
+                   currentAndroidSubtype == targetSubtype {
+                    return
+                }
+
+                let maxAttempts = max(1, min(mapCount, 5))
+                for _ in 0..<maxAttempts {
+                    guard !Task.isCancelled else { return }
+                    if ScrcpyClient.shared.isConnected {
+                        ScrcpyClient.shared.sendKeycode(204)
+                    } else {
+                        _ = try? await ADBService.shared.execute(
+                            arguments: ["-s", serial, "shell", "input keyevent 204"],
+                            timeoutSeconds: 2.0
+                        )
+                    }
+                    try? await Task.sleep(nanoseconds: 90_000_000)
+                    guard !Task.isCancelled else { return }
+
+                    let checkOut = (try? await ADBService.shared.execute(
+                        arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
+                        timeoutSeconds: 1.5
+                    )) ?? ""
+                    if let updatedSubtype = Self.parseCurrentSubtype(from: checkOut),
+                       updatedSubtype == targetSubtype {
+                        break
+                    }
+                }
+            } else if !force {
+                // Universal fallback only on explicit user switch when subtype map is unavailable
                 if ScrcpyClient.shared.isConnected {
                     ScrcpyClient.shared.sendKeycode(204)
                 } else {

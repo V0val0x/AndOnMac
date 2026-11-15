@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import CoreVideo
 import VideoToolbox
+import os
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
@@ -188,15 +189,25 @@ public final class ScrcpyDisplayNSView: NSView {
     
     public func bindFrameCallback() {
         let renderer = self.metalRenderer
+        let firstFrameFlag = OSAllocatedUnfairLock(initialState: false)
+
         ScrcpyClient.shared.onFrameDecoded = { [weak self, weak renderer] pixelBuffer in
             if let renderer = renderer {
                 renderer.submit(pixelBuffer: pixelBuffer)
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    self.hasRenderedFrame = true
-                    if self.displayLink == nil {
-                        self.ensureDisplayLink()
-                        renderer.renderLatestFrameIfAvailable()
+                let shouldNotify = firstFrameFlag.withLock { notified in
+                    if notified { return false }
+                    notified = true
+                    return true
+                }
+
+                if shouldNotify {
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        self.hasRenderedFrame = true
+                        if self.displayLink == nil {
+                            self.ensureDisplayLink()
+                            renderer.renderLatestFrameIfAvailable()
+                        }
                     }
                 }
                 return
@@ -210,14 +221,18 @@ public final class ScrcpyDisplayNSView: NSView {
                 }
             }
         }
-        ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
-            DispatchQueue.main.async {
-                guard let self = self, self.metalRenderer == nil else { return }
-                self.renderCGImage(cgImage)
+        if renderer == nil {
+            ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
+                DispatchQueue.main.async {
+                    guard let self = self, self.metalRenderer == nil else { return }
+                    self.renderCGImage(cgImage)
+                }
             }
-        }
-        if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage, metalRenderer == nil {
-            renderCGImage(cached)
+            if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
+                renderCGImage(cached)
+            }
+        } else {
+            ScrcpyClient.shared.onFrameImageDecoded = nil
         }
     }
     

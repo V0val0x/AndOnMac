@@ -139,6 +139,13 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(map["en"], 1594443099)
         XCTAssertEqual(map["ru"], -1807566855)
         XCTAssertEqual(map["de"], 979167277)
+
+        let currentSubtypeOutput = "      mCurrentSubtype=android.view.inputmethod.InputMethodSubtype@9442b7f9"
+        XCTAssertEqual(KeyboardLanguageSyncService.parseCurrentSubtype(from: currentSubtypeOutput), -1807566855)
+        XCTAssertEqual(
+            KeyboardLanguageSyncService.parseSubtypes(from: "mSubtypeId=0 mSubtypeLocale=fr_FR mSubtypeHashCode=-123456")["fr"],
+            -123456
+        )
     }
     
     @MainActor
