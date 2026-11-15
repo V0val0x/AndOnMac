@@ -35,6 +35,19 @@ jobs:
           which scrcpy || brew install scrcpy
           which adb || brew install android-platform-tools
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build & Test Android Shadow Daemon
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/platforms" ]; then
+            chmod +x android-daemon/gradlew android-daemon/scripts/*.sh
+            ./android-daemon/scripts/build-dex.sh
+          fi
+
       - name: Run Test Suite
         run: |
           swift test -v

@@ -653,6 +653,7 @@ public struct AgenticStatusToastView: View {
                     .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
                     .lineLimit(1)
+                    .contentTransition(.identity)
 
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
@@ -660,8 +661,10 @@ public struct AgenticStatusToastView: View {
                         .foregroundColor(.white.opacity(0.72))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .contentTransition(.identity)
                 }
             }
+            .transaction { $0.animation = nil }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
@@ -741,8 +744,7 @@ public struct AgenticHUDLayer: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(AndMotion.hudSpring, value: viewModel.toastTitle)
-        .animation(AndMotion.hudSpring, value: viewModel.toastPhase)
+        .animation(AndMotion.hudSpring, value: viewModel.toastPhase != .idle)
         .allowsHitTesting(false)
     }
 }

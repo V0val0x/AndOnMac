@@ -208,20 +208,12 @@ public struct PhotoTransferDrawerView: View {
         }
         .frame(width: 290)
         .background(
-            RoundedRectangle(cornerRadius: AndRadius.card, style: .continuous)
-                .fill(.ultraThinMaterial)
+            VibrancyBackdrop(material: .hudWindow, blendingMode: .behindWindow, cornerRadius: 16)
                 .overlay(
-                    RoundedRectangle(cornerRadius: AndRadius.card, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.24), Color.white.opacity(0.05)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.75
-                        )
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
                 )
-                .shadow(color: Color.black.opacity(0.28), radius: 16, x: -4, y: 6)
+                .shadow(color: Color.black.opacity(0.32), radius: 16, x: -5, y: 5)
                 .makeWindowDraggable()
         )
         .onAppear {

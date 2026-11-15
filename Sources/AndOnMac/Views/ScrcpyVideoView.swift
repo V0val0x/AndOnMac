@@ -5,6 +5,46 @@ import VideoToolbox
 import os
 import AndroidShadowGraphKit
 
+private final class FrameRenderCoalescer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pendingImage: CGImage?
+    private var isScheduled = false
+    private weak var target: ScrcpyDisplayNSView?
+
+    init(target: ScrcpyDisplayNSView) {
+        self.target = target
+    }
+
+    func enqueue(_ image: CGImage) {
+        lock.lock()
+        pendingImage = image
+        let shouldSchedule = !isScheduled
+        if shouldSchedule {
+            isScheduled = true
+        }
+        lock.unlock()
+
+        guard shouldSchedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.flushOnMain()
+        }
+    }
+
+    private func flushOnMain() {
+        lock.lock()
+        let nextImage = pendingImage
+        pendingImage = nil
+        isScheduled = false
+        lock.unlock()
+
+        if let nextImage = nextImage {
+            MainActor.assumeIsolated {
+                target?.renderCGImage(nextImage)
+            }
+        }
+    }
+}
+
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
     public var screenClipRadius: CGFloat = 24
@@ -13,6 +53,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     public var onHomeGestureTriggered: (() -> Void)?
+    public var onHomeBarDragChanged: ((_ offset: CGFloat, _ isDragging: Bool) -> Void)?
     
     public init(
         serial: String?,
@@ -21,7 +62,8 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         inputHeight: Int? = nil,
         onFileDrop: (([URL]) -> Void)? = nil,
         onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil,
-        onHomeGestureTriggered: (() -> Void)? = nil
+        onHomeGestureTriggered: (() -> Void)? = nil,
+        onHomeBarDragChanged: ((_ offset: CGFloat, _ isDragging: Bool) -> Void)? = nil
     ) {
         self.serial = serial
         self.screenClipRadius = screenClipRadius
@@ -30,6 +72,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         self.onFileDrop = onFileDrop
         self.onHoverZonesChanged = onHoverZonesChanged
         self.onHomeGestureTriggered = onHomeGestureTriggered
+        self.onHomeBarDragChanged = onHomeBarDragChanged
     }
     
     public func makeNSView(context: Context) -> ScrcpyDisplayNSView {
@@ -41,6 +84,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         view.onFileDrop = onFileDrop
         view.onHoverZonesChanged = onHoverZonesChanged
         view.onHomeGestureTriggered = onHomeGestureTriggered
+        view.onHomeBarDragChanged = onHomeBarDragChanged
         return view
     }
     
@@ -52,11 +96,160 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
         nsView.onHomeGestureTriggered = onHomeGestureTriggered
-        nsView.bindFrameCallback()
+        nsView.onHomeBarDragChanged = onHomeBarDragChanged
+        if !nsView.hasBoundCallback {
+            nsView.bindFrameCallback()
+        }
     }
 
     public static func dismantleNSView(_ nsView: ScrcpyDisplayNSView, coordinator: ()) {
         nsView.teardown()
+    }
+}
+
+/// Shared trackpad two-finger swipe-up state machine for both the bottom Home bar capsule and the bottom edge of the screen.
+/// Distinguishes a quick upward flick (Home on finger lift) from a pause/hold or tall swipe (App Switcher).
+@MainActor
+public final class BottomTrackpadSwipeTracker {
+    public var onVisualDragOffset: ((_ offset: CGFloat, _ isDragging: Bool) -> Void)?
+    public var onHomeTriggered: (() -> Void)?
+    public var onAppSwitcherTriggered: (() -> Void)?
+
+    private var accumulatedUp: CGFloat = 0
+    private var accumulatedFingerX: CGFloat = 0
+    private var hasTriggeredAction: Bool = false
+    private var holdTimer: DispatchWorkItem?
+    private var idleFinalizeTimer: DispatchWorkItem?
+
+    public init() {}
+
+    public func seed(upwardDelta: CGFloat, fingerDeltaX: CGFloat) {
+        reset()
+        accumulatedUp = upwardDelta
+        accumulatedFingerX = fingerDeltaX
+    }
+
+    public func process(
+        upwardDelta: CGFloat,
+        fingerDeltaX: CGFloat,
+        phase: NSEvent.Phase,
+        momentumPhase: NSEvent.Phase
+    ) {
+        // When macOS transitions into momentum, user fingers have lifted: finalize before discarding inertia
+        guard momentumPhase == [] else {
+            finishIfNeeded()
+            reset()
+            return
+        }
+
+        switch phase {
+        case .mayBegin:
+            return
+        case .began:
+            reset()
+            accumulate(upwardDelta: upwardDelta, fingerDeltaX: fingerDeltaX)
+        case .changed, []:
+            accumulate(upwardDelta: upwardDelta, fingerDeltaX: fingerDeltaX)
+            if !hasTriggeredAction {
+                onVisualDragOffset?(-min(68, max(0, accumulatedUp * 0.65)), true)
+            }
+            if !hasTriggeredAction && ScrcpyDisplayNSView.shouldTriggerScrollAppSwitcher(
+                startNormalizedY: 0.96,
+                accumulatedUpwardDelta: accumulatedUp,
+                horizontalDelta: accumulatedFingerX
+            ) {
+                fireAppSwitcher()
+                return
+            }
+            if !hasTriggeredAction && ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.96,
+                accumulatedUpwardDelta: accumulatedUp,
+                horizontalDelta: accumulatedFingerX
+            ) {
+                if abs(upwardDelta) >= 2.2 || holdTimer == nil {
+                    scheduleHoldForAppSwitcher()
+                }
+            }
+            if phase == [] {
+                scheduleIdleFinalize()
+            }
+        case .ended, .cancelled:
+            finishIfNeeded()
+            reset()
+        default:
+            break
+        }
+    }
+
+    public func reset() {
+        holdTimer?.cancel()
+        holdTimer = nil
+        idleFinalizeTimer?.cancel()
+        idleFinalizeTimer = nil
+        accumulatedUp = 0
+        accumulatedFingerX = 0
+        hasTriggeredAction = false
+    }
+
+    private func accumulate(upwardDelta: CGFloat, fingerDeltaX: CGFloat) {
+        accumulatedUp += upwardDelta
+        accumulatedFingerX += fingerDeltaX
+    }
+
+    private func scheduleHoldForAppSwitcher() {
+        holdTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.hasTriggeredAction else { return }
+            if ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.96,
+                accumulatedUpwardDelta: self.accumulatedUp,
+                horizontalDelta: self.accumulatedFingerX
+            ) {
+                self.fireAppSwitcher()
+            }
+        }
+        holdTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.21, execute: work)
+    }
+
+    private func scheduleIdleFinalize() {
+        idleFinalizeTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.finishIfNeeded()
+            self.reset()
+        }
+        idleFinalizeTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+    }
+
+    private func fireAppSwitcher() {
+        hasTriggeredAction = true
+        holdTimer?.cancel()
+        holdTimer = nil
+        idleFinalizeTimer?.cancel()
+        idleFinalizeTimer = nil
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        onVisualDragOffset?(0, false)
+        onAppSwitcherTriggered?()
+    }
+
+    private func finishIfNeeded() {
+        holdTimer?.cancel()
+        holdTimer = nil
+        idleFinalizeTimer?.cancel()
+        idleFinalizeTimer = nil
+        onVisualDragOffset?(0, false)
+        guard !hasTriggeredAction else { return }
+        if ScrcpyDisplayNSView.shouldTriggerScrollHome(
+            startNormalizedY: 0.96,
+            accumulatedUpwardDelta: accumulatedUp,
+            horizontalDelta: accumulatedFingerX
+        ) {
+            hasTriggeredAction = true
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            onHomeTriggered?()
+        }
     }
 }
 
@@ -67,6 +260,7 @@ public final class ScrcpyDisplayNSView: NSView {
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     public var onHomeGestureTriggered: (() -> Void)?
+    public var onHomeBarDragChanged: ((_ offset: CGFloat, _ isDragging: Bool) -> Void)?
     /// Testability hooks for ShadowGraph action attribution & recording without hitting a live daemon.
     public var onRecordAction: ((AttributedUIAction) -> Void)?
     public var shadowIndexProvider: (() async -> ShadowTreeIndex?)?
@@ -82,20 +276,53 @@ public final class ScrcpyDisplayNSView: NSView {
     private var displayLink: CADisplayLink?
     private var occlusionObserver: NSObjectProtocol?
     public private(set) var hasRenderedFrame: Bool = false
+    public private(set) var hasBoundCallback: Bool = false
+    private lazy var frameCoalescer = FrameRenderCoalescer(target: self)
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
     private var touchStartTime: TimeInterval = 0
     private var pendingTapAction: AttributedUIAction?
     private var pendingTapResolutionTask: Task<AttributedUIAction, Never>?
+    private var lastSignificantDragMoveTime: TimeInterval = 0
+    private var lastSignificantDragPoint: CGPoint = .zero
+    private var lastReportedTopHover: Bool = false
+    private var lastReportedBottomHover: Bool = false
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
     private var trackpadPanStartNormalized: CGPoint?
     private var trackpadPanStartTime: TimeInterval = 0
-    private var isBottomScrollHomeTracking: Bool = false
-    private var bottomScrollAccumulatedUp: CGFloat = 0
-    private var bottomScrollAccumulatedX: CGFloat = 0
-    private var bottomScrollTriggered: Bool = false
-    private var bottomScrollAppSwitcherTriggered: Bool = false
+    private enum TrackpadScrollMode {
+        case none
+        case undecidedEdge
+        case bottomHomeSwitcher
+        case edgeAction
+        case pan
+    }
+    private var trackpadScrollMode: TrackpadScrollMode = .none
+    private var trackpadEdgeStartNormalized: CGPoint = .zero
+    private var trackpadEdgeAccumulatedUp: CGFloat = 0
+    private var trackpadEdgeAccumulatedFingerX: CGFloat = 0
+    private var trackpadEdgeTriggered: Bool = false
+    private lazy var bottomTrackpadTracker: BottomTrackpadSwipeTracker = {
+        let tracker = BottomTrackpadSwipeTracker()
+        tracker.onVisualDragOffset = { [weak self] offset, active in
+            DispatchQueue.main.async {
+                self?.onHomeBarDragChanged?(offset, active)
+            }
+        }
+        tracker.onHomeTriggered = { [weak self] in
+            ScrcpyClient.shared.sendKeycode(3)
+            self?.recordKeyAction("HOME")
+            DispatchQueue.main.async {
+                self?.onHomeGestureTriggered?()
+            }
+        }
+        tracker.onAppSwitcherTriggered = { [weak self] in
+            ScrcpyClient.shared.triggerAppSwitch()
+            self?.recordKeyAction("RECENTS")
+        }
+        return tracker
+    }()
     private var isPinching: Bool = false
     private var pinchCenter: CGPoint = CGPoint(x: 0.5, y: 0.5)
     private var pinchSpread: CGFloat = 0.12
@@ -107,8 +334,25 @@ public final class ScrcpyDisplayNSView: NSView {
         case notifications
     }
 
+    public enum TrackpadEdgeIntent: Equatable, Sendable {
+        case undecided
+        case bottomHomeSwitcher
+        case edgeGesture
+        case pan
+    }
+
+    /// Converts Cocoa `scrollingDeltaY` into physical trackpad finger-upward delta regardless of Natural Scrolling setting.
+    public static func upwardTrackpadDelta(scrollingDeltaY: CGFloat, isDirectionInverted: Bool) -> CGFloat {
+        isDirectionInverted ? -scrollingDeltaY : scrollingDeltaY
+    }
+
+    /// Converts Cocoa `scrollingDeltaX` into physical trackpad finger-rightward delta regardless of Natural Scrolling setting.
+    public static func horizontalTrackpadFingerDelta(scrollingDeltaX: CGFloat, isDirectionInverted: Bool) -> CGFloat {
+        isDirectionInverted ? scrollingDeltaX : -scrollingDeltaX
+    }
+
     /// Detects Android smartphone edge gestures (edge-back, bottom-home, bottom-recents, top-notifications).
-    public static func detectEdgeGesture(startNormalized: CGPoint, endNormalized: CGPoint) -> SmartphoneEdgeGesture? {
+    public static func detectEdgeGesture(startNormalized: CGPoint, endNormalized: CGPoint, held: Bool = false) -> SmartphoneEdgeGesture? {
         let dx = endNormalized.x - startNormalized.x
         let dy = endNormalized.y - startNormalized.y
 
@@ -120,12 +364,54 @@ public final class ScrcpyDisplayNSView: NSView {
         if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
             return .back
         }
-        // Bottom edge swipe up -> Home (normal swipe) or App Switcher (tall swipe > 50% screen)
-        if startNormalized.y >= 0.90, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
-            return dy <= -0.50 ? .appSwitcher : .home
+        // Bottom edge swipe up -> Home (quick/short) or App Switcher (tall swipe >= 36% OR hold >= 0.20s at >= 14%)
+        if startNormalized.y >= 0.85, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
+            return (dy <= -0.36 || (held && dy <= -0.14)) ? .appSwitcher : .home
         }
         // Top edge swipe down -> Notification Shade
         if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {
+            return .notifications
+        }
+        return nil
+    }
+
+    /// Classifies initial two-finger trackpad scroll near any screen edge before committing to edge gesture vs normal scrolling.
+    public static func classifyTrackpadEdgeIntent(
+        startNormalized: CGPoint,
+        accumulatedUpwardDelta: CGFloat,
+        accumulatedFingerX: CGFloat
+    ) -> TrackpadEdgeIntent {
+        guard hypot(accumulatedUpwardDelta, accumulatedFingerX) >= 5.0 else {
+            return .undecided
+        }
+        if startNormalized.y >= 0.85, accumulatedUpwardDelta > abs(accumulatedFingerX) * 1.15 {
+            return .bottomHomeSwitcher
+        }
+        if startNormalized.x <= 0.08, accumulatedFingerX > abs(accumulatedUpwardDelta) * 1.15 {
+            return .edgeGesture
+        }
+        if startNormalized.x >= 0.92, -accumulatedFingerX > abs(accumulatedUpwardDelta) * 1.15 {
+            return .edgeGesture
+        }
+        if startNormalized.y <= 0.08, -accumulatedUpwardDelta > abs(accumulatedFingerX) * 1.15 {
+            return .edgeGesture
+        }
+        return .pan
+    }
+
+    /// Detects side-edge Back or top-edge Notifications from a trackpad two-finger scroll.
+    public static func detectTrackpadEdgeGesture(
+        startNormalized: CGPoint,
+        accumulatedUpwardDelta: CGFloat,
+        accumulatedFingerX: CGFloat
+    ) -> SmartphoneEdgeGesture? {
+        if startNormalized.x <= 0.08, accumulatedFingerX >= 20, accumulatedFingerX > abs(accumulatedUpwardDelta) * 1.2 {
+            return .back
+        }
+        if startNormalized.x >= 0.92, -accumulatedFingerX >= 20, -accumulatedFingerX > abs(accumulatedUpwardDelta) * 1.2 {
+            return .back
+        }
+        if startNormalized.y <= 0.08, -accumulatedUpwardDelta >= 22, -accumulatedUpwardDelta > abs(accumulatedFingerX) * 1.2 {
             return .notifications
         }
         return nil
@@ -138,7 +424,7 @@ public final class ScrcpyDisplayNSView: NSView {
         horizontalDelta: CGFloat
     ) -> Bool {
         guard startNormalizedY >= 0.85 else { return false }
-        return accumulatedUpwardDelta >= 22 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
+        return accumulatedUpwardDelta >= 18 && accumulatedUpwardDelta > abs(horizontalDelta) * 1.2
     }
 
     /// Detects whether a sustained two-finger trackpad upward scroll near the bottom edge should trigger App Switcher.
@@ -182,7 +468,6 @@ public final class ScrcpyDisplayNSView: NSView {
     private func setupView() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        layer?.cornerRadius = 38
         layer?.masksToBounds = true
         layer?.contentsGravity = .resizeAspect
 
@@ -260,7 +545,9 @@ public final class ScrcpyDisplayNSView: NSView {
     }
     
     public func bindFrameCallback() {
+        hasBoundCallback = true
         let renderer = self.metalRenderer
+        let coalescer = self.frameCoalescer
         let firstFrameFlag = OSAllocatedUnfairLock(initialState: false)
 
         ScrcpyClient.shared.onFrameDecoded = { [weak self, weak renderer] pixelBuffer in
@@ -294,11 +581,8 @@ public final class ScrcpyDisplayNSView: NSView {
             }
         }
         if renderer == nil {
-            ScrcpyClient.shared.onFrameImageDecoded = { [weak self] cgImage in
-                DispatchQueue.main.async {
-                    guard let self = self, self.metalRenderer == nil else { return }
-                    self.renderCGImage(cgImage)
-                }
+            ScrcpyClient.shared.onFrameImageDecoded = { [weak coalescer] cgImage in
+                coalescer?.enqueue(cgImage)
             }
             if !hasRenderedFrame, let cached = ScrcpyClient.shared.latestFrameImage {
                 renderCGImage(cached)
@@ -360,11 +644,19 @@ public final class ScrcpyDisplayNSView: NSView {
         let loc = convert(event.locationInWindow, from: nil)
         let isTop = loc.y >= 0 && loc.y <= 42
         let isBottom = loc.y >= bounds.height - 38 && loc.y <= bounds.height
-        onHoverZonesChanged?(isTop, isBottom)
+        if isTop != lastReportedTopHover || isBottom != lastReportedBottomHover {
+            lastReportedTopHover = isTop
+            lastReportedBottomHover = isBottom
+            onHoverZonesChanged?(isTop, isBottom)
+        }
     }
     
     override public func mouseExited(with event: NSEvent) {
-        onHoverZonesChanged?(false, false)
+        if lastReportedTopHover || lastReportedBottomHover {
+            lastReportedTopHover = false
+            lastReportedBottomHover = false
+            onHoverZonesChanged?(false, false)
+        }
     }
     
     private func currentVideoSize() -> (width: Int, height: Int) {
@@ -607,10 +899,12 @@ public final class ScrcpyDisplayNSView: NSView {
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let loc = convert(event.locationInWindow, from: nil)
+        let vRect = videoRect()
+        let inBottomEdgeExtension = loc.y >= vRect.maxY - 2 && loc.y <= bounds.height && loc.x >= vRect.minX - 10 && loc.x <= vRect.maxX + 10
         guard hasRenderedFrame,
               loc.y > 38,
-              let pt = normalizedPoint(from: event, allowClamping: false) else {
-            // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/letterbox margin moves the macOS window
+              let pt = normalizedPoint(from: event, allowClamping: inBottomEdgeExtension) else {
+            // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/side margin moves the macOS window
             isTrackingTouch = false
             cancelPendingTapResolution()
             window?.performDrag(with: event)
@@ -620,6 +914,8 @@ public final class ScrcpyDisplayNSView: NSView {
         let startPt = CGPoint(x: pt.x, y: pt.y)
         touchStartNormalized = startPt
         touchStartTime = event.timestamp
+        lastSignificantDragMoveTime = event.timestamp
+        lastSignificantDragPoint = startPt
         // Capture pre-click ShadowDOM node immediately before any touch-up triggers a UI transition
         startPendingTapResolution(atNormalized: startPt)
         // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
@@ -630,6 +926,11 @@ public final class ScrcpyDisplayNSView: NSView {
     
     override public func mouseDragged(with event: NSEvent) {
         guard isTrackingTouch, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+        let dist = hypot(pt.x - lastSignificantDragPoint.x, pt.y - lastSignificantDragPoint.y)
+        if dist >= 0.018 {
+            lastSignificantDragMoveTime = event.timestamp
+            lastSignificantDragPoint = CGPoint(x: pt.x, y: pt.y)
+        }
         ScrcpyClient.shared.sendTouchEvent(action: 2, normalizedX: pt.x, normalizedY: pt.y)
     }
     
@@ -638,6 +939,7 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = false
         let start = touchStartNormalized
         touchStartNormalized = nil
+        let held = (event.timestamp - lastSignificantDragMoveTime) >= 0.20
         guard let pt = normalizedPoint(from: event, allowClamping: true) else {
             cancelPendingTapResolution()
             return
@@ -645,14 +947,12 @@ public final class ScrcpyDisplayNSView: NSView {
         let endPt = CGPoint(x: pt.x, y: pt.y)
         let durationMs = max(50, min(5000, Int(((event.timestamp - touchStartTime) * 1000.0).rounded())))
 
-        if let start, var gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: endPt) {
-            // Swipe-up-and-hold (>= 250ms) from bottom opens App Switcher (native Android gesture behavior)
-            if gesture == .home && (event.timestamp - touchStartTime) >= 0.25 {
-                gesture = .appSwitcher
-            }
+        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: endPt, held: held) {
             cancelPendingTapResolution()
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
-            performEdgeGesture(gesture, startNormalized: start, endNormalized: endPt, durationMs: durationMs)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+                self?.performEdgeGesture(gesture, startNormalized: start, endNormalized: endPt, durationMs: durationMs)
+            }
             return
         }
 
@@ -673,9 +973,9 @@ public final class ScrcpyDisplayNSView: NSView {
 
     private func performEdgeGesture(
         _ gesture: SmartphoneEdgeGesture,
-        startNormalized: CGPoint,
-        endNormalized: CGPoint,
-        durationMs: Int
+        startNormalized: CGPoint? = nil,
+        endNormalized: CGPoint? = nil,
+        durationMs: Int = 250
     ) {
         switch gesture {
         case .back:
@@ -685,16 +985,25 @@ public final class ScrcpyDisplayNSView: NSView {
             ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
             recordKeyAction("HOME")
         case .appSwitcher:
-            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            ScrcpyClient.shared.triggerAppSwitch()
             recordKeyAction("RECENTS")
         case .notifications:
             ScrcpyClient.shared.expandNotificationsPanel()
-            recordSwipeAction(
-                startNormalized: startNormalized,
-                endNormalized: endNormalized,
-                durationMs: durationMs,
-                descriptionPrefix: "edge swipe Notifications"
-            )
+            if let startNormalized, let endNormalized {
+                recordSwipeAction(
+                    startNormalized: startNormalized,
+                    endNormalized: endNormalized,
+                    durationMs: durationMs,
+                    descriptionPrefix: "edge swipe Notifications"
+                )
+            } else if currentOrientedDisplaySize() != nil {
+                recordSwipeAction(
+                    startNormalized: CGPoint(x: 0.5, y: 0.02),
+                    endNormalized: CGPoint(x: 0.5, y: 0.65),
+                    durationMs: durationMs,
+                    descriptionPrefix: "edge swipe Notifications"
+                )
+            }
         }
     }
     
@@ -709,79 +1018,139 @@ public final class ScrcpyDisplayNSView: NSView {
         guard hasRenderedFrame, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
 
         if event.hasPreciseScrollingDeltas {
-            // Suppress macOS momentum inertia so lifting fingers stops scrolling cleanly instead of flinging pages
+            let upwardDelta = Self.upwardTrackpadDelta(
+                scrollingDeltaY: event.scrollingDeltaY,
+                isDirectionInverted: event.isDirectionInvertedFromDevice
+            )
+            let fingerDeltaX = Self.horizontalTrackpadFingerDelta(
+                scrollingDeltaX: event.scrollingDeltaX,
+                isDirectionInverted: event.isDirectionInvertedFromDevice
+            )
+
+            // Finalize bottom trackpad gesture or lift active pan touch when macOS enters momentum inertia
             guard event.momentumPhase == [] else {
                 if isTrackpadPanning {
                     finishTrackpadPan(atTimestamp: event.timestamp)
                 }
-                if isBottomScrollHomeTracking {
-                    isBottomScrollHomeTracking = false
-                    bottomScrollAccumulatedUp = 0
-                    bottomScrollAccumulatedX = 0
-                    bottomScrollTriggered = false
-                    bottomScrollAppSwitcherTriggered = false
+                if trackpadScrollMode == .bottomHomeSwitcher {
+                    bottomTrackpadTracker.process(
+                        upwardDelta: upwardDelta,
+                        fingerDeltaX: fingerDeltaX,
+                        phase: event.phase,
+                        momentumPhase: event.momentumPhase
+                    )
                 }
+                trackpadScrollMode = .none
+                trackpadEdgeAccumulatedUp = 0
+                trackpadEdgeAccumulatedFingerX = 0
+                trackpadEdgeTriggered = false
                 return
             }
 
-            let upwardDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+            if event.phase == .mayBegin {
+                return
+            }
 
-            if event.phase == .began || (!isTrackpadPanning && !isBottomScrollHomeTracking && (event.phase == .changed || event.phase == [])) {
-                if pt.y >= 0.85 {
-                    isBottomScrollHomeTracking = true
-                    bottomScrollAccumulatedUp = 0
-                    bottomScrollAccumulatedX = 0
-                    bottomScrollTriggered = false
-                    bottomScrollAppSwitcherTriggered = false
+            if event.phase == .began || trackpadScrollMode == .none {
+                let startPt = CGPoint(x: pt.x, y: pt.y)
+                let isNearAnyEdge = startPt.y >= 0.85 || startPt.x <= 0.08 || startPt.x >= 0.92 || startPt.y <= 0.08
+                if isNearAnyEdge {
+                    trackpadScrollMode = .undecidedEdge
+                    trackpadEdgeStartNormalized = startPt
+                    trackpadEdgeAccumulatedUp = 0
+                    trackpadEdgeAccumulatedFingerX = 0
+                    trackpadEdgeTriggered = false
+                } else {
+                    trackpadScrollMode = .pan
                 }
             }
 
-            if isBottomScrollHomeTracking {
-                switch event.phase {
-                case .began, .changed, []:
-                    bottomScrollAccumulatedUp += upwardDelta
-                    bottomScrollAccumulatedX += event.scrollingDeltaX
-                    if !bottomScrollTriggered && Self.shouldTriggerScrollHome(
-                        startNormalizedY: 0.90,
-                        accumulatedUpwardDelta: bottomScrollAccumulatedUp,
-                        horizontalDelta: bottomScrollAccumulatedX
-                    ) {
-                        bottomScrollTriggered = true
-                        ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
-                        recordKeyAction("HOME")
-                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-                        DispatchQueue.main.async { [weak self] in
-                            self?.onHomeGestureTriggered?()
-                        }
+            switch trackpadScrollMode {
+            case .undecidedEdge:
+                trackpadEdgeAccumulatedUp += upwardDelta
+                trackpadEdgeAccumulatedFingerX += fingerDeltaX
+                let intent = Self.classifyTrackpadEdgeIntent(
+                    startNormalized: trackpadEdgeStartNormalized,
+                    accumulatedUpwardDelta: trackpadEdgeAccumulatedUp,
+                    accumulatedFingerX: trackpadEdgeAccumulatedFingerX
+                )
+                switch intent {
+                case .undecided:
+                    if event.phase == .ended || event.phase == .cancelled {
+                        trackpadScrollMode = .none
                     }
-                    if !bottomScrollAppSwitcherTriggered && Self.shouldTriggerScrollAppSwitcher(
-                        startNormalizedY: 0.90,
-                        accumulatedUpwardDelta: bottomScrollAccumulatedUp,
-                        horizontalDelta: bottomScrollAccumulatedX
-                    ) {
-                        bottomScrollAppSwitcherTriggered = true
-                        ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
-                        recordKeyAction("RECENTS")
-                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    return
+                case .bottomHomeSwitcher:
+                    trackpadScrollMode = .bottomHomeSwitcher
+                    bottomTrackpadTracker.seed(upwardDelta: 0, fingerDeltaX: 0)
+                    bottomTrackpadTracker.process(
+                        upwardDelta: trackpadEdgeAccumulatedUp,
+                        fingerDeltaX: trackpadEdgeAccumulatedFingerX,
+                        phase: event.phase,
+                        momentumPhase: event.momentumPhase
+                    )
+                    if event.phase == .ended || event.phase == .cancelled {
+                        trackpadScrollMode = .none
                     }
-                case .ended, .cancelled:
-                    isBottomScrollHomeTracking = false
-                    bottomScrollAccumulatedUp = 0
-                    bottomScrollAccumulatedX = 0
-                    bottomScrollTriggered = false
-                    bottomScrollAppSwitcherTriggered = false
-                default:
-                    break
+                    return
+                case .edgeGesture:
+                    trackpadScrollMode = .edgeAction
+                    if let gesture = Self.detectTrackpadEdgeGesture(
+                        startNormalized: trackpadEdgeStartNormalized,
+                        accumulatedUpwardDelta: trackpadEdgeAccumulatedUp,
+                        accumulatedFingerX: trackpadEdgeAccumulatedFingerX
+                    ) {
+                        trackpadEdgeTriggered = true
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                        performEdgeGesture(gesture)
+                    }
+                    if event.phase == .ended || event.phase == .cancelled {
+                        trackpadScrollMode = .none
+                    }
+                    return
+                case .pan:
+                    trackpadScrollMode = .pan
+                }
+
+            case .bottomHomeSwitcher:
+                bottomTrackpadTracker.process(
+                    upwardDelta: upwardDelta,
+                    fingerDeltaX: fingerDeltaX,
+                    phase: event.phase,
+                    momentumPhase: event.momentumPhase
+                )
+                if event.phase == .ended || event.phase == .cancelled {
+                    trackpadScrollMode = .none
                 }
                 return
+
+            case .edgeAction:
+                trackpadEdgeAccumulatedUp += upwardDelta
+                trackpadEdgeAccumulatedFingerX += fingerDeltaX
+                if !trackpadEdgeTriggered,
+                   let gesture = Self.detectTrackpadEdgeGesture(
+                       startNormalized: trackpadEdgeStartNormalized,
+                       accumulatedUpwardDelta: trackpadEdgeAccumulatedUp,
+                       accumulatedFingerX: trackpadEdgeAccumulatedFingerX
+                   ) {
+                    trackpadEdgeTriggered = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    performEdgeGesture(gesture)
+                }
+                if event.phase == .ended || event.phase == .cancelled {
+                    trackpadScrollMode = .none
+                    trackpadEdgeTriggered = false
+                }
+                return
+
+            case .pan, .none:
+                break
             }
 
             let vSize = videoRect().size
             let delta = Self.trackpadDragDelta(scrollingDeltaX: event.scrollingDeltaX, scrollingDeltaY: event.scrollingDeltaY, viewSize: vSize)
 
             switch event.phase {
-            case .mayBegin:
-                return
             case .began:
                 isTrackpadPanning = true
                 trackpadPanPoint = CGPoint(x: max(0.08, min(0.92, pt.x)), y: max(0.08, min(0.92, pt.y)))
@@ -805,6 +1174,7 @@ public final class ScrcpyDisplayNSView: NSView {
                 if isTrackpadPanning {
                     finishTrackpadPan(atTimestamp: event.timestamp)
                 }
+                trackpadScrollMode = .none
             default:
                 break
             }
@@ -841,12 +1211,18 @@ public final class ScrcpyDisplayNSView: NSView {
     override public func swipe(with event: NSEvent) {
         guard hasRenderedFrame else { return }
         if abs(event.deltaX) > abs(event.deltaY) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
             ScrcpyClient.shared.sendKeycode(4) // 3-finger swipe left/right -> Back
             recordKeyAction("BACK")
         } else if event.deltaY > 0 {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
             ScrcpyClient.shared.sendKeycode(3) // 3-finger swipe up -> Home
             recordKeyAction("HOME")
+            DispatchQueue.main.async { [weak self] in
+                self?.onHomeGestureTriggered?()
+            }
         } else if event.deltaY < 0 {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
             ScrcpyClient.shared.expandNotificationsPanel() // 3-finger swipe down -> Notifications
             if currentOrientedDisplaySize() != nil {
                 recordSwipeAction(

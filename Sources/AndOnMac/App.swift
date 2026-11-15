@@ -122,14 +122,23 @@ struct AndOnMacApp: App {
                 
                 Menu(L10n.tr("Корпус и модель смартфона", "Phone Frame & Model", lang: appState.lang)) {
                     ForEach(PhoneFrameStyle.allCases) { style in
-                        Button(style.displayName) {
+                        Button {
                             appState.frameStyle = style
+                        } label: {
+                            if appState.frameStyle == style {
+                                Label(style.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(style.displayName)
+                            }
                         }
                     }
                     
                     Divider()
                     
-                    Toggle(L10n.tr("Фронтальная камера (Punch Hole)", "Front Camera (Punch Hole)", lang: appState.lang), isOn: $appState.showFrontCamera)
+                    Toggle(L10n.tr("Показывать рамку устройства", "Show Device Bezel", lang: appState.lang), isOn: $appState.showDeviceBezel)
+                    Toggle(L10n.tr("Показывать вырез камеры", "Show Camera Punch-hole", lang: appState.lang), isOn: $appState.showFrontCamera)
+                    Toggle(L10n.tr("Цвет корпуса под устройство", "Match Device Color", lang: appState.lang), isOn: $appState.matchDeviceColor)
+                    Toggle(L10n.tr("Адаптивная подсветка Ambilight", "Adaptive Ambilight Glow", lang: appState.lang), isOn: $appState.enableAmbilight)
                 }
 
                 Menu(L10n.tr("Язык / Language", "Language / Язык", lang: appState.lang)) {
@@ -190,6 +199,21 @@ private struct SettingsView: View {
 
     var body: some View {
         let lang = appState.lang
+        TabView {
+            generalTab(lang: lang)
+                .tabItem {
+                    Label(L10n.tr("Основные", "General", lang: lang), systemImage: "gearshape")
+                }
+
+            appearanceTab(lang: lang)
+                .tabItem {
+                    Label(L10n.tr("Оформление", "Appearance", lang: lang), systemImage: "paintbrush")
+                }
+        }
+        .frame(width: 490, height: 560)
+    }
+
+    private func generalTab(lang: AppLanguage) -> some View {
         Form {
             Section(L10n.tr("Язык интерфейса", "Interface Language", lang: lang)) {
                 Picker(L10n.tr("Язык", "Language", lang: lang), selection: $appState.appLanguage) {
@@ -205,7 +229,6 @@ private struct SettingsView: View {
                 Toggle(L10n.tr("Передавать звук на Mac", "Forward audio to Mac", lang: lang), isOn: $appState.forwardAudio)
                 Toggle(L10n.tr("Не давать телефону засыпать", "Keep phone awake", lang: lang), isOn: $appState.stayAwake)
                 Toggle(L10n.tr("Отправка по Enter (Shift+Enter — новая строка)", "Send on Enter (Shift+Enter for newline)", lang: lang), isOn: $appState.sendOnEnter)
-                Toggle(L10n.tr("Фронтальная камера (Punch Hole)", "Front Camera (Punch Hole)", lang: lang), isOn: $appState.showFrontCamera)
                 Toggle(L10n.tr("Фоновый Continuity Bridge (текст и фото)", "Background Continuity Bridge (Text & Images)", lang: lang), isOn: $appState.continuityBridgeEnabled)
                     .onChange(of: appState.continuityBridgeEnabled) { _, _ in
                         appState.syncContinuityBridgeState()
@@ -315,6 +338,38 @@ private struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 470, height: 540)
+    }
+
+    private func appearanceTab(lang: AppLanguage) -> some View {
+        let activeSpec = appState.effectiveHardwareSpec
+        return Form {
+            Section(L10n.tr("Рамка и оптика устройства", "Device Frame & Optics", lang: lang)) {
+                Toggle(L10n.tr("Показывать рамку устройства", "Show Device Bezel", lang: lang), isOn: $appState.showDeviceBezel)
+                Toggle(L10n.tr("Показывать вырез фронтальной камеры", "Show Camera Punch-hole", lang: lang), isOn: $appState.showFrontCamera)
+                Toggle(L10n.tr("Подбирать цвет корпуса под устройство", "Match Device Color", lang: lang), isOn: $appState.matchDeviceColor)
+                Toggle(L10n.tr("Адаптивная подсветка Ambilight", "Adaptive Ambilight Glow", lang: lang), isOn: $appState.enableAmbilight)
+            }
+
+            Section(L10n.tr("Масштаб и модель корпуса", "Window Preset & Hardware Profile", lang: lang)) {
+                Picker(L10n.tr("Размер окна", "Window Size Preset", lang: lang), selection: $appState.windowScale) {
+                    ForEach(PhoneWindowScale.allCases) { preset in
+                        Text(preset.rawValue).tag(preset)
+                    }
+                }
+
+                Picker(L10n.tr("Модель смартфона", "Device Frame Model", lang: lang), selection: $appState.frameStyle) {
+                    ForEach(PhoneFrameStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+
+                LabeledContent(L10n.tr("Активный профиль", "Active Profile", lang: lang)) {
+                    Text("\(activeSpec.displayName) • R\(Int(activeSpec.baseCornerRadius))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }

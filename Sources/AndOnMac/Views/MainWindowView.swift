@@ -49,8 +49,7 @@ public struct MainWindowView: View {
                     )
             }
         }
-        .padding(AndSpacing.xl)
-        .frame(width: targetWindowWidth, height: targetWindowHeight, alignment: .topLeading)
+        .padding(16)
         .onAppear {
             windowWideForDrawer = appState.showPhotoDrawer
             drawerExpanded = appState.showPhotoDrawer
@@ -80,10 +79,16 @@ public struct MainWindowView: View {
             }
         }
         .background(
-            WindowConfigurator { window in
+            WindowConfigurator(
+                showDrawer: windowWideForDrawer,
+                scale: appState.windowScale,
+                spec: appState.effectiveHardwareSpec,
+                isLandscape: appState.isLandscape,
+                aspect: appState.effectiveAspect
+            ) { window in
                 window.isOpaque = false
                 window.backgroundColor = .clear
-                window.hasShadow = false // PhoneMirrorFrameView provides realistic shadow
+                window.hasShadow = false // DeviceFrameRenderer provides realistic shadow & Ambilight
                 window.titlebarAppearsTransparent = true
                 window.titleVisibility = .hidden
                 window.isMovableByWindowBackground = true
@@ -97,13 +102,22 @@ public struct MainWindowView: View {
     }
 }
 
-// Configures the parent NSWindow to be transparent and floating;
-// sizing is handled natively by .windowResizability(.contentSize) + finite frame.
+// Configures the parent NSWindow to be transparent, floating, and smoothly animated between fixed presets & rotations
 private struct WindowConfigurator: NSViewRepresentable {
+    let showDrawer: Bool
+    let scale: PhoneWindowScale
+    let spec: DeviceHardwareSpec
+    let isLandscape: Bool
+    let aspect: CGFloat
     let configure: (NSWindow) -> Void
     var onWillClose: (() -> Void)? = nil
-
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
     final class Coordinator {
+        weak var configuredWindow: NSWindow?
         var observedWindow: NSWindow?
         var closeObserver: NSObjectProtocol?
 
@@ -113,25 +127,65 @@ private struct WindowConfigurator: NSViewRepresentable {
             }
         }
     }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
+    
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
-                configure(window)
+                if context.coordinator.configuredWindow !== window {
+                    configure(window)
+                    context.coordinator.configuredWindow = window
+                }
                 attachCloseObserver(to: window, coordinator: context.coordinator)
+                updateWindowSize(window: window, animated: false)
             }
         }
         return view
     }
     
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            if let window = nsView.window {
+        if let window = nsView.window {
+            if context.coordinator.configuredWindow !== window {
                 configure(window)
-                attachCloseObserver(to: window, coordinator: context.coordinator)
+                context.coordinator.configuredWindow = window
+            }
+            attachCloseObserver(to: window, coordinator: context.coordinator)
+            updateWindowSize(window: window, animated: true)
+        }
+    }
+    
+    private func updateWindowSize(window: NSWindow, animated: Bool) {
+        let mult = spec.baseWidthMultiplier
+        let phoneWidth: CGFloat
+        let phoneHeight: CGFloat
+        if isLandscape {
+            let h = 320.0 * scale.multiplier
+            phoneWidth = h * aspect * mult
+            phoneHeight = h
+        } else {
+            phoneWidth = 320.0 * scale.multiplier * mult
+            phoneHeight = (320.0 * aspect) * scale.multiplier
+        }
+        
+        let outerPadding: CGFloat = 32 // 16pt on each side so compact Ambilight glow never clips
+        let targetWidth = (phoneWidth + outerPadding) + (showDrawer ? 290 + 16 : 0)
+        let targetHeight = phoneHeight + outerPadding
+        
+        let currentFrame = window.frame
+        let deltaW = targetWidth - currentFrame.width
+        let deltaH = targetHeight - currentFrame.height
+        
+        if abs(deltaW) > 2 || abs(deltaH) > 2 {
+            let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.origin.y - deltaH)
+            let newFrame = NSRect(origin: newOrigin, size: NSSize(width: targetWidth, height: targetHeight))
+            if animated {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.4
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.12, 0.36, 1.0)
+                    window.animator().setFrame(newFrame, display: true)
+                }
+            } else {
+                window.setFrame(newFrame, display: true, animate: false)
             }
         }
     }
@@ -159,14 +213,8 @@ public struct WindowDraggableModifier: ViewModifier {
     public init() {}
     
     public func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content
-                .background(WindowDragRepresentable())
-                .gesture(WindowDragGesture())
-        } else {
-            content
-                .background(WindowDragRepresentable())
-        }
+        content
+            .background(WindowDragRepresentable())
     }
 }
 
@@ -186,6 +234,21 @@ private final class WindowDragNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)
     }
+}
+
+public struct NonDraggableAreaRepresentable: NSViewRepresentable {
+    public init() {}
+
+    public func makeNSView(context: Context) -> NonDraggableNSView {
+        NonDraggableNSView()
+    }
+
+    public func updateNSView(_ nsView: NonDraggableNSView, context: Context) {}
+}
+
+public final class NonDraggableNSView: NSView {
+    override public var mouseDownCanMoveWindow: Bool { false }
+    override public func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 public extension View {

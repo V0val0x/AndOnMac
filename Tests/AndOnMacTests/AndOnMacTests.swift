@@ -160,14 +160,14 @@ final class AndOnMacTests: XCTestCase {
         // Pixel
         let pixel = Device(id: "1", model: "Pixel 9 Pro", manufacturer: "Google")
         XCTAssertEqual(PhoneFrameStyle.detect(for: pixel), .pixel)
-        XCTAssertEqual(PhoneFrameStyle.pixel.cornerRadius, 28)
+        XCTAssertEqual(PhoneFrameStyle.pixel.cornerRadius, 44)
         XCTAssertTrue(PhoneFrameStyle.pixel.hasPunchHole)
         
         // Samsung Ultra
         let ultra1 = Device(id: "2", model: "SM-S928B", manufacturer: "Samsung") // S24 Ultra
         XCTAssertEqual(PhoneFrameStyle.detect(for: ultra1), .samsungUltra)
-        XCTAssertEqual(PhoneFrameStyle.samsungUltra.cornerRadius, 10) // Sharp signature Ultra corners
-        XCTAssertEqual(PhoneFrameStyle.samsungUltra.baseWidthMultiplier, 1.0)
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.cornerRadius, 12) // Sharp signature Ultra corners
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.baseWidthMultiplier, 1.03)
         
         let ultra2 = Device(id: "3", model: "Galaxy S25 Ultra", manufacturer: "Samsung")
         XCTAssertEqual(PhoneFrameStyle.detect(for: ultra2), .samsungUltra)
@@ -175,22 +175,22 @@ final class AndOnMacTests: XCTestCase {
         // Samsung Standard
         let s24 = Device(id: "4", model: "SM-S921B", manufacturer: "Samsung") // S24 Base
         XCTAssertEqual(PhoneFrameStyle.detect(for: s24), .samsung)
-        XCTAssertEqual(PhoneFrameStyle.samsung.cornerRadius, 24)
+        XCTAssertEqual(PhoneFrameStyle.samsung.cornerRadius, 36)
         
         // Xiaomi
         let xiaomi = Device(id: "5", model: "Xiaomi 14", manufacturer: "Xiaomi")
         XCTAssertEqual(PhoneFrameStyle.detect(for: xiaomi), .xiaomi)
-        XCTAssertEqual(PhoneFrameStyle.xiaomi.cornerRadius, 26)
+        XCTAssertEqual(PhoneFrameStyle.xiaomi.cornerRadius, 38)
         
         // Nothing Phone
         let nothing = Device(id: "6", model: "Phone (2)", manufacturer: "Nothing")
         XCTAssertEqual(PhoneFrameStyle.detect(for: nothing), .nothing)
-        XCTAssertEqual(PhoneFrameStyle.nothing.cornerRadius, 28)
+        XCTAssertEqual(PhoneFrameStyle.nothing.cornerRadius, 40)
         
         // OnePlus
         let oneplus = Device(id: "7", model: "CPH2581", manufacturer: "OnePlus")
         XCTAssertEqual(PhoneFrameStyle.detect(for: oneplus), .oneplus)
-        XCTAssertEqual(PhoneFrameStyle.oneplus.cornerRadius, 26)
+        XCTAssertEqual(PhoneFrameStyle.oneplus.cornerRadius, 38)
     }
     
     @MainActor
@@ -627,12 +627,39 @@ final class AndOnMacTests: XCTestCase {
             .appSwitcher
         )
         XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.72)),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.45)),
+            .appSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: false),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: true),
+            .appSwitcher
+        )
+        XCTAssertEqual(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), endNormalized: CGPoint(x: 0.5, y: 0.20)),
             .notifications
         )
         XCTAssertNil(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.5), endNormalized: CGPoint(x: 0.7, y: 0.5))
         )
+    }
+
+    func testHomeBarDragClassificationAndNonDraggableArea() {
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -5), .none)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -10), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -41), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -42), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -20, holdDuration: 0.22), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -90), .appSwitcher)
+        XCTAssertFalse(NonDraggableNSView().mouseDownCanMoveWindow)
+        XCTAssertFalse(HomeBarInteractiveNSView().mouseDownCanMoveWindow)
     }
 
     func testTrackpadDragAndMouseWheelClamping() {
@@ -667,6 +694,113 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(withHiddenBySize.map(\.name), ["DCIM", "archive.zip", "notes.txt", ".nomedia"])
     }
 
+    func testADBDeviceFingerprintParsing() {
+        let raw = """
+        model=Pixel 11 Pro
+        mfr=Google
+        vendor=google
+        vendor_model=Pixel 11 Pro
+        vendor_brand=google
+        vendor_device=mustang
+        color=obsidian
+        ver=17
+        """
+        let fp = ADBService.parseFingerprintOutput(raw)
+        XCTAssertEqual(fp.model, "Pixel 11 Pro")
+        XCTAssertEqual(fp.manufacturer, "Google")
+        XCTAssertEqual(fp.vendor, "google")
+        XCTAssertEqual(fp.codename, "mustang")
+        XCTAssertEqual(fp.colorHint, "obsidian")
+        XCTAssertEqual(fp.androidVersion, "17")
+    }
+
+    func testDeviceHardwareSpecsAndFallback() {
+        let pixel11Pro = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", vendor: "google")
+        let spec11Pro = DeviceHardwareSpec.resolve(for: pixel11Pro, override: .auto)
+        XCTAssertEqual(spec11Pro.id, "pixel_11_pro")
+        XCTAssertNotNil(spec11Pro.punchHole)
+
+        let pixel11 = Device(id: "p11", model: "Pixel 11", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel11, override: .auto).id, "pixel_11")
+
+        let pixel10a = Device(id: "p10a", model: "Pixel 10a", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel10a, override: .auto).id, "pixel_10a")
+
+        let pixel9 = Device(id: "p9", model: "Pixel 9", manufacturer: "Google")
+        let spec9 = DeviceHardwareSpec.resolve(for: pixel9, override: .auto)
+        XCTAssertEqual(spec9.id, "pixel_8_9_10")
+        XCTAssertEqual(spec9.punchHole?.normalizedCenterY ?? 0, 0.0258, accuracy: 0.0001)
+
+        let s25u = Device(id: "s25u", model: "SM-S938B", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s25u, override: .auto).id, "galaxy_s25_ultra")
+
+        let s24u = Device(id: "s24u", model: "SM-S928U", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s24u, override: .auto).id, "galaxy_s24_ultra")
+
+        let nothing = Device(id: "np2", model: "A065", manufacturer: "Nothing")
+        let npSpec = DeviceHardwareSpec.resolve(for: nothing, override: .auto)
+        XCTAssertEqual(npSpec.id, "nothing_phone_2")
+        XCTAssertTrue(npSpec.hasGlyphAccent)
+
+        let op12 = Device(id: "op12", model: "CPH2581", manufacturer: "OnePlus")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: op12, override: .auto).id, "oneplus_12")
+
+        // Unknown hardware falls back cleanly to Pro Display with no camera cutout
+        let unknown = Device(id: "unk", model: "Fairphone 5", manufacturer: "Fairphone")
+        let fallbackSpec = DeviceHardwareSpec.resolve(for: unknown, override: .auto)
+        XCTAssertEqual(fallbackSpec.id, "pro_display")
+        XCTAssertNil(fallbackSpec.punchHole)
+    }
+
+    func testPunchHoleCoordinatesAcrossScalesAndOrientations() {
+        let hole = DeviceHardwareSpec.pixel11Pro.punchHole!
+        let portrait100 = CGSize(width: 314, height: 698)
+        let portrait125 = CGSize(width: 392.5, height: 872.5)
+        let c100 = hole.resolvedCenter(in: portrait100, orientation: .portrait)
+        let c125 = hole.resolvedCenter(in: portrait125, orientation: .portrait)
+        XCTAssertEqual(c100.x, portrait100.width * 0.5, accuracy: 0.01)
+        XCTAssertEqual(c125.y / portrait125.height, c100.y / portrait100.height, accuracy: 0.0001)
+        XCTAssertGreaterThan(hole.resolvedRadius(in: portrait125), hole.resolvedRadius(in: portrait100))
+
+        // Landscape rotation moves portrait top camera cleanly onto left edge
+        let landscapeSize = CGSize(width: 698, height: 314)
+        let cLand = hole.resolvedCenter(in: landscapeSize, orientation: .landscape)
+        XCTAssertEqual(cLand.x, landscapeSize.width * hole.normalizedCenterY, accuracy: 0.01)
+        XCTAssertEqual(cLand.y, landscapeSize.height * 0.5, accuracy: 0.01)
+    }
+
+    func testDeviceChassisFinishAndMatchDeviceColorToggle() {
+        let porcelainPixel = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", deviceColorHint: "porcelain")
+        let spec = DeviceHardwareSpec.pixel11Pro
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: true), .porcelain)
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: false), .obsidian)
+    }
+
+    func testCoreAnimationEvenOddScreenMaskLayer() {
+        let layer = CoreAnimationDeviceMask.makeScreenMaskLayer(
+            size: CGSize(width: 314, height: 698),
+            cornerRadius: 42,
+            punchHoleCenter: CGPoint(x: 157, y: 16.4),
+            punchHoleRadius: 3.8
+        )
+        XCTAssertEqual(layer.fillRule, .evenOdd)
+        XCTAssertNotNil(layer.path)
+        XCTAssertEqual(layer.frame.size.width, 314, accuracy: 0.01)
+    }
+
+    func testAmbilightCoreImagePerimeterExtraction() {
+        let topBlue = CIImage(color: CIColor(red: 0.1, green: 0.3, blue: 0.9, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 50, width: 100, height: 50))
+        let bottomRed = CIImage(color: CIColor(red: 0.9, green: 0.15, blue: 0.1, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 0, width: 100, height: 50))
+        let composite = topBlue.composited(over: bottomRed)
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+
+        let palette = AmbilightEngine.extractPalette(from: composite, context: context)
+        XCTAssertGreaterThan(palette.top.b, palette.top.r)
+        XCTAssertGreaterThan(palette.bottom.r, palette.bottom.b)
+    }
+
     func testScrollHomeTriggerAtBottomEdge() {
         XCTAssertTrue(
             ScrcpyDisplayNSView.shouldTriggerScrollHome(
@@ -696,6 +830,84 @@ final class AndOnMacTests: XCTestCase {
                 horizontalDelta: 25
             )
         )
+    }
+
+    func testTrackpadFourEdgeGestureClassificationAndNaturalScrollingDeltas() {
+        // Natural Scrolling ON (inverted): sliding fingers UP gives negative scrollingDeltaY -> positive upwardDelta
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: -24, isDirectionInverted: true), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: 24, isDirectionInverted: false), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: 25, isDirectionInverted: true), 25)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: -25, isDirectionInverted: false), 25)
+
+        // Edge intents differentiate edge gesture vs normal scrolling near bottom/side edges
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: 10, accumulatedFingerX: 0),
+            .bottomHomeSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: -14, accumulatedFingerX: 0),
+            .pan
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.04, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: 12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: -12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -12, accumulatedFingerX: 0),
+            .edgeGesture
+        )
+
+        // Edge Back & Notifications triggers
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.03, y: 0.5), accumulatedUpwardDelta: 2, accumulatedFingerX: 24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: -2, accumulatedFingerX: -24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -26, accumulatedFingerX: 3),
+            .notifications
+        )
+    }
+
+    @MainActor
+    func testBottomTrackpadSwipeTrackerHomeVsAppSwitcher() async {
+        // 1. Quick upward flick fires Home ONLY on finger lift (.ended), never mid-gesture
+        var homeCount = 0
+        var appSwitchCount = 0
+        let tracker = BottomTrackpadSwipeTracker()
+        tracker.onHomeTriggered = { homeCount += 1 }
+        tracker.onAppSwitcherTriggered = { appSwitchCount += 1 }
+
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 24, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(homeCount, 0, "Must not fire Home prematurely during upward swipe before lift")
+        XCTAssertEqual(appSwitchCount, 0)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
+        XCTAssertEqual(appSwitchCount, 0)
+
+        // 2. Tall upward swipe fires App Switcher immediately without triggering Home
+        tracker.process(upwardDelta: 10, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 82, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(appSwitchCount, 1)
+        XCTAssertEqual(homeCount, 1)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1, "Must not fire Home after App Switcher already triggered")
+
+        // 3. Upward swipe + stationary pause (~0.25s) fires App Switcher without firing Home
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 22, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        try? await Task.sleep(nanoseconds: 280_000_000)
+        XCTAssertEqual(appSwitchCount, 2, "Pausing fingers during upward trackpad swipe should trigger App Switcher")
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
     }
 
     // MARK: - Security, Concurrency & Resource Safety Tests
@@ -2286,16 +2498,25 @@ final class AndOnMacTests: XCTestCase {
             $0.kind == .swipe && $0.targetDescription.hasPrefix("trackpad swipe")
         }), "Expected trackpad pan .swipe, got \(recorded)")
 
-        // 2. Bottom-edge upward scroll -> HOME keyevent
+        // 2. Bottom-edge upward flick (< 85) -> HOME keyevent; deep upward swipe (>= 85) -> RECENTS
         recorded.removeAll()
         let bottomLoc = CGPoint(x: 150, y: 30) // normalizedY = 1 - 30/600 = 0.95 >= 0.85
         view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .began, location: bottomLoc, timestamp: 2.0))
-        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 90, phase: .changed, location: bottomLoc, timestamp: 2.05))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 40, phase: .changed, location: bottomLoc, timestamp: 2.05))
         view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .ended, location: bottomLoc, timestamp: 2.1))
 
         XCTAssertTrue(recorded.contains(where: {
             $0.kind == .keyevent && $0.targetDescription == "HOME"
         }), "Expected bottom-scroll HOME keyevent, got \(recorded)")
+
+        recorded.removeAll()
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .began, location: bottomLoc, timestamp: 2.2))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 95, phase: .changed, location: bottomLoc, timestamp: 2.25))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .ended, location: bottomLoc, timestamp: 2.3))
+
+        XCTAssertTrue(recorded.contains(where: {
+            $0.kind == .keyevent && $0.targetDescription == "RECENTS"
+        }), "Expected deep bottom-scroll RECENTS keyevent, got \(recorded)")
 
         // 3. Three-finger swipes -> BACK, HOME, Notifications swipe
         recorded.removeAll()
