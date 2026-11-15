@@ -809,16 +809,17 @@ public struct WirelessPairingView: View {
     // MARK: - Tab 3: Saved Devices
     private var savedDevicesTab: some View {
         VStack(spacing: 10) {
+            routerIsolationBanner
             if appState.knownDevices.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray")
                         .font(.system(size: 28))
                         .foregroundColor(.white.opacity(0.3))
                         .padding(.top, 20)
-                    Text("Нет сохранённых устройств")
+                    Text(L10n.tr("Нет сохранённых устройств", "No saved devices", lang: appState.lang))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
-                    Text("Подключите телефон по Wi-Fi или кабелю, и он сохранится здесь.")
+                    Text(L10n.tr("Подключите телефон по Wi-Fi или кабелю, и он сохранится здесь.", "Connect a phone via Wi-Fi or USB cable and it will appear here.", lang: appState.lang))
                         .font(.system(size: 10))
                         .foregroundColor(.white.opacity(0.5))
                         .multilineTextAlignment(.center)
@@ -829,49 +830,67 @@ public struct WirelessPairingView: View {
                     ForEach(appState.knownDevices) { known in
                         let dynamicPort = DiscoveryService.shared.getConnectPort(for: known.ipAddress)
                         let effectivePort = dynamicPort ?? known.port
-                        HStack {
+                        HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(known.name)
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(.white)
-                                HStack(spacing: 4) {
-                                    Text("\(known.ipAddress):\(String(effectivePort))")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(.white.opacity(0.5))
+                                HStack(spacing: 5) {
+                                    Text(known.name)
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
                                     if dynamicPort != nil {
-                                        Text("• активен")
+                                        Text(L10n.tr("• активен", "• active", lang: appState.lang))
                                             .font(.system(size: 9, weight: .semibold))
                                             .foregroundColor(.green)
+                                            .fixedSize()
                                     }
                                 }
+                                Text("\(known.ipAddress):\(String(effectivePort))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.55))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                             }
                             
-                            Spacer()
+                            Spacer(minLength: 4)
                             
                             Button {
                                 Task {
                                     isProcessing = true
+                                    await DiscoveryService.shared.pollAdbMdns()
                                     let portToUse = DiscoveryService.shared.getConnectPort(for: known.ipAddress) ?? known.port
-                                    let success = await appState.connectWireless(host: known.ipAddress, port: portToUse)
+                                    var connectedEndpoint = "\(known.ipAddress):\(portToUse)"
+                                    var success = await appState.connectWireless(host: known.ipAddress, port: portToUse)
+                                    if !success && portToUse != 5555 {
+                                        if await appState.connectWireless(host: known.ipAddress, port: 5555) {
+                                            success = true
+                                            connectedEndpoint = "\(known.ipAddress):5555"
+                                        }
+                                    }
+                                    if !success {
+                                        await routerBypass.checkReachabilityIfNeeded(host: known.ipAddress, port: portToUse)
+                                    }
                                     isProcessing = false
                                     if success {
                                         isSuccess = true
-                                        resultMessage = "Подключено к \(known.name)!"
+                                        resultMessage = L10n.tr("Подключено к \(known.name) (\(connectedEndpoint))!", "Connected to \(known.name) (\(connectedEndpoint))!", lang: appState.lang)
                                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                                         closePairing()
                                     } else {
                                         isSuccess = false
-                                        resultMessage = "Не удалось подключиться к \(known.ipAddress):\(portToUse)"
+                                        resultMessage = routerBypass.isRouterIsolationDetected
+                                            ? L10n.tr("Сеть блокирует прямое подключение (\(known.ipAddress):\(portToUse)). Используйте Hotspot или Bluetooth PAN выше.", "Network blocks peer-to-peer traffic (\(known.ipAddress):\(portToUse)). Use Direct Hotspot or Bluetooth PAN above.", lang: appState.lang)
+                                            : L10n.tr("Не удалось подключиться к \(known.ipAddress):\(portToUse)", "Could not connect to \(known.ipAddress):\(portToUse)", lang: appState.lang)
                                     }
                                 }
                             } label: {
-                                Text("Подключить")
+                                Text(L10n.tr("Подключить", "Connect", lang: appState.lang))
                                     .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 5)
                                     .background(Color.blue)
                                     .foregroundColor(.white)
                                     .cornerRadius(6)
+                                    .fixedSize()
                             }
                             .buttonStyle(.plain)
                             
@@ -883,7 +902,7 @@ public struct WirelessPairingView: View {
                                     .foregroundColor(.white.opacity(0.4))
                             }
                             .buttonStyle(.plain)
-                            .padding(.leading, 4)
+                            .padding(.leading, 2)
                         }
                         .padding(10)
                         .background(Color.white.opacity(0.04))
