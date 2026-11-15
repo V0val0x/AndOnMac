@@ -108,7 +108,7 @@ public struct PhoneMirrorFrameView: View {
                 
                 Spacer()
                 
-                bottomHomeBarView
+                bottomHomeBarView(interactive: true)
                     .padding(.bottom, 6)
                     .opacity(showHomeBar ? 1.0 : 0.0)
                     .allowsHitTesting(showHomeBar)
@@ -669,8 +669,9 @@ public struct PhoneMirrorFrameView: View {
                 }
                 .padding(.bottom, 4)
                 
-                bottomHomeBarView
+                bottomHomeBarView(interactive: false)
                     .padding(.bottom, 8)
+                    .allowsHitTesting(false)
             }
             .padding(10)
         }
@@ -683,59 +684,143 @@ public struct PhoneMirrorFrameView: View {
     }
 
     public static func classifyHomeBarDrag(translationHeight: CGFloat) -> HomeBarGestureAction {
-        if translationHeight <= -60 {
+        if translationHeight <= -55 {
             return .appSwitcher
         }
-        if translationHeight <= -12 {
+        if translationHeight <= -10 {
             return .home
         }
         return .none
     }
 
-    // MARK: - Bottom Home Bar (Interactive)
-    private var bottomHomeBarView: some View {
-        VStack {
+    // MARK: - Bottom Home Bar (Interactive AppKit Control)
+    private func bottomHomeBarView(interactive: Bool) -> some View {
+        ZStack {
             Capsule()
                 .fill(Color.white.opacity(showHomeBar ? 0.95 : 0.6))
                 .frame(width: 130, height: 5)
                 .shadow(color: .black.opacity(0.5), radius: 2)
                 .offset(y: dragOffset)
+                .allowsHitTesting(false)
+
+            if interactive {
+                HomeBarInteractiveRepresentable(
+                    onHoverChanged: { hovering in
+                        if isHoveringHomePill != hovering {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isHoveringHomePill = hovering
+                            }
+                        }
+                    },
+                    onDragChanged: { offset, dragging in
+                        isDraggingHomeBar = dragging
+                        if dragging {
+                            dragOffset = offset
+                        } else {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                dragOffset = offset
+                            }
+                        }
+                    },
+                    onAction: { action in
+                        switch action {
+                        case .appSwitcher:
+                            appState.triggerAppSwitch()
+                        case .home:
+                            appState.triggerHome()
+                        case .none:
+                            break
+                        }
+                    }
+                )
+            }
         }
         .frame(width: 150, height: 24)
-        .contentShape(Rectangle())
-        .background(NonDraggableAreaRepresentable())
-        .onTapGesture {
-            appState.triggerHome()
+    }
+}
+
+private struct HomeBarInteractiveRepresentable: NSViewRepresentable {
+    let onHoverChanged: (Bool) -> Void
+    let onDragChanged: (_ offset: CGFloat, _ isDragging: Bool) -> Void
+    let onAction: (PhoneMirrorFrameView.HomeBarGestureAction) -> Void
+
+    func makeNSView(context: Context) -> HomeBarInteractiveNSView {
+        let view = HomeBarInteractiveNSView()
+        view.onHoverChanged = onHoverChanged
+        view.onDragChanged = onDragChanged
+        view.onAction = onAction
+        return view
+    }
+
+    func updateNSView(_ nsView: HomeBarInteractiveNSView, context: Context) {
+        nsView.onHoverChanged = onHoverChanged
+        nsView.onDragChanged = onDragChanged
+        nsView.onAction = onAction
+    }
+}
+
+public final class HomeBarInteractiveNSView: NSView {
+    public var onHoverChanged: ((Bool) -> Void)?
+    public var onDragChanged: ((_ offset: CGFloat, _ isDragging: Bool) -> Void)?
+    public var onAction: ((PhoneMirrorFrameView.HomeBarGestureAction) -> Void)?
+
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override public var mouseDownCanMoveWindow: Bool { false }
+    override public func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override public func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTrackingArea {
+            removeTrackingArea(existing)
         }
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 4, coordinateSpace: .local)
-                .onChanged { value in
-                    isDraggingHomeBar = true
-                    if value.translation.height < 0 {
-                        dragOffset = max(value.translation.height, -75)
-                    } else {
-                        dragOffset = 0
-                    }
-                }
-                .onEnded { value in
-                    let action = Self.classifyHomeBarDrag(translationHeight: value.translation.height)
-                    isDraggingHomeBar = false
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
-                        dragOffset = 0
-                    }
-                    switch action {
-                    case .appSwitcher:
-                        appState.triggerAppSwitch()
-                    case .home:
-                        appState.triggerHome()
-                    case .none:
-                        break
-                    }
-                }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
         )
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHoveringHomePill = hovering
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override public func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override public func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+
+    override public func mouseDown(with event: NSEvent) {
+        let startY = NSEvent.mouseLocation.y
+        var latestY = startY
+        var maxUpward: CGFloat = 0
+        onDragChanged?(0, true)
+
+        window?.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { trackedEvent, stop in
+            switch trackedEvent?.type {
+            case .leftMouseDragged:
+                latestY = NSEvent.mouseLocation.y
+                let dy = latestY - startY
+                maxUpward = max(maxUpward, dy)
+                let clampedOffset = min(0, max(-75, -dy))
+                self.onDragChanged?(clampedOffset, true)
+            case .leftMouseUp:
+                latestY = NSEvent.mouseLocation.y
+                let dy = latestY - startY
+                maxUpward = max(maxUpward, dy)
+                let action: PhoneMirrorFrameView.HomeBarGestureAction
+                if abs(dy) < 5 && maxUpward < 5 {
+                    action = .home
+                } else {
+                    action = PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -dy)
+                }
+                self.onDragChanged?(0, false)
+                self.onAction?(action)
+                stop.pointee = true
+            default:
+                break
             }
         }
     }

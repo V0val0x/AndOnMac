@@ -636,11 +636,12 @@ final class AndOnMacTests: XCTestCase {
 
     func testHomeBarDragClassificationAndNonDraggableArea() {
         XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -5), .none)
-        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -20), .home)
-        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -59), .home)
-        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -60), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -10), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -54), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -55), .appSwitcher)
         XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -90), .appSwitcher)
         XCTAssertFalse(NonDraggableNSView().mouseDownCanMoveWindow)
+        XCTAssertFalse(HomeBarInteractiveNSView().mouseDownCanMoveWindow)
     }
 
     func testTrackpadDragAndMouseWheelClamping() {

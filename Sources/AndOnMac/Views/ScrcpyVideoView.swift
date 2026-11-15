@@ -120,9 +120,9 @@ public final class ScrcpyDisplayNSView: NSView {
         if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
             return .back
         }
-        // Bottom edge swipe up -> Home (short/medium) or App Switcher (tall swipe >= 40% screen)
-        if startNormalized.y >= 0.88, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
-            return dy <= -0.40 ? .appSwitcher : .home
+        // Bottom edge swipe up -> Home (short/medium) or App Switcher (tall swipe >= 38% screen)
+        if startNormalized.y >= 0.85, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
+            return dy <= -0.38 ? .appSwitcher : .home
         }
         // Top edge swipe down -> Notification Shade
         if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {
@@ -307,13 +307,15 @@ public final class ScrcpyDisplayNSView: NSView {
 
         if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
-            performEdgeGesture(gesture)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+                Self.performEdgeGesture(gesture)
+            }
             return
         }
         ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
     }
 
-    private func performEdgeGesture(_ gesture: SmartphoneEdgeGesture) {
+    private static func performEdgeGesture(_ gesture: SmartphoneEdgeGesture) {
         switch gesture {
         case .back:
             ScrcpyClient.shared.sendKeycode(4) // KEYCODE_BACK
