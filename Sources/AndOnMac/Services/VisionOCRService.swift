@@ -30,7 +30,11 @@ public final class VisionOCRService: @unchecked Sendable {
     }
 
     /// Recognizes text from `image` (optionally cropped to `normalizedCropRect` in top-left normalized coordinates).
-    public func recognizeText(in image: CGImage, normalizedCropRect: CGRect? = nil) async throws -> String {
+    public func recognizeText(
+        in image: CGImage,
+        normalizedCropRect: CGRect? = nil,
+        qos: DispatchQoS.QoSClass = .userInitiated
+    ) async throws -> String {
         let targetImage: CGImage
         if let norm = normalizedCropRect {
             let cropRect = Self.pixelCropRect(
@@ -44,7 +48,7 @@ public final class VisionOCRService: @unchecked Sendable {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: qos).async {
                 autoreleasepool {
                     let request = VNRecognizeTextRequest { request, error in
                         if let error = error {

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MirrorService.shared.stopRecording()
         AndroidAppLauncherService.shared.stopAllAppWindows()
         ContinuityBridge.shared.stop()
+        ScreenMemorySnapshotter.shared.stop()
         MCPHTTPServer.shared.stop()
         ProcessLifecycleManager.shared.terminateAllProcesses(synchronousWait: true, gracePeriodMs: 250)
     }
@@ -71,6 +72,11 @@ struct AndOnMacApp: App {
                     appState.triggerScreenOCR()
                 }
                 .keyboardShortcut("x", modifiers: [.command, .shift])
+
+                Button(L10n.tr("Поиск по истории экрана (Recall)", "Recall Screen Memory", lang: appState.lang)) {
+                    appState.triggerRecallSearch()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 
                 Divider()
                 
