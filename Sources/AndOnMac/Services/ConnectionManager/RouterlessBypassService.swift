@@ -154,33 +154,55 @@ public final class RouterlessBypassService: ObservableObject {
         detectedHotspotGateway = Self.resolveHotspotGatewaySync()
     }
 
-    /// Attempts 1-click Direct Hotspot ADB connection (`<gateway_ip>:5555`).
+    /// Attempts 1-click Direct Hotspot ADB connection (`<gateway_ip>:5555` or live mDNS connect port).
     public func connectDirectHotspot() async -> (Bool, String) {
         let gateway = Self.resolveHotspotGatewaySync()
         self.detectedHotspotGateway = gateway
         guard let ip = gateway, !ip.isEmpty else {
             return (false, "Hotspot gateway IP not found. Connect Mac to phone's Wi-Fi Hotspot first.")
         }
-        let endpoint = "\(ip):5555"
-        if let out = try? await ADBService.shared.execute(arguments: ["connect", endpoint], timeoutSeconds: 3.5),
-           ADBService.isConnectSuccess(out) {
-            isRouterIsolationDetected = false
-            activeDirectTransport = .directHotspot
-            return (true, endpoint)
+
+        await DiscoveryService.shared.pollAdbMdns()
+        var candidatePorts: [Int] = [5555]
+        if let mdnsPort = DiscoveryService.shared.getConnectPort(for: ip), mdnsPort != 5555 {
+            candidatePorts.insert(mdnsPort, at: 0)
         }
-        return (false, "Could not reach \(endpoint). Ensure `adb tcpip 5555` was enabled on the phone.")
+
+        for port in candidatePorts {
+            let endpoint = "\(ip):\(port)"
+            if let out = try? await ADBService.shared.execute(arguments: ["connect", endpoint], timeoutSeconds: 3.0),
+               ADBService.isConnectSuccess(out) {
+                isRouterIsolationDetected = false
+                activeDirectTransport = .directHotspot
+                return (true, endpoint)
+            }
+        }
+        return (false, "Hotspot gateway \(ip) unreachable. Connect Mac to your phone's Wi-Fi Hotspot and enable Wireless Debugging (or plug USB once).")
     }
 
-    /// Attempts routerless Bluetooth PAN ADB connection (`192.168.44.1:5555`).
+    /// Attempts routerless Bluetooth PAN ADB connection (`192.168.44.1:5555` or live mDNS connect port).
     public func connectBluetoothPAN() async -> (Bool, String) {
-        let endpoint = "192.168.44.1:5555"
-        if let out = try? await ADBService.shared.execute(arguments: ["connect", endpoint], timeoutSeconds: 3.5),
-           ADBService.isConnectSuccess(out) {
-            isRouterIsolationDetected = false
-            activeDirectTransport = .bluetoothPAN
-            return (true, endpoint)
+        let localIPs = Self.localInterfaceIPv4Addresses()
+        guard Self.hasBluetoothPANSubnet(inAddresses: localIPs) else {
+            return (false, "Bluetooth PAN not connected. Enable Bluetooth Tethering on Android and connect Mac to phone in System Settings → Bluetooth.")
         }
-        return (false, "Could not reach \(endpoint) over Bluetooth PAN.")
+
+        await DiscoveryService.shared.pollAdbMdns()
+        var candidatePorts: [Int] = [5555]
+        if let mdnsPort = DiscoveryService.shared.getConnectPort(for: "192.168.44.1"), mdnsPort != 5555 {
+            candidatePorts.insert(mdnsPort, at: 0)
+        }
+
+        for port in candidatePorts {
+            let endpoint = "192.168.44.1:\(port)"
+            if let out = try? await ADBService.shared.execute(arguments: ["connect", endpoint], timeoutSeconds: 3.0),
+               ADBService.isConnectSuccess(out) {
+                isRouterIsolationDetected = false
+                activeDirectTransport = .bluetoothPAN
+                return (true, endpoint)
+            }
+        }
+        return (false, "Bluetooth PAN active, but ADB port closed on 192.168.44.1. Enable Wireless Debugging or plug USB once.")
     }
 
     private nonisolated static func resolveHotspotGatewaySync() -> String? {
