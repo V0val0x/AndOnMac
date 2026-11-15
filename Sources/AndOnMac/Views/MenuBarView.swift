@@ -119,7 +119,8 @@ public struct MenuBarView: View {
 
                         Button("BT PAN") {
                             Task {
-                                let (ok, msg) = await routerBypass.connectBluetoothPAN()
+                                let names = appState.knownDevices.map(\.name)
+                                let (ok, msg) = await routerBypass.setupAndConnectBluetoothPAN(preferredDeviceNames: names)
                                 appState.statusMessage = ok ? "BT PAN: \(msg)" : msg
                                 if ok { appState.refreshDevices() }
                             }

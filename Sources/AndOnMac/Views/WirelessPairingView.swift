@@ -360,7 +360,10 @@ public struct WirelessPairingView: View {
 
                     Button {
                         Task {
-                            let (ok, msg) = await routerBypass.connectBluetoothPAN()
+                            isProcessing = true
+                            let names = appState.knownDevices.map(\.name)
+                            let (ok, msg) = await routerBypass.setupAndConnectBluetoothPAN(preferredDeviceNames: names)
+                            isProcessing = false
                             isSuccess = ok
                             resultMessage = ok ? "Bluetooth PAN: \(msg)" : msg
                             if ok { appState.refreshDevices() }

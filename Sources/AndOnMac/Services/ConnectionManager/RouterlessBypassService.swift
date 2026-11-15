@@ -1,6 +1,8 @@
 import Foundation
 import Network
 import Darwin
+import IOBluetooth
+import AppKit
 
 /// Detects AP/Client Isolation on public/university/corporate Wi-Fi and provides
 /// 1-click routerless Direct Hotspot and Bluetooth PAN ADB bypasses.
@@ -21,6 +23,7 @@ public final class RouterlessBypassService: ObservableObject {
 
     private var lastProbedKey: String?
     private var lastProbeTime: Date = .distantPast
+    private var hasAttemptedAutoBluetoothPAN: Bool = false
 
     private init() {}
 
@@ -137,9 +140,14 @@ public final class RouterlessBypassService: ObservableObject {
         if reachable {
             isRouterIsolationDetected = false
             isolatedTarget = nil
+            hasAttemptedAutoBluetoothPAN = false
         } else {
             isRouterIsolationDetected = true
             isolatedTarget = key
+            if !hasAttemptedAutoBluetoothPAN {
+                hasAttemptedAutoBluetoothPAN = true
+                _ = await setupAndConnectBluetoothPAN(preferredDeviceNames: [])
+            }
         }
     }
 
@@ -178,6 +186,56 @@ public final class RouterlessBypassService: ObservableObject {
             }
         }
         return (false, "Hotspot gateway \(ip) unreachable. Connect Mac to your phone's Wi-Fi Hotspot and enable Wireless Debugging (or plug USB once).")
+    }
+
+    /// Automatically configures and connects Bluetooth PAN:
+    /// 1. If a USB `serial` is provided, enables Bluetooth tethering on Android via ADB (`cmd tethering start bluetooth`).
+    /// 2. Connects to the paired Android phone via `IOBluetoothDevice` and starts macOS `Bluetooth PAN` service if available.
+    /// 3. Connects `adb connect 192.168.44.1:<port>`.
+    public func setupAndConnectBluetoothPAN(serial: String? = nil, preferredDeviceNames: [String] = []) async -> (Bool, String) {
+        // Step 1: If USB is available, ask Android to enable Bluetooth tethering
+        if let serial = serial, !serial.isEmpty {
+            _ = try? await ADBService.shared.execute(
+                arguments: ["-s", serial, "shell", "cmd", "tethering", "start", "bluetooth"],
+                timeoutSeconds: 3.0
+            )
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        // Step 2: If 192.168.44.x isn't up yet, bring up paired Android Bluetooth device + PAN service on macOS
+        if !Self.hasBluetoothPANSubnet(inAddresses: Self.localInterfaceIPv4Addresses()) {
+            Self.bringUpMacBluetoothPAN(preferredDeviceNames: preferredDeviceNames)
+            // Poll briefly (up to 3.5s) for macOS to assign 192.168.44.x
+            for _ in 0..<7 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if Self.hasBluetoothPANSubnet(inAddresses: Self.localInterfaceIPv4Addresses()) {
+                    break
+                }
+            }
+        }
+
+        return await connectBluetoothPAN()
+    }
+
+    private nonisolated static func bringUpMacBluetoothPAN(preferredDeviceNames: [String]) {
+        // Connect paired phone over IOBluetooth if not already connected
+        if let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] {
+            let target = paired.first(where: { dev in
+                guard let name = dev.name else { return false }
+                if preferredDeviceNames.contains(where: { name.localizedCaseInsensitiveContains($0) }) {
+                    return true
+                }
+                // Major Device Class 0x02 = Phone
+                return ((dev.classOfDevice >> 8) & 0x1F) == 0x02
+            })
+            if let phone = target, !phone.isConnected() {
+                _ = phone.openConnection()
+            }
+        }
+
+        // Trigger macOS Network service "Bluetooth PAN" if present
+        _ = runQuickCommand("/usr/sbin/networksetup", arguments: ["-connectpppoeservice", "Bluetooth PAN"])
+        _ = runQuickCommand("/usr/sbin/scutil", arguments: ["--nc", "start", "Bluetooth PAN"])
     }
 
     /// Attempts routerless Bluetooth PAN ADB connection (`192.168.44.1:5555` or live mDNS connect port).

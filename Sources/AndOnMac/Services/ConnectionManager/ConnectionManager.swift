@@ -57,6 +57,16 @@ public final class ConnectionManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
             let reachable = await RouterlessBypassService.probeTCPReachability(host: ip, port: 5555, timeoutSeconds: 1.2)
             if !reachable {
+                let (btOk, btMsg) = await RouterlessBypassService.shared.setupAndConnectBluetoothPAN(
+                    serial: serial,
+                    preferredDeviceNames: [device.displayName]
+                )
+                if btOk {
+                    await MainActor.run {
+                        onStatusUpdate?("Bluetooth PAN connected (\(btMsg))")
+                    }
+                    return
+                }
                 let (ok, msg) = await RouterlessBypassService.shared.enableHotspotOverUSBAndConnect(serial: serial)
                 await MainActor.run {
                     onStatusUpdate?(ok ? "Direct Hotspot connected (\(msg))" : msg)
@@ -93,16 +103,15 @@ public final class ConnectionManager: ObservableObject {
                 }
             }
 
-            // 2. Fallback to Bluetooth PAN if active on 192.168.44.0/24
-            let localIPs = RouterlessBypassService.localInterfaceIPv4Addresses()
-            if RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: localIPs) {
-                let (ok, msg) = await RouterlessBypassService.shared.connectBluetoothPAN()
-                if ok {
-                    await MainActor.run {
-                        onConnected("Bluetooth PAN (\(msg))")
-                    }
-                    return
+            // 2. Fallback to Bluetooth PAN (auto-configure & connect if peer-to-peer Wi-Fi failed)
+            let (ok, msg) = await RouterlessBypassService.shared.setupAndConnectBluetoothPAN(
+                preferredDeviceNames: autoDevices.map(\.name)
+            )
+            if ok {
+                await MainActor.run {
+                    onConnected("Bluetooth PAN (\(msg))")
                 }
+                return
             }
         }
     }
