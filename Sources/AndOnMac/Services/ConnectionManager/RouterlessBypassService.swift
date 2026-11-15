@@ -205,6 +205,44 @@ public final class RouterlessBypassService: ObservableObject {
         return (false, "Bluetooth PAN active, but ADB port closed on 192.168.44.1. Enable Wireless Debugging or plug USB once.")
     }
 
+    /// Attempts to start a Wi-Fi Hotspot on the USB-connected Android device, join it from Mac (`en0`),
+    /// and connect `adb connect <gateway>:5555`. Falls back to opening Android Tether Settings if OEM restricts `cmd wifi start-softap`.
+    public func enableHotspotOverUSBAndConnect(serial: String) async -> (Bool, String) {
+        let ssid = "AndOnMac-Direct"
+        let password = Self.generateHotspotPassphrase()
+
+        // Try Android 11+ `cmd wifi start-softap` via ADB shell
+        let startOut = (try? await ADBService.shared.execute(
+            arguments: ["-s", serial, "shell", "cmd", "wifi", "start-softap", ssid, "wpa2", password],
+            timeoutSeconds: 4.0
+        )) ?? ""
+
+        let lower = startOut.lowercased()
+        if lower.contains("securityexception") || lower.contains("permission") || lower.contains("error") || lower.contains("unknown command") {
+            // Fallback: open Android Hotspot & Tethering settings on the phone
+            _ = try? await ADBService.shared.execute(
+                arguments: ["-s", serial, "shell", "am", "start", "-a", "android.settings.TETHER_SETTINGS"],
+                timeoutSeconds: 3.0
+            )
+            isRouterIsolationDetected = true
+            return (false, "Hotspot settings opened on phone. Enable Hotspot, connect Mac Wi-Fi, then click Direct Hotspot.")
+        }
+
+        // Wait for SoftAP to initialize
+        try? await Task.sleep(nanoseconds: 1_800_000_000)
+
+        // Join the phone's Hotspot from Mac's Wi-Fi interface (en0)
+        _ = Self.runQuickCommand("/usr/sbin/networksetup", arguments: ["-setairportnetwork", "en0", ssid, password])
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+
+        return await connectDirectHotspot()
+    }
+
+    private nonisolated static func generateHotspotPassphrase() -> String {
+        let chars = Array("abcdefghjkmnpqrstuvwxyz23456789")
+        return String((0..<10).map { _ in chars.randomElement() ?? "a" })
+    }
+
     private nonisolated static func resolveHotspotGatewaySync() -> String? {
         if let ipconfigOut = runQuickCommand("/usr/sbin/ipconfig", arguments: ["getoption", "en0", "router"]),
            !ipconfigOut.isEmpty, ipconfigOut.contains(".") {

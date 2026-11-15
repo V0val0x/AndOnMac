@@ -91,6 +91,7 @@ public struct MenuBarView: View {
                         appState.syncContinuityBridgeState()
                     }
                 Toggle(L10n.tr("120Hz Performance HUD", "120Hz Performance HUD", lang: lang), isOn: $appState.showPerformanceHUD)
+                Toggle(L10n.tr("Авто-Hotspot при изоляции сети (USB)", "Auto-Hotspot on Isolated Wi-Fi (USB)", lang: lang), isOn: $appState.autoHotspotOnIsolation)
             }
             .toggleStyle(.switch)
             .controlSize(.mini)

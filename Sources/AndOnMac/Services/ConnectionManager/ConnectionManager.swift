@@ -32,8 +32,14 @@ public final class ConnectionManager: ObservableObject {
     }
 
     /// Silently promotes a ready USB device to `adb tcpip 5555` once per session (when not actively mirroring)
-    /// so unplugging the cable seamlessly transitions to Wi-Fi.
-    public func promoteUSBToWiFiIfNeeded(device: Device, isMirroring: Bool) {
+    /// so unplugging the cable seamlessly transitions to Wi-Fi. If `autoHotspotOnIsolation` is enabled and the
+    /// phone's Wi-Fi IP is unreachable from Mac (AP/Client Isolation), automatically starts the phone's Hotspot and connects.
+    public func promoteUSBToWiFiIfNeeded(
+        device: Device,
+        isMirroring: Bool,
+        autoHotspotOnIsolation: Bool = true,
+        onStatusUpdate: (@MainActor (String) -> Void)? = nil
+    ) {
         guard device.connectionType == .usb,
               device.state == .ready,
               !isMirroring,
@@ -42,8 +48,20 @@ public final class ConnectionManager: ObservableObject {
         }
         promotedUSBSerials.insert(device.id)
         let serial = device.id
+        let wifiIP = device.ipAddress
         Task {
             _ = try? await ADBService.shared.enableTcpIp(serial: serial, port: 5555)
+            guard autoHotspotOnIsolation, let ip = wifiIP, !ip.isEmpty else { return }
+
+            // Wait briefly for adbd to restart on TCP/IP 5555, then test Wi-Fi reachability
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            let reachable = await RouterlessBypassService.probeTCPReachability(host: ip, port: 5555, timeoutSeconds: 1.2)
+            if !reachable {
+                let (ok, msg) = await RouterlessBypassService.shared.enableHotspotOverUSBAndConnect(serial: serial)
+                await MainActor.run {
+                    onStatusUpdate?(ok ? "Direct Hotspot connected (\(msg))" : msg)
+                }
+            }
         }
     }
 

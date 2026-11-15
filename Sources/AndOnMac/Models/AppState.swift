@@ -46,6 +46,7 @@ public final class AppState: ObservableObject {
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 120
     @AppStorage("showPerformanceHUD") public var showPerformanceHUD: Bool = false
+    @AppStorage("autoHotspotOnIsolation") public var autoHotspotOnIsolation: Bool = true
     @AppStorage("autoConnect") public var autoConnect: Bool = true
     @AppStorage("autoWirelessPromote") public var autoWirelessPromote: Bool = false
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
@@ -402,8 +403,16 @@ public final class AppState: ObservableObject {
         // Save to persistent known devices registry
         persistKnownDevice(device)
         
-        // Silent USB-to-Wi-Fi Handoff: activate TCP/IP 5555 once per USB serial when not mirroring
-        ConnectionManager.shared.promoteUSBToWiFiIfNeeded(device: device, isMirroring: isMirroring)
+        // Silent USB-to-Wi-Fi Handoff: activate TCP/IP 5555 once per USB serial when not mirroring;
+        // if Wi-Fi router isolation blocks peer-to-peer traffic, auto-enable phone Hotspot when configured.
+        ConnectionManager.shared.promoteUSBToWiFiIfNeeded(
+            device: device,
+            isMirroring: isMirroring,
+            autoHotspotOnIsolation: autoHotspotOnIsolation
+        ) { [weak self] message in
+            self?.statusMessage = message
+            self?.refreshDevices()
+        }
         
         // Zero-Click Auto-Connect: Launch mirroring immediately when device is ready
         if autoConnect && !isMirroring && !hasAutoConnectedThisSession {
