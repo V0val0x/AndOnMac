@@ -362,7 +362,10 @@ public struct WirelessPairingView: View {
                         Task {
                             isProcessing = true
                             let names = appState.knownDevices.map(\.name)
-                            let (ok, msg) = await routerBypass.setupAndConnectBluetoothPAN(preferredDeviceNames: names)
+                            let (ok, msg) = await routerBypass.setupAndConnectBluetoothPAN(
+                                preferredDeviceNames: names,
+                                openSettingsIfUnavailable: true
+                            )
                             isProcessing = false
                             isSuccess = ok
                             resultMessage = ok ? "Bluetooth PAN: \(msg)" : msg

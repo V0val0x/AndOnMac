@@ -192,7 +192,11 @@ public final class RouterlessBypassService: ObservableObject {
     /// 1. If a USB `serial` is provided, enables Bluetooth tethering on Android via ADB (`cmd tethering start bluetooth`).
     /// 2. Connects to the paired Android phone via `IOBluetoothDevice` and starts macOS `Bluetooth PAN` service if available.
     /// 3. Connects `adb connect 192.168.44.1:<port>`.
-    public func setupAndConnectBluetoothPAN(serial: String? = nil, preferredDeviceNames: [String] = []) async -> (Bool, String) {
+    public func setupAndConnectBluetoothPAN(
+        serial: String? = nil,
+        preferredDeviceNames: [String] = [],
+        openSettingsIfUnavailable: Bool = false
+    ) async -> (Bool, String) {
         // Step 1: If USB is available, ask Android to enable Bluetooth tethering
         if let serial = serial, !serial.isEmpty {
             _ = try? await ADBService.shared.execute(
@@ -205,8 +209,8 @@ public final class RouterlessBypassService: ObservableObject {
         // Step 2: If 192.168.44.x isn't up yet, bring up paired Android Bluetooth device + PAN service on macOS
         if !Self.hasBluetoothPANSubnet(inAddresses: Self.localInterfaceIPv4Addresses()) {
             Self.bringUpMacBluetoothPAN(preferredDeviceNames: preferredDeviceNames)
-            // Poll briefly (up to 3.5s) for macOS to assign 192.168.44.x
-            for _ in 0..<7 {
+            // Poll briefly (up to 2.5s) for macOS to assign 192.168.44.x
+            for _ in 0..<5 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if Self.hasBluetoothPANSubnet(inAddresses: Self.localInterfaceIPv4Addresses()) {
                     break
@@ -214,7 +218,13 @@ public final class RouterlessBypassService: ObservableObject {
             }
         }
 
-        return await connectBluetoothPAN()
+        let result = await connectBluetoothPAN()
+        if !result.0 && openSettingsIfUnavailable {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.Network-Settings.extension") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        return result
     }
 
     private nonisolated static func bringUpMacBluetoothPAN(preferredDeviceNames: [String]) {
