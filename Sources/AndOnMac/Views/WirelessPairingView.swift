@@ -57,8 +57,9 @@ public struct WirelessPairingView: View {
     
     public var body: some View {
         ZStack {
-            // Dark Background
-            Color(red: 0.05, green: 0.06, blue: 0.08)
+            // Adaptive Vibrancy Background
+            VibrancyBackdrop(material: .hudWindow, blendingMode: .withinWindow)
+                .overlay(Color.black.opacity(0.32))
                 .ignoresSafeArea()
                 .makeWindowDraggable()
             

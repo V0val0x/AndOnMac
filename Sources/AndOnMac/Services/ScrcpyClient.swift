@@ -721,6 +721,7 @@ public final class ScrcpyClient: @unchecked Sendable {
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
             guard decodeStatus == noErr, let pixelBuffer = imageBuffer else { return }
+            AmbilightEngine.submitPixelBuffer(pixelBuffer)
             var cgImage: CGImage?
             VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
             if let cgImage = cgImage {

@@ -24,18 +24,18 @@ public struct MainWindowView: View {
                     )
             }
         }
-        .padding(20)
+        .padding(28)
         .background(
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,
                 scale: appState.windowScale,
-                style: appState.effectiveFrameStyle,
+                spec: appState.effectiveHardwareSpec,
                 isLandscape: appState.isLandscape,
                 aspect: appState.effectiveAspect
             ) { window in
                 window.isOpaque = false
                 window.backgroundColor = .clear
-                window.hasShadow = false // PhoneMirrorFrameView provides realistic shadow
+                window.hasShadow = false // DeviceFrameRenderer provides realistic shadow & Ambilight
                 window.titlebarAppearsTransparent = true
                 window.titleVisibility = .hidden
                 window.isMovableByWindowBackground = true
@@ -47,11 +47,11 @@ public struct MainWindowView: View {
     }
 }
 
-// Configures the parent NSWindow to be transparent, floating, and dynamically sized
+// Configures the parent NSWindow to be transparent, floating, and smoothly animated between fixed presets & rotations
 private struct WindowConfigurator: NSViewRepresentable {
     let showDrawer: Bool
     let scale: PhoneWindowScale
-    let style: PhoneFrameStyle
+    let spec: DeviceHardwareSpec
     let isLandscape: Bool
     let aspect: CGFloat
     let configure: (NSWindow) -> Void
@@ -75,7 +75,7 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
     
     private func updateWindowSize(window: NSWindow, animated: Bool) {
-        let mult = style.baseWidthMultiplier
+        let mult = spec.baseWidthMultiplier
         let phoneWidth: CGFloat
         let phoneHeight: CGFloat
         if isLandscape {
@@ -87,8 +87,9 @@ private struct WindowConfigurator: NSViewRepresentable {
             phoneHeight = (320.0 * aspect) * scale.multiplier
         }
         
-        let targetWidth = (phoneWidth + 40) + (showDrawer ? 290 + 16 : 0)
-        let targetHeight = phoneHeight + 40
+        let outerPadding: CGFloat = 56 // 28pt on each side so Ambilight glow never clips
+        let targetWidth = (phoneWidth + outerPadding) + (showDrawer ? 290 + 16 : 0)
+        let targetHeight = phoneHeight + outerPadding
         
         let currentFrame = window.frame
         let deltaW = targetWidth - currentFrame.width
@@ -97,7 +98,15 @@ private struct WindowConfigurator: NSViewRepresentable {
         if abs(deltaW) > 2 || abs(deltaH) > 2 {
             let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.origin.y - deltaH)
             let newFrame = NSRect(origin: newOrigin, size: NSSize(width: targetWidth, height: targetHeight))
-            window.setFrame(newFrame, display: true, animate: animated)
+            if animated {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.4
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.12, 0.36, 1.0)
+                    window.animator().setFrame(newFrame, display: true)
+                }
+            } else {
+                window.setFrame(newFrame, display: true, animate: false)
+            }
         }
     }
 }

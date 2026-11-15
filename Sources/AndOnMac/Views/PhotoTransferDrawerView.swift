@@ -190,9 +190,12 @@ public struct PhotoTransferDrawerView: View {
         }
         .frame(width: 290)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(.ultraThinMaterial)
-                .shadow(color: Color.black.opacity(0.3), radius: 15, x: -5, y: 5)
+            VibrancyBackdrop(material: .hudWindow, blendingMode: .behindWindow, cornerRadius: 16)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
+                )
+                .shadow(color: Color.black.opacity(0.32), radius: 16, x: -5, y: 5)
                 .makeWindowDraggable()
         )
         .onAppear {

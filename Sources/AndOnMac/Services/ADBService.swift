@@ -1,7 +1,34 @@
 import Foundation
 
+public struct DeviceFingerprint: Equatable, Sendable {
+    public var model: String
+    public var manufacturer: String
+    public var vendor: String
+    public var codename: String
+    public var colorHint: String?
+    public var androidVersion: String
+
+    public init(
+        model: String = "",
+        manufacturer: String = "Unknown",
+        vendor: String = "",
+        codename: String = "",
+        colorHint: String? = nil,
+        androidVersion: String = ""
+    ) {
+        self.model = model
+        self.manufacturer = manufacturer
+        self.vendor = vendor
+        self.codename = codename
+        self.colorHint = colorHint
+        self.androidVersion = androidVersion
+    }
+}
+
 public final class ADBService: @unchecked Sendable {
     public static let shared = ADBService()
+    private let fingerprintLock = NSLock()
+    private var fingerprintCache: [String: DeviceFingerprint] = [:]
     
     public var adbPath: String {
         // 1. Check embedded bundle resource
@@ -228,9 +255,15 @@ public final class ADBService: @unchecked Sendable {
             
             if state == .ready {
                 // Enrich device info asynchronously
-                if let (mfr, ver, batt, charging, ip, tlsPort) = try? await fetchDeviceDetails(serial: serial) {
-                    device.manufacturer = mfr
-                    device.androidVersion = ver
+                if let (fingerprint, batt, charging, ip, tlsPort) = try? await fetchDeviceDetails(serial: serial) {
+                    if !fingerprint.model.isEmpty {
+                        device.model = fingerprint.model
+                    }
+                    device.manufacturer = fingerprint.manufacturer
+                    device.vendor = fingerprint.vendor
+                    device.hardwareCodename = fingerprint.codename
+                    device.deviceColorHint = fingerprint.colorHint
+                    device.androidVersion = fingerprint.androidVersion
                     device.batteryLevel = batt
                     device.isCharging = charging
                     device.ipAddress = ip
@@ -245,17 +278,74 @@ public final class ADBService: @unchecked Sendable {
         
         return devices
     }
+
+    /// Parses batched `getprop` key=value lines into a normalized `DeviceFingerprint`.
+    public static func parseFingerprintOutput(_ raw: String) -> DeviceFingerprint {
+        var kv: [String: String] = [:]
+        for line in raw.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let eqIdx = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<eqIdx]).trimmingCharacters(in: .whitespaces)
+            let val = String(trimmed[trimmed.index(after: eqIdx)...]).trimmingCharacters(in: .whitespaces)
+            if !val.isEmpty {
+                kv[key] = val
+            }
+        }
+
+        let model = kv["vendor_model"] ?? kv["model"] ?? ""
+        let mfr = kv["mfr"] ?? kv["vendor_mfr"] ?? "Unknown"
+        let vendor = kv["vendor"] ?? kv["vendor_brand"] ?? kv["vendor_mfr"] ?? mfr
+        let codename = kv["vendor_device"] ?? kv["device"] ?? ""
+        let color = kv["color"]
+        let ver = kv["ver"] ?? ""
+        return DeviceFingerprint(
+            model: model,
+            manufacturer: mfr,
+            vendor: vendor,
+            codename: codename,
+            colorHint: color,
+            androidVersion: ver
+        )
+    }
+
+    private func cachedFingerprint(for serial: String) -> DeviceFingerprint? {
+        fingerprintLock.lock()
+        defer { fingerprintLock.unlock() }
+        return fingerprintCache[serial]
+    }
+
+    private func storeFingerprint(_ fp: DeviceFingerprint, for serial: String) {
+        fingerprintLock.lock()
+        defer { fingerprintLock.unlock() }
+        fingerprintCache[serial] = fp
+    }
     
-    /// Fetches extended battery, OS version, network IP, and Wireless Debugging `tls_port` details
-    private func fetchDeviceDetails(serial: String) async throws -> (String, String, Int?, Bool?, String?, Int?) {
-        async let mfrTask = execute(arguments: ["-s", serial, "shell", "getprop", "ro.product.manufacturer"])
-        async let verTask = execute(arguments: ["-s", serial, "shell", "getprop", "ro.build.version.release"])
+    /// Fetches hardware fingerprint, battery, OS version, network IP, and Wireless Debugging `tls_port` details
+    private func fetchDeviceDetails(serial: String) async throws -> (DeviceFingerprint, Int?, Bool?, String?, Int?) {
+        let existingFingerprint = cachedFingerprint(for: serial)
+        async let fpTask: String? = existingFingerprint == nil ? (try? await execute(
+            arguments: [
+                "-s", serial, "shell",
+                "echo model=$(getprop ro.product.model); echo mfr=$(getprop ro.product.manufacturer); echo vendor=$(getprop ro.product.vendor); echo vendor_mfr=$(getprop ro.product.vendor.manufacturer); echo vendor_brand=$(getprop ro.product.vendor.brand); echo vendor_model=$(getprop ro.product.vendor.model); echo device=$(getprop ro.product.device); echo vendor_device=$(getprop ro.product.vendor.device); echo color=$(getprop ro.boot.hardware.color); echo ver=$(getprop ro.build.version.release)"
+            ],
+            timeoutSeconds: 3.0
+        )) : nil
         async let battTask = execute(arguments: ["-s", serial, "shell", "dumpsys", "battery"])
         async let ipTask = execute(arguments: ["-s", serial, "shell", "ip", "route"])
         async let adbDumpTask = execute(arguments: ["-s", serial, "shell", "dumpsys", "adb"])
         
-        let mfr = (try? await mfrTask)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
-        let ver = (try? await verTask)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fingerprint: DeviceFingerprint
+        if let existingFingerprint {
+            fingerprint = existingFingerprint
+        } else if let fpRaw = await fpTask {
+            let parsed = Self.parseFingerprintOutput(fpRaw)
+            if !parsed.model.isEmpty || parsed.manufacturer != "Unknown" {
+                storeFingerprint(parsed, for: serial)
+            }
+            fingerprint = parsed
+        } else {
+            fingerprint = DeviceFingerprint()
+        }
         let battRaw = (try? await battTask) ?? ""
         let ipRaw = (try? await ipTask) ?? ""
         let adbDumpRaw = (try? await adbDumpTask) ?? ""
@@ -294,7 +384,7 @@ public final class ADBService: @unchecked Sendable {
             DiscoveryService.shared.registerConnectPort(for: ip, port: port)
         }
         
-        return (mfr, ver, level, isCharging, ipAddress, tlsPort)
+        return (fingerprint, level, isCharging, ipAddress, tlsPort)
     }
     
     /// Verifies `adb connect` actually succeeded rather than returning "failed to connect" / "cannot connect"

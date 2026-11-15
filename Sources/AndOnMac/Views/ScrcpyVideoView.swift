@@ -116,7 +116,6 @@ public final class ScrcpyDisplayNSView: NSView {
     private func setupView() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        layer?.cornerRadius = 38
         layer?.masksToBounds = true
         layer?.contentsGravity = .resizeAspect
         

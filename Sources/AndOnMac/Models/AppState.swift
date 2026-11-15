@@ -42,7 +42,14 @@ public final class AppState: ObservableObject {
     @AppStorage("forwardAudio") public var forwardAudio: Bool = true
     @AppStorage("stayAwake") public var stayAwake: Bool = true
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
+    @AppStorage("showDeviceBezel") public var showDeviceBezel: Bool = true
     @AppStorage("showFrontCamera") public var showFrontCamera: Bool = true
+    @AppStorage("matchDeviceColor") public var matchDeviceColor: Bool = true
+    @AppStorage("enableAmbilight") public var enableAmbilight: Bool = true {
+        didSet {
+            AmbilightEngine.shared.setSamplingEnabled(enableAmbilight && isMirroring)
+        }
+    }
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 60
     @AppStorage("autoConnect") public var autoConnect: Bool = true
@@ -67,20 +74,26 @@ public final class AppState: ObservableObject {
     @Published public var installerLogs: String = ""
     @Published public var lastKnownWifiIP: String?
     
+    /// Effective hardware specification resolving `.auto` from device fingerprints or manual style override
+    public var effectiveHardwareSpec: DeviceHardwareSpec {
+        DeviceHardwareSpec.resolve(for: selectedDevice, override: frameStyle)
+    }
+
     /// Effective frame style resolving .auto to detected device hardware model
     public var effectiveFrameStyle: PhoneFrameStyle {
-        if frameStyle == .auto {
-            return PhoneFrameStyle.detect(for: selectedDevice)
-        }
-        return frameStyle
+        effectiveHardwareSpec.style
     }
-    
+
     // Video streaming frame dimensions
     @Published public var deviceWidth: Int = 1080
     @Published public var deviceHeight: Int = 2400
-    
+
     public var isLandscape: Bool {
         return deviceWidth > deviceHeight
+    }
+
+    public var displayOrientation: DeviceDisplayOrientation {
+        isLandscape ? .landscape : .portrait
     }
     
     public var effectiveAspect: CGFloat {
@@ -107,6 +120,7 @@ public final class AppState: ObservableObject {
     
     public init() {
         Self.shared = self
+        AmbilightEngine.shared.setSamplingEnabled(false)
         self.currentLanguageBadge = KeyboardLanguageSyncService.getCurrentMacLanguage().uppercased()
         
         KeyboardLanguageSyncService.shared.onLanguageChanged = { [weak self] badge in
@@ -300,6 +314,7 @@ public final class AppState: ObservableObject {
             let mirrorActive = MirrorService.shared.isMirroring || MirrorService.shared.isStarting
             if self.isMirroring != mirrorActive {
                 self.isMirroring = mirrorActive
+                AmbilightEngine.shared.setSamplingEnabled(mirrorActive && self.enableAmbilight)
             }
             
             if list.isEmpty {
@@ -477,6 +492,7 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopMirroring()
             KeyboardLanguageSyncService.shared.stopSync()
             isMirroring = false
+            AmbilightEngine.shared.setSamplingEnabled(false)
             statusMessage = "Mirroring stopped"
         } else {
             guard let device = selectedDevice else {
@@ -493,11 +509,13 @@ public final class AppState: ObservableObject {
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
+                        AmbilightEngine.shared.setSamplingEnabled(false)
                         self?.statusMessage = "Mirroring session ended"
                         KeyboardLanguageSyncService.shared.stopSync()
                     }
                 }
                 isMirroring = true
+                AmbilightEngine.shared.setSamplingEnabled(enableAmbilight)
                 statusMessage = "Mirroring \(device.displayName)..."
                 KeyboardLanguageSyncService.shared.startSync(for: device.id)
             } catch {

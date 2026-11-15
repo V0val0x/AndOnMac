@@ -657,4 +657,111 @@ final class AndOnMacTests: XCTestCase {
         let withHiddenBySize = FileBrowserService.parseStatListing(sample, includeHidden: true, sortOrder: .size)
         XCTAssertEqual(withHiddenBySize.map(\.name), ["DCIM", "archive.zip", "notes.txt", ".nomedia"])
     }
+
+    func testADBDeviceFingerprintParsing() {
+        let raw = """
+        model=Pixel 11 Pro
+        mfr=Google
+        vendor=google
+        vendor_model=Pixel 11 Pro
+        vendor_brand=google
+        vendor_device=mustang
+        color=obsidian
+        ver=17
+        """
+        let fp = ADBService.parseFingerprintOutput(raw)
+        XCTAssertEqual(fp.model, "Pixel 11 Pro")
+        XCTAssertEqual(fp.manufacturer, "Google")
+        XCTAssertEqual(fp.vendor, "google")
+        XCTAssertEqual(fp.codename, "mustang")
+        XCTAssertEqual(fp.colorHint, "obsidian")
+        XCTAssertEqual(fp.androidVersion, "17")
+    }
+
+    func testDeviceHardwareSpecsAndFallback() {
+        let pixel11Pro = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", vendor: "google")
+        let spec11Pro = DeviceHardwareSpec.resolve(for: pixel11Pro, override: .auto)
+        XCTAssertEqual(spec11Pro.id, "pixel_11_pro")
+        XCTAssertNotNil(spec11Pro.punchHole)
+
+        let pixel11 = Device(id: "p11", model: "Pixel 11", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel11, override: .auto).id, "pixel_11")
+
+        let pixel10a = Device(id: "p10a", model: "Pixel 10a", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel10a, override: .auto).id, "pixel_10a")
+
+        let pixel9 = Device(id: "p9", model: "Pixel 9", manufacturer: "Google")
+        let spec9 = DeviceHardwareSpec.resolve(for: pixel9, override: .auto)
+        XCTAssertEqual(spec9.id, "pixel_8_9_10")
+        XCTAssertEqual(spec9.punchHole?.normalizedCenterY ?? 0, 0.0258, accuracy: 0.0001)
+
+        let s25u = Device(id: "s25u", model: "SM-S938B", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s25u, override: .auto).id, "galaxy_s25_ultra")
+
+        let s24u = Device(id: "s24u", model: "SM-S928U", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s24u, override: .auto).id, "galaxy_s24_ultra")
+
+        let nothing = Device(id: "np2", model: "A065", manufacturer: "Nothing")
+        let npSpec = DeviceHardwareSpec.resolve(for: nothing, override: .auto)
+        XCTAssertEqual(npSpec.id, "nothing_phone_2")
+        XCTAssertTrue(npSpec.hasGlyphAccent)
+
+        let op12 = Device(id: "op12", model: "CPH2581", manufacturer: "OnePlus")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: op12, override: .auto).id, "oneplus_12")
+
+        // Unknown hardware falls back cleanly to Pro Display with no camera cutout
+        let unknown = Device(id: "unk", model: "Fairphone 5", manufacturer: "Fairphone")
+        let fallbackSpec = DeviceHardwareSpec.resolve(for: unknown, override: .auto)
+        XCTAssertEqual(fallbackSpec.id, "pro_display")
+        XCTAssertNil(fallbackSpec.punchHole)
+    }
+
+    func testPunchHoleCoordinatesAcrossScalesAndOrientations() {
+        let hole = DeviceHardwareSpec.pixel11Pro.punchHole!
+        let portrait100 = CGSize(width: 314, height: 698)
+        let portrait125 = CGSize(width: 392.5, height: 872.5)
+        let c100 = hole.resolvedCenter(in: portrait100, orientation: .portrait)
+        let c125 = hole.resolvedCenter(in: portrait125, orientation: .portrait)
+        XCTAssertEqual(c100.x, portrait100.width * 0.5, accuracy: 0.01)
+        XCTAssertEqual(c125.y / portrait125.height, c100.y / portrait100.height, accuracy: 0.0001)
+        XCTAssertGreaterThan(hole.resolvedRadius(in: portrait125), hole.resolvedRadius(in: portrait100))
+
+        // Landscape rotation moves portrait top camera cleanly onto left edge
+        let landscapeSize = CGSize(width: 698, height: 314)
+        let cLand = hole.resolvedCenter(in: landscapeSize, orientation: .landscape)
+        XCTAssertEqual(cLand.x, landscapeSize.width * hole.normalizedCenterY, accuracy: 0.01)
+        XCTAssertEqual(cLand.y, landscapeSize.height * 0.5, accuracy: 0.01)
+    }
+
+    func testDeviceChassisFinishAndMatchDeviceColorToggle() {
+        let porcelainPixel = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", deviceColorHint: "porcelain")
+        let spec = DeviceHardwareSpec.pixel11Pro
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: true), .porcelain)
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: false), .obsidian)
+    }
+
+    func testCoreAnimationEvenOddScreenMaskLayer() {
+        let layer = CoreAnimationDeviceMask.makeScreenMaskLayer(
+            size: CGSize(width: 314, height: 698),
+            cornerRadius: 42,
+            punchHoleCenter: CGPoint(x: 157, y: 16.4),
+            punchHoleRadius: 3.8
+        )
+        XCTAssertEqual(layer.fillRule, .evenOdd)
+        XCTAssertNotNil(layer.path)
+        XCTAssertEqual(layer.frame.size.width, 314, accuracy: 0.01)
+    }
+
+    func testAmbilightCoreImagePerimeterExtraction() {
+        let topBlue = CIImage(color: CIColor(red: 0.1, green: 0.3, blue: 0.9, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 50, width: 100, height: 50))
+        let bottomRed = CIImage(color: CIColor(red: 0.9, green: 0.15, blue: 0.1, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 0, width: 100, height: 50))
+        let composite = topBlue.composited(over: bottomRed)
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+
+        let palette = AmbilightEngine.extractPalette(from: composite, context: context)
+        XCTAssertGreaterThan(palette.top.b, palette.top.r)
+        XCTAssertGreaterThan(palette.bottom.r, palette.bottom.b)
+    }
 }
