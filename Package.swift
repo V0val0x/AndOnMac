@@ -19,6 +19,9 @@ let package = Package(
             path: "Sources/AndOnMac",
             resources: [
                 .process("Resources")
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
             ]
         ),
         .testTarget(

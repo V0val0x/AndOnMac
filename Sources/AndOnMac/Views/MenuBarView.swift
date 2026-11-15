@@ -354,6 +354,35 @@ public struct MenuBarView: View {
 
             Divider()
 
+            // Semantic Screen Memory ("Recall")
+            HStack(spacing: 8) {
+                Toggle(isOn: $appState.screenMemoryEnabled) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "brain.head.profile")
+                            .foregroundColor(appState.screenMemoryEnabled ? .cyan : .secondary)
+                        Text("Screen Memory")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .onChange(of: appState.screenMemoryEnabled) { _, _ in
+                    appState.syncScreenMemoryState()
+                }
+
+                Spacer()
+
+                Button {
+                    appState.triggerRecallSearch()
+                } label: {
+                    Label("Recall", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            Divider()
+
             // Device Actions & Dock Toggle
             HStack {
                 Button(L10n.tr("Поиск", "Scan", lang: lang)) {

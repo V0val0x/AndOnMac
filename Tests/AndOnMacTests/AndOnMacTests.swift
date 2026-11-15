@@ -1138,4 +1138,87 @@ final class AndOnMacTests: XCTestCase {
         }
         XCTAssertFalse(proc.isRunning)
     }
+
+    func testFrameChangeDetectorDetectsStaticVsChangedFrames() throws {
+        let detector = FrameChangeDetector()
+
+        func makeSolidImage(gray: UInt8) throws -> CGImage {
+            var pixels = [UInt8](repeating: gray, count: 64 * 64)
+            let cs = CGColorSpaceCreateDeviceGray()
+            let ctx = try XCTUnwrap(CGContext(
+                data: &pixels,
+                width: 64,
+                height: 64,
+                bitsPerComponent: 8,
+                bytesPerRow: 64,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ))
+            return try XCTUnwrap(ctx.makeImage())
+        }
+
+        let dark = try makeSolidImage(gray: 20)
+        let darkAgain = try makeSolidImage(gray: 20)
+        let bright = try makeSolidImage(gray: 220)
+
+        XCTAssertTrue(detector.hasFrameChanged(dark))
+        XCTAssertFalse(detector.hasFrameChanged(darkAgain))
+        XCTAssertTrue(detector.hasFrameChanged(bright))
+
+        detector.reset()
+        XCTAssertTrue(detector.hasFrameChanged(bright))
+    }
+
+    func testScreenMemoryDatabaseFTS5SearchAndRetentionPruning() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-memory-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let db = ScreenMemoryDatabase(baseDirectoryURL: tmpDir)
+        let oldThumb = "old.jpg"
+        let recentThumb = "recent.jpg"
+        try Data("old".utf8).write(to: db.thumbnailsDirectoryURL.appendingPathComponent(oldThumb))
+        try Data("recent".utf8).write(to: db.thumbnailsDirectoryURL.appendingPathComponent(recentThumb))
+
+        let now = Date()
+        let tenDaysAgo = now.addingTimeInterval(-10 * 86_400)
+
+        XCTAssertNotNil(db.insertSnapshot(
+            timestamp: tenDaysAgo,
+            appPackageName: "com.old.app",
+            extractedText: "Archived invoice 9012",
+            thumbnailFilename: oldThumb,
+            frameHash: 111
+        ))
+        XCTAssertNotNil(db.insertSnapshot(
+            timestamp: now,
+            appPackageName: "com.bank.app",
+            extractedText: "Checking account balance is $4,250.00",
+            thumbnailFilename: recentThumb,
+            frameHash: 222
+        ))
+
+        let hits = db.search(query: "bal")
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits.first?.appPackageName, "com.bank.app")
+        XCTAssertTrue(hits.first?.highlightedSnippet.contains("«balance»") == true)
+
+        let pruned = db.pruneRetention(now: now, olderThanDays: 7)
+        XCTAssertEqual(pruned, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: db.thumbnailsDirectoryURL.appendingPathComponent(oldThumb).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: db.thumbnailsDirectoryURL.appendingPathComponent(recentThumb).path))
+        XCTAssertEqual(db.stats().count, 1)
+
+        db.clearAll()
+        XCTAssertEqual(db.stats().count, 0)
+    }
+
+    func testScreenMemoryForegroundPackageParser() {
+        let dumpsys = """
+        mCurrentFocus=Window{9a1b2c u0 com.whatsapp/com.whatsapp.HomeActivity}
+        mFocusedApp=ActivityRecord{12345 u0 com.whatsapp/.HomeActivity t19}
+        """
+        XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: dumpsys), "com.whatsapp")
+        XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: "nothing here"), "unknown")
+    }
 }

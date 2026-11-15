@@ -57,6 +57,7 @@ public final class AppState: ObservableObject {
     @AppStorage("continuityBridgeEnabled") public var continuityBridgeEnabled: Bool = true
     @AppStorage("mcpServerEnabled") public var mcpServerEnabled: Bool = false
     @AppStorage("mcpServerPort") public var mcpServerPort: Int = 8765
+    @AppStorage("screenMemoryEnabled") public var screenMemoryEnabled: Bool = false
 
     public var lang: AppLanguage {
         appLanguage.resolved
@@ -188,6 +189,7 @@ public final class AppState: ObservableObject {
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
+                        self?.syncScreenMemoryState()
                         self?.statusMessage = "Mirroring session ended"
                         KeyboardLanguageSyncService.shared.stopSync()
                     }
@@ -524,6 +526,7 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopMirroring()
             KeyboardLanguageSyncService.shared.stopSync()
             isMirroring = false
+            syncScreenMemoryState()
             statusMessage = "Mirroring stopped"
         } else {
             guard let device = selectedDevice else {
@@ -543,11 +546,13 @@ public final class AppState: ObservableObject {
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
+                        self?.syncScreenMemoryState()
                         self?.statusMessage = "Mirroring session ended"
                         KeyboardLanguageSyncService.shared.stopSync()
                     }
                 }
                 isMirroring = true
+                syncScreenMemoryState()
                 statusMessage = "Mirroring \(device.displayName)..."
                 KeyboardLanguageSyncService.shared.startSync(for: device.id)
             } catch {
@@ -700,6 +705,20 @@ public final class AppState: ObservableObject {
         if isMCPAgentPaused {
             mcpAgentActivity = nil
         }
+    }
+
+    // MARK: - Semantic Screen Memory (Recall)
+
+    public func syncScreenMemoryState() {
+        if screenMemoryEnabled, isMirroring, let serial = selectedDevice?.id {
+            ScreenMemorySnapshotter.shared.start(serial: serial)
+        } else {
+            ScreenMemorySnapshotter.shared.stop()
+        }
+    }
+
+    public func triggerRecallSearch() {
+        RecallPanelController.shared.toggle(appState: self)
     }
 
     public func copyMCPConfigToClipboard() {
