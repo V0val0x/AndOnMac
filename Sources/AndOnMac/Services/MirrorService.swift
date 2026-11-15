@@ -4,17 +4,29 @@ public final class MirrorService: @unchecked Sendable {
     public static let shared = MirrorService()
     
     private var audioProcess: Process?
+    private var recordingProcess: Process?
     private var activeDeviceSerial: String?
-    
+    public private(set) var lastRecordingURL: URL?
+
     public var isMirroring: Bool {
         return ScrcpyClient.shared.isConnected
     }
+
+    public var isRecording: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return recordingProcess?.isRunning == true
+    }
     
     public var scrcpyPath: String {
+        if let binScrcpy = Bundle.main.resourceURL?.appendingPathComponent("bin/scrcpy").path,
+           FileManager.default.isExecutableFile(atPath: binScrcpy) {
+            return binScrcpy
+        }
         if let bundled = Bundle.main.path(forResource: "scrcpy", ofType: nil) {
             return bundled
         }
         let candidates = [
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/bin/scrcpy",
             "/opt/homebrew/bin/scrcpy",
             "/usr/local/bin/scrcpy"
         ]
@@ -147,7 +159,7 @@ public final class MirrorService: @unchecked Sendable {
         // Run SDL as a background (accessory) app: no Dock icon, no menu bar takeover
         env["SDL_MAC_BACKGROUND_APP"] = "1"
         env["SDL_VIDEO_MAC_BACKGROUND_APP"] = "1"
-        if let serverPath = Bundle.main.path(forResource: "scrcpy-server", ofType: nil) {
+        if let serverPath = ScrcpyClient.resolveScrcpyServerPath() {
             env["SCRCPY_SERVER_PATH"] = serverPath
         }
         proc.environment = env
@@ -165,5 +177,63 @@ public final class MirrorService: @unchecked Sendable {
             proc.terminate()
         }
         audioProcess = nil
+    }
+
+    /// Starts headless MP4 screen recording via `scrcpy --no-video-playback --no-control --record=...`.
+    @discardableResult
+    public func startRecording(serial: String, maxSize: Int = 1440, bitRate: Int = 8_000_000) throws -> URL {
+        stopRecording()
+        let binary = scrcpyPath
+        guard FileManager.default.isExecutableFile(atPath: binary) else {
+            throw NSError(domain: "MirrorService", code: 10, userInfo: [NSLocalizedDescriptionKey: "scrcpy binary not found"])
+        }
+
+        let moviesDir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let outputURL = moviesDir.appendingPathComponent("AndOnMac_\(formatter.string(from: Date())).mp4")
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: binary)
+        proc.arguments = [
+            "-s", serial,
+            "--no-video-playback",
+            "--no-control",
+            "--no-window",
+            "--max-size=\(maxSize)",
+            "--video-bit-rate=\(bitRate)",
+            "--record=\(outputURL.path)"
+        ]
+
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+        env["ADB"] = ADBService.shared.adbPath
+        env["SDL_MAC_BACKGROUND_APP"] = "1"
+        env["SDL_VIDEO_MAC_BACKGROUND_APP"] = "1"
+        if let serverPath = ScrcpyClient.resolveScrcpyServerPath() {
+            env["SCRCPY_SERVER_PATH"] = serverPath
+        }
+        proc.environment = env
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+
+        try proc.run()
+        stateLock.lock()
+        recordingProcess = proc
+        lastRecordingURL = outputURL
+        stateLock.unlock()
+        return outputURL
+    }
+
+    /// Stops active screen recording gracefully (`SIGINT` so MP4 moov atom is finalized).
+    public func stopRecording() {
+        stateLock.lock()
+        let proc = recordingProcess
+        recordingProcess = nil
+        stateLock.unlock()
+        if let proc, proc.isRunning {
+            proc.interrupt()
+        }
     }
 }

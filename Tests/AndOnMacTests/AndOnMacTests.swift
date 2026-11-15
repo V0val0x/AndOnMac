@@ -806,4 +806,66 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertTrue(PhotoTransferService.sanitizedCacheFilename("..").hasPrefix("file_"))
         XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("vacation.heic"), "vacation.heic")
     }
+
+    func testAndroidAppLauncherParsingAndFriendlyNames() {
+        let raw = """
+        package:com.whatsapp
+        package:org.telegram.messenger
+        package:com.example.my_custom_notes
+        package:com.whatsapp
+        """
+        let apps = AndroidAppLauncherService.parsePackageList(raw)
+        XCTAssertEqual(apps.count, 3)
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.whatsapp" && $0.displayName == "WhatsApp" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "org.telegram.messenger" && $0.displayName == "Telegram" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.example.my_custom_notes" && $0.displayName == "My Custom Notes" }))
+    }
+
+    func testVisionOCRPixelCropRectAndContinuityImageEncoding() {
+        let crop = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.25),
+            imageWidth: 1080,
+            imageHeight: 2400
+        )
+        XCTAssertEqual(crop, CGRect(x: 270, y: 1200, width: 540, height: 600))
+
+        // Out-of-bounds crop must clamp safely
+        let clamped = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: -0.5, y: 0.9, width: 2.0, height: 0.5),
+            imageWidth: 1000,
+            imageHeight: 2000
+        )
+        XCTAssertEqual(clamped.origin.x, 0)
+        XCTAssertLessThanOrEqual(clamped.maxX, 1000)
+        XCTAssertLessThanOrEqual(clamped.maxY, 2000)
+
+        // TIFF -> PNG conversion for ContinuityBridge
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4,
+            pixelsHigh: 4,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let tiff = rep?.tiffRepresentation
+        let png = ContinuityBridge.encodePasteboardImageAsPNG(pngData: nil, tiffData: tiff)
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png?.count ?? 0, 8)
+    }
+
+    @MainActor
+    func testDeviceProfilePersistenceAndDefaults() {
+        let appState = AppState()
+        let serial = "test-serial-profile-\(UUID().uuidString)"
+        XCTAssertEqual(appState.profile(for: serial), .default)
+
+        let custom = DeviceProfile(bitRate: 16_000_000, maxFps: 120, maxSize: 1080)
+        appState.updateProfile(custom, for: serial)
+        XCTAssertEqual(appState.profile(for: serial), custom)
+    }
 }

@@ -4,12 +4,17 @@ public final class ADBService: @unchecked Sendable {
     public static let shared = ADBService()
     
     public var adbPath: String {
-        // 1. Check embedded bundle resource
+        // 1. Check embedded bundle Resources/bin/adb, then Resources/adb
+        if let binAdb = Bundle.main.resourceURL?.appendingPathComponent("bin/adb").path,
+           FileManager.default.isExecutableFile(atPath: binAdb) {
+            return binAdb
+        }
         if let bundledAdb = Bundle.main.path(forResource: "adb", ofType: nil) {
             return bundledAdb
         }
         // 2. Common Homebrew and system locations
         let candidates = [
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/bin/adb",
             FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/adb",
             "/opt/homebrew/bin/adb",
             "/usr/local/bin/adb",

@@ -50,18 +50,26 @@ public final class AppState: ObservableObject {
     @AppStorage("sendOnEnter") public var sendOnEnter: Bool = true
     @AppStorage("savedWirelessIPs") public var savedWirelessIPs: String = ""
     @AppStorage("knownDevicesData") private var knownDevicesData: Data = Data()
+    @AppStorage("deviceProfilesData") private var deviceProfilesData: Data = Data()
+    @AppStorage("hideDockIcon") public var hideDockIcon: Bool = false
+    @AppStorage("continuityBridgeEnabled") public var continuityBridgeEnabled: Bool = true
 
     public var lang: AppLanguage {
         appLanguage.resolved
     }
     
     @Published public var knownDevices: [KnownDevice] = []
+    @Published public var deviceProfiles: [String: DeviceProfile] = [:]
     @Published public var statusMessage: String = L10n.tr("Готов к работе", "Ready")
     @Published public var isScanning: Bool = false
     @Published public var showPairingSheet: Bool = false
     @Published public var showPhotoDrawer: Bool = false
     @Published public var drawerMode: SideDrawerMode = .gallery
     @Published public var photoTransferNotice: String? = nil
+    @Published public var isRecording: Bool = false
+    @Published public var isOCROverlayActive: Bool = false
+    @Published public var installedApps: [AndroidAppItem] = []
+    @Published public var isLoadingApps: Bool = false
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
@@ -128,7 +136,13 @@ public final class AppState: ObservableObject {
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { _ in
             MirrorService.shared.stopMirroring()
+            MirrorService.shared.stopRecording()
+            AndroidAppLauncherService.shared.stopAllAppWindows()
+            ContinuityBridge.shared.stop()
         }
+        loadDeviceProfiles()
+        applyDockVisibility()
+        syncContinuityBridgeState()
         startNotificationListener()
         startDiscoveryListener()
         refreshDevices()
@@ -483,13 +497,15 @@ public final class AppState: ObservableObject {
                 statusMessage = "No device selected"
                 return
             }
+            let prof = profile(for: device.id)
             do {
                 try MirrorService.shared.startMirroring(
                     for: device,
                     turnScreenOff: turnScreenOff,
                     forwardAudio: forwardAudio,
                     stayAwake: stayAwake,
-                    maxFps: maxFps
+                    maxFps: prof.maxFps,
+                    bitRate: prof.bitRate
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
@@ -504,6 +520,120 @@ public final class AppState: ObservableObject {
                 statusMessage = "Failed to start: \(error.localizedDescription)"
             }
         }
+    }
+
+    // MARK: - Dock Visibility, Continuity Bridge, Recording, App Launcher & Vision OCR
+
+    public func applyDockVisibility() {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        NSApp.setActivationPolicy(hideDockIcon ? .accessory : .regular)
+    }
+
+    public func syncContinuityBridgeState() {
+        if continuityBridgeEnabled {
+            ContinuityBridge.shared.onSyncEvent = { [weak self] msg in
+                Task { @MainActor in
+                    self?.photoTransferNotice = msg
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        if self?.photoTransferNotice == msg {
+                            self?.photoTransferNotice = nil
+                        }
+                    }
+                }
+            }
+            ContinuityBridge.shared.start { [weak self] in
+                return self?.selectedDeviceId
+            }
+        } else {
+            ContinuityBridge.shared.stop()
+        }
+    }
+
+    public func toggleRecording() {
+        if isRecording || MirrorService.shared.isRecording {
+            MirrorService.shared.stopRecording()
+            isRecording = false
+            if let url = MirrorService.shared.lastRecordingURL {
+                photoTransferNotice = L10n.tr("Запись сохранена: \(url.lastPathComponent)", "Saved: \(url.lastPathComponent)", lang: lang)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+                    self.photoTransferNotice = nil
+                }
+            }
+        } else {
+            guard let device = selectedDevice else { return }
+            let prof = profile(for: device.id)
+            do {
+                _ = try MirrorService.shared.startRecording(serial: device.id, maxSize: prof.maxSize, bitRate: prof.bitRate)
+                isRecording = true
+                photoTransferNotice = L10n.tr("Идёт запись экрана...", "Recording screen...", lang: lang)
+            } catch {
+                statusMessage = "Recording failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    public func triggerScreenOCR() {
+        guard isMirroring else {
+            photoTransferNotice = L10n.tr("Сначала откройте экран телефона", "Start mirroring first", lang: lang)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                self.photoTransferNotice = nil
+            }
+            return
+        }
+        isOCROverlayActive.toggle()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func loadInstalledApps() {
+        guard let serial = selectedDevice?.id, !isLoadingApps else { return }
+        isLoadingApps = true
+        Task {
+            do {
+                let apps = try await AndroidAppLauncherService.shared.fetchInstalledApps(serial: serial)
+                await MainActor.run {
+                    self.installedApps = apps
+                    self.isLoadingApps = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoadingApps = false
+                }
+            }
+        }
+    }
+
+    public func launchStandaloneApp(_ app: AndroidAppItem) {
+        guard let serial = selectedDevice?.id else { return }
+        let prof = profile(for: serial)
+        do {
+            try AndroidAppLauncherService.shared.launchApp(
+                app,
+                serial: serial,
+                profile: prof,
+                turnScreenOff: turnScreenOff,
+                stayAwake: stayAwake
+            )
+            statusMessage = L10n.tr("Запущено окно: \(app.displayName)", "Launched \(app.displayName)", lang: lang)
+        } catch {
+            statusMessage = "Failed to launch \(app.displayName): \(error.localizedDescription)"
+        }
+    }
+
+    public func profile(for serial: String) -> DeviceProfile {
+        deviceProfiles[serial] ?? .default
+    }
+
+    public func updateProfile(_ profile: DeviceProfile, for serial: String) {
+        deviceProfiles[serial] = profile
+        if let encoded = try? JSONEncoder().encode(deviceProfiles) {
+            deviceProfilesData = encoded
+        }
+    }
+
+    private func loadDeviceProfiles() {
+        guard !deviceProfilesData.isEmpty,
+              let decoded = try? JSONDecoder().decode([String: DeviceProfile].self, from: deviceProfilesData) else { return }
+        deviceProfiles = decoded
     }
     
     public func openDrawer(mode: SideDrawerMode) {

@@ -38,6 +38,12 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 ## Features Implemented in This Codebase
 
+### Signature Standout Features (Beyond Raw `scrcpy` & Competing Wrappers)
+- **Standalone Android App Windows (Virtual Displays):** Search and launch any installed Android app directly from the Menu Bar (`Launch Android App`) into its own native-style macOS window (`scrcpy --new-display --start-app=...`) while the physical phone screen stays off.
+- **Background Apple Continuity Bridge (Text + Image Sync):** Lightweight background `ContinuityBridge` runs even when the mirror window is closed — syncing copied Mac text and **copied images/screenshots** (`NSPasteboard` PNG/TIFF → `/sdcard/Pictures/AndOnMac/` + MediaScanner) straight to Android.
+- **On-Device Apple Vision Screen OCR (`Cmd+Shift+X`):** Press `Cmd+Shift+X` or click *"Grab Text from Screen"*, drag over any unselectable text on the mirrored phone display, and extract it locally on Apple Silicon Neural Engine via `VNRecognizeTextRequest` straight into your Mac clipboard.
+- **Persistent macOS Menu Bar Utility:** Control Center-style Menu Bar popover with live battery & Wi-Fi/USB badge, 1-click toggles (*Screen Off*, *Stay Awake*, *Audio Forwarding*, *Record Screen*), mDNS auto-discovered Wi-Fi devices, per-device quality profiles, and *Hide Dock Icon* mode.
+
 - **Hardware-Accelerated 60 FPS Mirroring (`ScrcpyClient` + VideoToolbox):** Streams raw H.264 Annex-B frames from `scrcpy-server` over local ADB-forwarded TCP sockets and decodes them directly via `VTDecompressionSession` inside a frameless `NSView` (`ScrcpyDisplayNSView`) — no separate SDL video window in your Dock.
 - **Device-Matched Floating Chassis (`PhoneFrameStyle`):** Auto-detects connected hardware and adapts bezel geometry, materials, and centered camera punch-hole for **Google Pixel (8/9/10)**, **Samsung Galaxy S / S Ultra**, **Xiaomi**, **Nothing Phone**, and **OnePlus** (plus Minimal and Borderless modes).
 - **Bidirectional Photo & Media Drawer (`Cmd+4`, `PhotoTransferService`):** Pulls recent Camera photos and Screenshots from `/sdcard/DCIM` and `/sdcard/Pictures` for drag-and-drop into macOS apps/Finder, and pushes dropped images/APKs/files straight to `/sdcard/Download/`.

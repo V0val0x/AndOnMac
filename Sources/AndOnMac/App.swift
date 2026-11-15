@@ -44,6 +44,11 @@ struct AndOnMacApp: App {
                     appState.openDrawer(mode: .files)
                 }
                 .keyboardShortcut("5", modifiers: .command)
+
+                Button(L10n.tr("Распознать текст с экрана", "Grab Text from Screen", lang: appState.lang)) {
+                    appState.triggerScreenOCR()
+                }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
                 
                 Divider()
                 
@@ -126,64 +131,9 @@ struct AndOnMacApp: App {
         
         // Menu Bar Extra for fast quick-access like Control Center
         MenuBarExtra("AndOnMac", systemImage: "iphone.gen3") {
-            VStack(alignment: .leading, spacing: 8) {
-                if let device = appState.selectedDevice {
-                    Text(device.displayName)
-                        .font(.headline)
-                    Text("\(device.connectionType.rawValue) • \(device.batteryLevel.map { "\($0)%" } ?? "")")
-                        .font(.caption)
-                    
-                    Divider()
-                    
-                    Button(appState.isMirroring
-                           ? L10n.tr("Остановить экран", "Stop Mirroring", lang: appState.lang)
-                           : L10n.tr("Открыть экран", "Open Screen", lang: appState.lang)) {
-                        appState.toggleMirroring()
-                    }
-                } else {
-                    Text(L10n.tr("Нет подключенных устройств", "No connected devices", lang: appState.lang))
-                        .font(.caption)
-                }
-                
-                Divider()
-                
-                Button(L10n.tr("Поиск устройств", "Scan Devices", lang: appState.lang)) {
-                    appState.refreshDevices()
-                }
-                
-                Button(L10n.tr("Подключить по Wi-Fi...", "Connect via Wi-Fi...", lang: appState.lang)) {
-                    appState.showPairingSheet = true
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                
-                Button(L10n.tr("Сбросить ADB и восстановить USB", "Restart ADB & Reset USB", lang: appState.lang)) {
-                    Task {
-                        await appState.resetUSBAndADB()
-                    }
-                }
-
-                Menu(L10n.tr("Язык / Language", "Language", lang: appState.lang)) {
-                    ForEach(AppLanguage.allCases) { language in
-                        Button {
-                            appState.appLanguage = language
-                        } label: {
-                            if appState.appLanguage == language {
-                                Label(language.displayName(in: appState.lang), systemImage: "checkmark")
-                            } else {
-                                Text(language.displayName(in: appState.lang))
-                            }
-                        }
-                    }
-                }
-                
-                Divider()
-                
-                Button(L10n.tr("Выход", "Quit", lang: appState.lang)) {
-                    NSApplication.shared.terminate(nil)
-                }
-            }
-            .padding(6)
+            MenuBarView(appState: appState)
         }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(appState: appState)
@@ -212,9 +162,62 @@ private struct SettingsView: View {
                 Toggle(L10n.tr("Не давать телефону засыпать", "Keep phone awake", lang: lang), isOn: $appState.stayAwake)
                 Toggle(L10n.tr("Отправка по Enter (Shift+Enter — новая строка)", "Send on Enter (Shift+Enter for newline)", lang: lang), isOn: $appState.sendOnEnter)
                 Toggle(L10n.tr("Фронтальная камера (Punch Hole)", "Front Camera (Punch Hole)", lang: lang), isOn: $appState.showFrontCamera)
+                Toggle(L10n.tr("Фоновый Continuity Bridge (текст и фото)", "Background Continuity Bridge (Text & Images)", lang: lang), isOn: $appState.continuityBridgeEnabled)
+                    .onChange(of: appState.continuityBridgeEnabled) { _, _ in
+                        appState.syncContinuityBridgeState()
+                    }
+                Toggle(L10n.tr("Скрыть иконку из Dock", "Hide Dock Icon", lang: lang), isOn: $appState.hideDockIcon)
+                    .onChange(of: appState.hideDockIcon) { _, _ in
+                        appState.applyDockVisibility()
+                    }
+            }
+
+            if let device = appState.selectedDevice {
+                let currentProfile = appState.profile(for: device.id)
+                Section(L10n.tr("Профиль устройства: \(device.displayName)", "Device Profile: \(device.displayName)", lang: lang)) {
+                    Picker(L10n.tr("Макс. FPS", "Max FPS", lang: lang), selection: Binding(
+                        get: { currentProfile.maxFps },
+                        set: { newFps in
+                            var updated = currentProfile
+                            updated.maxFps = newFps
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("30 FPS").tag(30)
+                        Text("60 FPS").tag(60)
+                        Text("90 FPS").tag(90)
+                        Text("120 FPS").tag(120)
+                    }
+
+                    Picker(L10n.tr("Битрейт", "Bitrate", lang: lang), selection: Binding(
+                        get: { currentProfile.bitRate },
+                        set: { newBitrate in
+                            var updated = currentProfile
+                            updated.bitRate = newBitrate
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("4 Mbps").tag(4_000_000)
+                        Text("8 Mbps").tag(8_000_000)
+                        Text("16 Mbps").tag(16_000_000)
+                    }
+
+                    Picker(L10n.tr("Разрешение", "Resolution", lang: lang), selection: Binding(
+                        get: { currentProfile.maxSize },
+                        set: { newSize in
+                            var updated = currentProfile
+                            updated.maxSize = newSize
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("1080p").tag(1080)
+                        Text("1440p").tag(1440)
+                        Text("Native").tag(0)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 320)
+        .frame(width: 440, height: 420)
     }
 }

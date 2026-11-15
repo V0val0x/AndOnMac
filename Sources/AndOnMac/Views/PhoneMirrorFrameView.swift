@@ -202,6 +202,12 @@ public struct PhoneMirrorFrameView: View {
                     .animation(AndMotion.hudSpring, value: isHoveringHome)
             }
             
+            // On-Device Apple Vision OCR Drag Selection Overlay
+            if appState.isOCROverlayActive {
+                ScreenOCROverlayView(appState: appState)
+                    .transition(.opacity)
+            }
+
             // Photo Transfer Toast Alert
             if let notice = appState.photoTransferNotice {
                 VStack {
@@ -364,6 +370,16 @@ public struct PhoneMirrorFrameView: View {
                     .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Файловый менеджер (Cmd+5)", "File Manager (Cmd+5)", lang: appState.lang))
                     
+                    Button {
+                        appState.triggerScreenOCR()
+                    } label: {
+                        Image(systemName: "text.viewfinder")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(appState.isOCROverlayActive ? .cyan : .white)
+                    }
+                    .buttonStyle(AndonHUDIconButtonStyle())
+                    .help(L10n.tr("Текст с экрана (Cmd+Shift+X)", "Grab Text from Screen (Cmd+Shift+X)", lang: appState.lang))
+
                     Button {
                         appState.triggerPower()
                     } label: {

@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import ImageIO
 import AVFoundation
+import UserNotifications
 
 public enum MediaFolderFilter: String, CaseIterable, Identifiable, Sendable {
     case all
@@ -267,24 +268,32 @@ public final class PhotoTransferService: @unchecked Sendable {
         let remoteFolder = "/sdcard/Pictures/AndOnMac"
         _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "mkdir", "-p", remoteFolder])
         
+        let mediaExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp", "gif", "mp4", "mov"]
         var pushedCount = 0
+        var apkInstalledCount = 0
         for url in urls {
             let filename = url.lastPathComponent
-            let isAPK = filename.lowercased().hasSuffix(".apk")
+            let ext = url.pathExtension.lowercased()
+            let isAPK = ext == "apk"
             
             if isAPK {
-                // Install APK directly
+                // Install APK directly with native macOS progress/completion notification
+                postAPKNotification(title: L10n.tr("Установка APK...", "Installing APK..."), body: filename)
                 do {
-                    _ = try await ADBService.shared.execute(arguments: ["-s", serial, "install", "-r", url.path])
+                    _ = try await ADBService.shared.execute(arguments: ["-s", serial, "install", "-r", url.path], timeoutSeconds: 60.0)
                     pushedCount += 1
+                    apkInstalledCount += 1
+                    postAPKNotification(title: L10n.tr("APK установлен", "APK Installed"), body: filename)
                 } catch {
                     print("Failed to install APK \(filename): \(error)")
+                    postAPKNotification(title: L10n.tr("Ошибка установки APK", "APK Install Failed"), body: filename)
                 }
             } else {
-                let dest = "\(remoteFolder)/\(filename)"
+                let targetFolder = mediaExtensions.contains(ext) ? remoteFolder : "/sdcard/Download"
+                let dest = "\(targetFolder)/\(filename)"
                 do {
                     _ = try await ADBService.shared.execute(arguments: ["-s", serial, "push", url.path, dest])
-                    // Scan file so it shows in Gallery / Google Photos immediately
+                    // Scan file so it shows in Gallery / Files immediately
                     // 1. Modern Android (11-15) via MediaProvider content provider
                     _ = try? await ADBService.shared.execute(arguments: [
                         "-s", serial, "shell",
@@ -307,9 +316,22 @@ public final class PhotoTransferService: @unchecked Sendable {
         }
         
         if pushedCount > 0 {
-            return (true, L10n.tr("Передано в Галерею: \(pushedCount)", "Sent to Gallery: \(pushedCount)"))
+            if apkInstalledCount > 0 && apkInstalledCount == pushedCount {
+                return (true, L10n.tr("Установлено APK: \(apkInstalledCount)", "Installed APK: \(apkInstalledCount)"))
+            }
+            return (true, L10n.tr("Передано на устройство: \(pushedCount)", "Sent to device: \(pushedCount)"))
         } else {
             return (false, L10n.tr("Ошибка при передаче файлов", "Failed to transfer files"))
         }
+    }
+
+    private func postAPKNotification(title: String, body: String) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 }

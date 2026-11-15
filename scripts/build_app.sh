@@ -16,16 +16,17 @@ echo "==> Creating macOS App Bundle layout at ${APP_BUNDLE}..."
 RES_BACKUP_DIR="${OUTPUT_DIR}/.res_backup"
 rm -rf "${RES_BACKUP_DIR}"
 mkdir -p "${RES_BACKUP_DIR}"
-if [ -f "${RESOURCES_DIR}/adb" ]; then
-    cp "${RESOURCES_DIR}/adb" "${RES_BACKUP_DIR}/adb"
-fi
-if [ -f "${RESOURCES_DIR}/scrcpy-server" ]; then
-    cp "${RESOURCES_DIR}/scrcpy-server" "${RES_BACKUP_DIR}/scrcpy-server"
-fi
+for bin_name in adb scrcpy scrcpy-server; do
+    if [ -f "${RESOURCES_DIR}/bin/${bin_name}" ]; then
+        cp "${RESOURCES_DIR}/bin/${bin_name}" "${RES_BACKUP_DIR}/${bin_name}"
+    elif [ -f "${RESOURCES_DIR}/${bin_name}" ]; then
+        cp "${RESOURCES_DIR}/${bin_name}" "${RES_BACKUP_DIR}/${bin_name}"
+    fi
+done
 
 rm -rf "${APP_BUNDLE}"
 mkdir -p "${MACOS_DIR}"
-mkdir -p "${RESOURCES_DIR}"
+mkdir -p "${RESOURCES_DIR}/bin"
 
 # Copy main binary
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/${APP_NAME}"
@@ -87,25 +88,41 @@ if [ -z "${SCRCPY_SERVER}" ]; then
 fi
 if [ -n "${SCRCPY_SERVER}" ] && [ -f "${SCRCPY_SERVER}" ]; then
     echo "==> Bundling scrcpy-server from ${SCRCPY_SERVER}..."
+    cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/bin/scrcpy-server" 2>/dev/null || true
     cp "${SCRCPY_SERVER}" "${RESOURCES_DIR}/scrcpy-server" 2>/dev/null || true
 fi
-if [ ! -f "${RESOURCES_DIR}/scrcpy-server" ] && [ -f "${RES_BACKUP_DIR}/scrcpy-server" ]; then
+if [ ! -f "${RESOURCES_DIR}/bin/scrcpy-server" ] && [ -f "${RES_BACKUP_DIR}/scrcpy-server" ]; then
     echo "==> Restoring existing bundled scrcpy-server..."
+    cp "${RES_BACKUP_DIR}/scrcpy-server" "${RESOURCES_DIR}/bin/scrcpy-server"
     cp "${RES_BACKUP_DIR}/scrcpy-server" "${RESOURCES_DIR}/scrcpy-server"
+fi
+
+# Copy scrcpy binary if available
+SCRCPY_BIN=$(which scrcpy 2>/dev/null || true)
+if [ -n "${SCRCPY_BIN}" ] && [ -x "${SCRCPY_BIN}" ]; then
+    echo "==> Bundling scrcpy binary from ${SCRCPY_BIN}..."
+    if cp "${SCRCPY_BIN}" "${RESOURCES_DIR}/bin/scrcpy" 2>/dev/null; then
+        chmod +x "${RESOURCES_DIR}/bin/scrcpy"
+    fi
+fi
+if [ ! -x "${RESOURCES_DIR}/bin/scrcpy" ] && [ -f "${RES_BACKUP_DIR}/scrcpy" ]; then
+    echo "==> Restoring existing bundled scrcpy binary..."
+    cp "${RES_BACKUP_DIR}/scrcpy" "${RESOURCES_DIR}/bin/scrcpy"
+    chmod +x "${RESOURCES_DIR}/bin/scrcpy"
 fi
 
 # Copy adb if available
 ADB_BIN=$(which adb 2>/dev/null || true)
 if [ -n "${ADB_BIN}" ] && [ -x "${ADB_BIN}" ]; then
     echo "==> Bundling adb binary from ${ADB_BIN}..."
-    if cp "${ADB_BIN}" "${RESOURCES_DIR}/adb" 2>/dev/null; then
-        chmod +x "${RESOURCES_DIR}/adb"
+    if cp "${ADB_BIN}" "${RESOURCES_DIR}/bin/adb" 2>/dev/null; then
+        chmod +x "${RESOURCES_DIR}/bin/adb"
     fi
 fi
-if [ ! -x "${RESOURCES_DIR}/adb" ] && [ -f "${RES_BACKUP_DIR}/adb" ]; then
+if [ ! -x "${RESOURCES_DIR}/bin/adb" ] && [ -f "${RES_BACKUP_DIR}/adb" ]; then
     echo "==> Restoring existing bundled adb binary..."
-    cp "${RES_BACKUP_DIR}/adb" "${RESOURCES_DIR}/adb"
-    chmod +x "${RESOURCES_DIR}/adb"
+    cp "${RES_BACKUP_DIR}/adb" "${RESOURCES_DIR}/bin/adb"
+    chmod +x "${RESOURCES_DIR}/bin/adb"
 fi
 rm -rf "${RES_BACKUP_DIR}"
 

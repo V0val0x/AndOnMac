@@ -42,6 +42,20 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     private init() {}
     
+    /// Resolves the `scrcpy-server` binary path from `Contents/Resources/bin`, `Contents/Resources`, or Homebrew.
+    public static func resolveScrcpyServerPath() -> String? {
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent("bin/scrcpy-server").path,
+            Bundle.main.path(forResource: "scrcpy-server", ofType: nil),
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/bin/scrcpy-server",
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/scrcpy-server",
+            "/opt/homebrew/share/scrcpy/scrcpy-server",
+            "/usr/local/share/scrcpy/scrcpy-server",
+            "/opt/homebrew/Cellar/scrcpy/5.0.1/share/scrcpy/scrcpy-server"
+        ].compactMap { $0 }
+        return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
+    }
+
     public var isConnected: Bool {
         socketLock.lock()
         defer { socketLock.unlock() }
@@ -66,15 +80,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         guard sessionGeneration == myGen else { throw CancellationError() }
         
         // 2. Ensure scrcpy-server is pushed to phone
-        let candidates = [
-            Bundle.main.path(forResource: "scrcpy-server", ofType: nil),
-            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/scrcpy-server",
-            "/opt/homebrew/share/scrcpy/scrcpy-server",
-            "/usr/local/share/scrcpy/scrcpy-server",
-            "/opt/homebrew/Cellar/scrcpy/5.0.1/share/scrcpy/scrcpy-server"
-        ].compactMap { $0 }
-        
-        guard let serverResourcePath = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        guard let serverResourcePath = Self.resolveScrcpyServerPath() else {
             throw NSError(domain: "ScrcpyClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "scrcpy-server not found in bundle or homebrew"])
         }
         
