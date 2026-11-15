@@ -620,7 +620,18 @@ public final class ADBService: @unchecked Sendable {
     
     /// Trigger App Switcher / Recent Apps (Cmd+2 / Swipe up and hold)
     public func sendAppSwitch(serial: String) async {
-        _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_APP_SWITCH"])
+        let mode = (try? await execute(arguments: ["-s", serial, "shell", "settings", "get", "secure", "navigation_mode"], timeoutSeconds: 1.5))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mode == "0" || mode == "1" {
+            _ = try? await execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_APP_SWITCH"])
+            return
+        }
+        _ = try? await execute(
+            arguments: [
+                "-s", serial, "shell",
+                "size=$(wm size | tail -n 1 | awk '{print $NF}'); w=${size%x*}; h=${size#*x}; x=$((w/2)); y0=$((h-4)); y1=$((h*74/100)); ym=$((h*86/100)); input motionevent DOWN $x $y0; input motionevent MOVE $x $ym; input motionevent MOVE $x $y1; sleep 0.34; input motionevent UP $x $y1"
+            ],
+            timeoutSeconds: 4.0
+        )
     }
     
     /// Expand Notification Shade (Cmd+3)

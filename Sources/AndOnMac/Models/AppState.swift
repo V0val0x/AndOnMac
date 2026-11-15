@@ -457,7 +457,7 @@ public final class AppState: ObservableObject {
     
     public func triggerAppSwitch() {
         if ScrcpyClient.shared.isConnected {
-            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            ScrcpyClient.shared.triggerAppSwitch()
             return
         }
         guard let device = selectedDevice else { return }

@@ -92,6 +92,8 @@ public final class ScrcpyDisplayNSView: NSView {
     private lazy var frameCoalescer = FrameRenderCoalescer(target: self)
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
+    private var lastSignificantDragMoveTime: TimeInterval = 0
+    private var lastSignificantDragPoint: CGPoint = .zero
     private var lastReportedTopHover: Bool = false
     private var lastReportedBottomHover: Bool = false
     private var isTrackpadPanning: Bool = false
@@ -108,7 +110,7 @@ public final class ScrcpyDisplayNSView: NSView {
     }
 
     /// Detects Android smartphone edge gestures (edge-back, bottom-home, bottom-recents, top-notifications).
-    public static func detectEdgeGesture(startNormalized: CGPoint, endNormalized: CGPoint) -> SmartphoneEdgeGesture? {
+    public static func detectEdgeGesture(startNormalized: CGPoint, endNormalized: CGPoint, held: Bool = false) -> SmartphoneEdgeGesture? {
         let dx = endNormalized.x - startNormalized.x
         let dy = endNormalized.y - startNormalized.y
 
@@ -120,9 +122,9 @@ public final class ScrcpyDisplayNSView: NSView {
         if startNormalized.x >= 0.94, dx <= -0.08, abs(dx) > abs(dy) * 1.25 {
             return .back
         }
-        // Bottom edge swipe up -> Home (short/medium) or App Switcher (tall swipe >= 38% screen)
+        // Bottom edge swipe up -> Home (quick/short) or App Switcher (tall swipe >= 36% OR hold >= 0.20s at >= 14%)
         if startNormalized.y >= 0.85, dy <= -0.07, abs(dy) > abs(dx) * 1.25 {
-            return dy <= -0.38 ? .appSwitcher : .home
+            return (dy <= -0.36 || (held && dy <= -0.14)) ? .appSwitcher : .home
         }
         // Top edge swipe down -> Notification Shade
         if startNormalized.y <= 0.08, dy >= 0.08, abs(dy) > abs(dx) * 1.25 {
@@ -287,6 +289,8 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = true
         let startPt = CGPoint(x: pt.x, y: pt.y)
         touchStartNormalized = startPt
+        lastSignificantDragMoveTime = event.timestamp
+        lastSignificantDragPoint = startPt
         // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
         let clampedX: CGFloat = startPt.x <= 0.05 ? 0.0 : (startPt.x >= 0.95 ? 1.0 : startPt.x)
         let clampedY: CGFloat = startPt.y >= 0.94 ? 1.0 : (startPt.y <= 0.05 ? 0.0 : startPt.y)
@@ -295,6 +299,11 @@ public final class ScrcpyDisplayNSView: NSView {
     
     override public func mouseDragged(with event: NSEvent) {
         guard isTrackingTouch, let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+        let dist = hypot(pt.x - lastSignificantDragPoint.x, pt.y - lastSignificantDragPoint.y)
+        if dist >= 0.018 {
+            lastSignificantDragMoveTime = event.timestamp
+            lastSignificantDragPoint = CGPoint(x: pt.x, y: pt.y)
+        }
         ScrcpyClient.shared.sendTouchEvent(action: 2, normalizedX: pt.x, normalizedY: pt.y)
     }
     
@@ -303,11 +312,12 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = false
         let start = touchStartNormalized
         touchStartNormalized = nil
+        let held = (event.timestamp - lastSignificantDragMoveTime) >= 0.20
         guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
 
-        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+        if let start, let gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y), held: held) {
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
                 Self.performEdgeGesture(gesture)
             }
             return
@@ -322,7 +332,7 @@ public final class ScrcpyDisplayNSView: NSView {
         case .home:
             ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
         case .appSwitcher:
-            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            ScrcpyClient.shared.triggerAppSwitch()
         case .notifications:
             ScrcpyClient.shared.expandNotificationsPanel()
         }

@@ -24,7 +24,11 @@ public final class ScrcpyClient: @unchecked Sendable {
     private var didTurnScreenOff = false
     private let videoQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.video", qos: .userInteractive)
     private let controlQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.control", qos: .userInitiated)
+    private let gestureQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.gesture", qos: .userInteractive)
     private let decoderLock = NSLock()
+    private let gestureStateLock = NSLock()
+    private var isAppSwitchInFlight = false
+    public var usesGesturalNavigation = true
     
     // VideoToolbox
     private var decompressionSession: VTDecompressionSession?
@@ -56,8 +60,16 @@ public final class ScrcpyClient: @unchecked Sendable {
         sessionGeneration &+= 1
         let myGen = sessionGeneration
         
-        // 1. Wake up screen on start so user doesn't see a black locked screen
-        _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        // 1. Wake up screen on start & detect navigation mode (gestural vs 3-button)
+        async let wakeupTask: String? = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        async let navModeTask: String? = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "settings", "get", "secure", "navigation_mode"], timeoutSeconds: 1.5)
+        _ = await wakeupTask
+        if let navRaw = await navModeTask {
+            let trimmed = navRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.usesGesturalNavigation = (trimmed != "0" && trimmed != "1")
+        } else {
+            self.usesGesturalNavigation = true
+        }
         guard sessionGeneration == myGen else { throw CancellationError() }
         
         // 2. Ensure scrcpy-server is pushed to phone
@@ -758,8 +770,8 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Injects Touch Event: action (0=down, 1=up, 2=move), x/y normalized (0.0 ... 1.0)
     public func sendTouchEvent(action: UInt8, pointerId: UInt64 = 0, normalizedX: CGFloat, normalizedY: CGFloat, pressure: Float = 1.0) {
-        let x = Int32(max(0, min(1.0, normalizedX)) * CGFloat(deviceWidth))
-        let y = Int32(max(0, min(1.0, normalizedY)) * CGFloat(deviceHeight))
+        let x = Int32(max(0, min(max(0, deviceWidth - 1), Int(normalizedX * CGFloat(deviceWidth)))))
+        let y = Int32(max(0, min(max(0, deviceHeight - 1), Int(normalizedY * CGFloat(deviceHeight)))))
         
         var msg = Data()
         msg.append(2) // TYPE_INJECT_TOUCH_EVENT
@@ -795,8 +807,8 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Injects Trackpad / Mouse Scroll Event
     public func sendScrollEvent(normalizedX: CGFloat, normalizedY: CGFloat, deltaH: Float, deltaV: Float) {
-        let x = Int32(max(0, min(1.0, normalizedX)) * CGFloat(deviceWidth))
-        let y = Int32(max(0, min(1.0, normalizedY)) * CGFloat(deviceHeight))
+        let x = Int32(max(0, min(max(0, deviceWidth - 1), Int(normalizedX * CGFloat(deviceWidth)))))
+        let y = Int32(max(0, min(max(0, deviceHeight - 1), Int(normalizedY * CGFloat(deviceHeight)))))
         
         var msg = Data()
         msg.append(3) // TYPE_INJECT_SCROLL_EVENT
@@ -861,6 +873,55 @@ public final class ScrcpyClient: @unchecked Sendable {
     /// Expands the Android notification shade
     public func expandNotificationsPanel() {
         sendControlMessage(Data([5])) // TYPE_EXPAND_NOTIFICATION_PANEL
+    }
+
+    /// Triggers Android Recents / App Switcher using a bottom swipe-up-and-hold gesture on gestural Android
+    /// (Android 14–17 Pixel devices ignore injected KEYCODE_APP_SWITCH in gestural mode), falling back to keycode 187 for 3-button nav.
+    public func triggerAppSwitch() {
+        guard isConnected, controlSocket >= 0 else { return }
+        if !usesGesturalNavigation {
+            sendKeycode(187)
+            return
+        }
+
+        gestureStateLock.lock()
+        guard !isAppSwitchInFlight else {
+            gestureStateLock.unlock()
+            return
+        }
+        isAppSwitchInFlight = true
+        gestureStateLock.unlock()
+
+        let startGen = sessionGeneration
+        gestureQueue.async { [weak self] in
+            guard let self else { return }
+            defer {
+                self.gestureStateLock.lock()
+                self.isAppSwitchInFlight = false
+                self.gestureStateLock.unlock()
+            }
+            guard self.isConnected, self.sessionGeneration == startGen else { return }
+
+            let pointerId: UInt64 = 99
+            let startY: CGFloat = 0.998
+            let holdY: CGFloat = 0.74
+            self.sendTouchEvent(action: 0, pointerId: pointerId, normalizedX: 0.5, normalizedY: startY)
+            usleep(14_000)
+
+            let steps = 8
+            for step in 1...steps {
+                guard self.isConnected, self.sessionGeneration == startGen else { return }
+                let progress = CGFloat(step) / CGFloat(steps)
+                let y = startY + (holdY - startY) * progress
+                self.sendTouchEvent(action: 2, pointerId: pointerId, normalizedX: 0.5, normalizedY: y)
+                usleep(12_000)
+            }
+
+            // Pause at the hold point so Launcher's TouchInteractionService locks into Overview / Recents
+            usleep(340_000)
+            guard self.isConnected, self.sessionGeneration == startGen else { return }
+            self.sendTouchEvent(action: 1, pointerId: pointerId, normalizedX: 0.5, normalizedY: holdY)
+        }
     }
     
     /// Returns true if text contains non-ASCII characters (e.g. Cyrillic) that scrcpy's

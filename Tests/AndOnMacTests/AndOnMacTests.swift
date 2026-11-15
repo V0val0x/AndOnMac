@@ -626,6 +626,14 @@ final class AndOnMacTests: XCTestCase {
             .appSwitcher
         )
         XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: false),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: true),
+            .appSwitcher
+        )
+        XCTAssertEqual(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), endNormalized: CGPoint(x: 0.5, y: 0.20)),
             .notifications
         )
@@ -637,8 +645,9 @@ final class AndOnMacTests: XCTestCase {
     func testHomeBarDragClassificationAndNonDraggableArea() {
         XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -5), .none)
         XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -10), .home)
-        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -54), .home)
-        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -55), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -41), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -42), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -20, holdDuration: 0.22), .appSwitcher)
         XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -90), .appSwitcher)
         XCTAssertFalse(NonDraggableNSView().mouseDownCanMoveWindow)
         XCTAssertFalse(HomeBarInteractiveNSView().mouseDownCanMoveWindow)

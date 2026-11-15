@@ -683,8 +683,8 @@ public struct PhoneMirrorFrameView: View {
         case appSwitcher
     }
 
-    public static func classifyHomeBarDrag(translationHeight: CGFloat) -> HomeBarGestureAction {
-        if translationHeight <= -55 {
+    public static func classifyHomeBarDrag(translationHeight: CGFloat, holdDuration: TimeInterval = 0) -> HomeBarGestureAction {
+        if translationHeight <= -42 || (holdDuration >= 0.20 && translationHeight <= -16) {
             return .appSwitcher
         }
         if translationHeight <= -10 {
@@ -796,6 +796,8 @@ public final class HomeBarInteractiveNSView: NSView {
         let startY = NSEvent.mouseLocation.y
         var latestY = startY
         var maxUpward: CGFloat = 0
+        var lastSignificantY = startY
+        var lastSignificantMoveTime = event.timestamp
         onDragChanged?(0, true)
 
         window?.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { trackedEvent, stop in
@@ -804,17 +806,23 @@ public final class HomeBarInteractiveNSView: NSView {
                 latestY = NSEvent.mouseLocation.y
                 let dy = latestY - startY
                 maxUpward = max(maxUpward, dy)
+                if abs(latestY - lastSignificantY) >= 4 {
+                    lastSignificantY = latestY
+                    lastSignificantMoveTime = trackedEvent?.timestamp ?? lastSignificantMoveTime
+                }
                 let clampedOffset = min(0, max(-75, -dy))
                 self.onDragChanged?(clampedOffset, true)
             case .leftMouseUp:
                 latestY = NSEvent.mouseLocation.y
                 let dy = latestY - startY
                 maxUpward = max(maxUpward, dy)
+                let releaseTime = trackedEvent?.timestamp ?? lastSignificantMoveTime
+                let holdDuration = max(0, releaseTime - lastSignificantMoveTime)
                 let action: PhoneMirrorFrameView.HomeBarGestureAction
                 if abs(dy) < 5 && maxUpward < 5 {
                     action = .home
                 } else {
-                    action = PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -dy)
+                    action = PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -dy, holdDuration: holdDuration)
                 }
                 self.onDragChanged?(0, false)
                 self.onAction?(action)
