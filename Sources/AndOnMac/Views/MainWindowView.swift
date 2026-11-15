@@ -3,6 +3,7 @@ import AppKit
 
 public struct MainWindowView: View {
     @ObservedObject var appState: AppState
+    @State private var drawerExpanded: Bool = false
     
     public init(appState: AppState) {
         self.appState = appState
@@ -15,7 +16,7 @@ public struct MainWindowView: View {
                 .zIndex(1)
             
             // Photo & File Transfer Side Drawer
-            if appState.showPhotoDrawer {
+            if drawerExpanded {
                 PhotoTransferDrawerView(appState: appState)
                     .zIndex(0)
                     .transition(
@@ -25,17 +26,28 @@ public struct MainWindowView: View {
                         )
                     )
             }
+            Spacer(minLength: 0)
         }
-        .animation(AndMotion.drawerSpring, value: appState.showPhotoDrawer)
         .padding(AndSpacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: appState.showPhotoDrawer) { _, newValue in
+            if !newValue {
+                withAnimation(AndMotion.drawerSpring) {
+                    drawerExpanded = false
+                }
+            }
+        }
         .background(
             WindowConfigurator(
                 showDrawer: appState.showPhotoDrawer,
                 scale: appState.windowScale,
                 style: appState.effectiveFrameStyle,
                 isLandscape: appState.isLandscape,
-                aspect: appState.effectiveAspect
+                aspect: appState.effectiveAspect,
+                onDrawerWindowExpanded: {
+                    withAnimation(AndMotion.drawerSpring) {
+                        drawerExpanded = true
+                    }
+                }
             ) { window in
                 window.isOpaque = false
                 window.backgroundColor = .clear
@@ -58,6 +70,7 @@ private struct WindowConfigurator: NSViewRepresentable {
     let style: PhoneFrameStyle
     let isLandscape: Bool
     let aspect: CGFloat
+    let onDrawerWindowExpanded: () -> Void
     let configure: (NSWindow) -> Void
     
     final class Coordinator {
@@ -76,25 +89,31 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let window = view.window {
                 configure(window)
                 updateWindowSize(window: window, animated: false)
+                if showDrawer {
+                    onDrawerWindowExpanded()
+                }
             }
         }
         return view
     }
     
     func updateNSView(_ nsView: NSView, context: Context) {
-        if let window = nsView.window {
+        let previousShowDrawer = context.coordinator.lastShowDrawer
+        context.coordinator.lastShowDrawer = showDrawer
+
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
             configure(window)
-            let previousShowDrawer = context.coordinator.lastShowDrawer
-            context.coordinator.lastShowDrawer = showDrawer
 
             if let previous = previousShowDrawer, previous != showDrawer {
                 context.coordinator.pendingShrinkWorkItem?.cancel()
                 context.coordinator.pendingShrinkWorkItem = nil
 
                 if showDrawer {
-                    // Expand invisible transparent NSWindow bounds immediately so the phone
-                    // stays rock-solid at origin.x while the drawer springs open smoothly.
+                    // Expand invisible transparent NSWindow bounds first, then spring-reveal the drawer
+                    // so the phone chassis stays rock-solid at origin.x with zero sideways jump.
                     updateWindowSize(window: window, animated: false)
+                    onDrawerWindowExpanded()
                 } else {
                     // Wait for the drawer closing spring to finish before shrinking the invisible window.
                     let workItem = DispatchWorkItem { [weak window] in
@@ -112,15 +131,16 @@ private struct WindowConfigurator: NSViewRepresentable {
     
     private func updateWindowSize(window: NSWindow, animated: Bool) {
         let mult = style.baseWidthMultiplier
+        let bezel = style.bezelWidth * 2
         let phoneWidth: CGFloat
         let phoneHeight: CGFloat
         if isLandscape {
             let h = 320.0 * scale.multiplier
-            phoneWidth = h * aspect * mult
-            phoneHeight = h
+            phoneWidth = h * aspect * mult + bezel
+            phoneHeight = h + bezel
         } else {
-            phoneWidth = 320.0 * scale.multiplier * mult
-            phoneHeight = (320.0 * aspect) * scale.multiplier
+            phoneWidth = 320.0 * scale.multiplier * mult + bezel
+            phoneHeight = (320.0 * aspect) * scale.multiplier + bezel
         }
         
         let targetWidth = (phoneWidth + 40) + (showDrawer ? 290 + 16 : 0)

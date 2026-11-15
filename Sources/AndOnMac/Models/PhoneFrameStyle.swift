@@ -43,17 +43,17 @@ public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
         }
     }
     
-    /// Outer chassis corner radius in points
+    /// Outer chassis corner radius in points (calibrated to real hardware proportions at 320pt width)
     public var cornerRadius: CGFloat {
         switch self {
-        case .auto, .pixel: return 44
-        case .samsungUltra: return 12 // Signature sharp industrial Galaxy Ultra silhouette
-        case .samsung: return 36
-        case .xiaomi: return 38
-        case .nothing: return 40
-        case .oneplus: return 38
-        case .minimal: return 42
-        case .borderless: return 32
+        case .auto, .pixel: return 28
+        case .samsungUltra: return 10 // Signature sharp industrial Galaxy Ultra silhouette
+        case .samsung: return 24
+        case .xiaomi: return 26
+        case .nothing: return 28
+        case .oneplus: return 26
+        case .minimal: return 24
+        case .borderless: return 18
         }
     }
     
@@ -77,12 +77,9 @@ public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
         max(2, innerCornerRadius - 2)
     }
     
-    /// Base phone width multiplier (Galaxy Ultra is slightly wider in hand)
+    /// Base screen width multiplier (1.0 preserves exact deviceWidth:deviceHeight without distortion)
     public var baseWidthMultiplier: CGFloat {
-        switch self {
-        case .samsungUltra: return 1.03
-        default: return 1.0
-        }
+        return 1.0
     }
     
     /// Whether this model features a centered punch-hole camera

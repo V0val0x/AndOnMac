@@ -5,17 +5,20 @@ import VideoToolbox
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
+    public var screenClipRadius: CGFloat = 24
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     public var onHomeGestureTriggered: (() -> Void)?
     
     public init(
         serial: String?,
+        screenClipRadius: CGFloat = 24,
         onFileDrop: (([URL]) -> Void)? = nil,
         onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil,
         onHomeGestureTriggered: (() -> Void)? = nil
     ) {
         self.serial = serial
+        self.screenClipRadius = screenClipRadius
         self.onFileDrop = onFileDrop
         self.onHoverZonesChanged = onHoverZonesChanged
         self.onHomeGestureTriggered = onHomeGestureTriggered
@@ -24,6 +27,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     public func makeNSView(context: Context) -> ScrcpyDisplayNSView {
         let view = ScrcpyDisplayNSView()
         view.serial = serial
+        view.layer?.cornerRadius = screenClipRadius
         view.onFileDrop = onFileDrop
         view.onHoverZonesChanged = onHoverZonesChanged
         view.onHomeGestureTriggered = onHomeGestureTriggered
@@ -32,6 +36,7 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     
     public func updateNSView(_ nsView: ScrcpyDisplayNSView, context: Context) {
         nsView.serial = serial
+        nsView.layer?.cornerRadius = screenClipRadius
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
         nsView.onHomeGestureTriggered = onHomeGestureTriggered

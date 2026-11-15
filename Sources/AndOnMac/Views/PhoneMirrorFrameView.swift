@@ -15,20 +15,24 @@ public struct PhoneMirrorFrameView: View {
     
     private var baseWidth: CGFloat {
         let mult = appState.effectiveFrameStyle.baseWidthMultiplier
+        let screenWidth: CGFloat
         if appState.isLandscape {
             let h = 320.0 * appState.windowScale.multiplier
-            return h * appState.effectiveAspect * mult
+            screenWidth = h * appState.effectiveAspect * mult
         } else {
-            return 320.0 * appState.windowScale.multiplier * mult
+            screenWidth = 320.0 * appState.windowScale.multiplier * mult
         }
+        return screenWidth + bezelWidth * 2
     }
     
     private var baseHeight: CGFloat {
+        let screenHeight: CGFloat
         if appState.isLandscape {
-            return 320.0 * appState.windowScale.multiplier
+            screenHeight = 320.0 * appState.windowScale.multiplier
         } else {
-            return (320.0 * appState.effectiveAspect) * appState.windowScale.multiplier
+            screenHeight = (320.0 * appState.effectiveAspect) * appState.windowScale.multiplier
         }
+        return screenHeight + bezelWidth * 2
     }
     
     private var cornerRadius: CGFloat {
@@ -72,31 +76,32 @@ public struct PhoneMirrorFrameView: View {
                 .shadow(color: Color.black.opacity(0.48), radius: 26, x: 0, y: 12)
                 .makeWindowDraggable()
             
-            // Inner Screen Border & Display
-            RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
-                .fill(Color.black)
-                .padding(bezelWidth)
-                .makeWindowDraggable()
-                .overlay(
-                    Group {
-                        if appState.isMirroring {
-                            // Live Embedded Screen
-                            liveScreenView
-                        } else if appState.showPairingSheet {
-                            // In-Phone Pairing & Wireless Setup
-                            WirelessPairingView(appState: appState)
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .move(edge: .bottom).combined(with: .opacity)
-                                ))
-                        } else {
-                            // Standby / Onboarding Screen
-                            standbyScreenView
-                                .transition(.opacity)
-                        }
+            // Inner Screen Border & Display (inset inside bezelWidth)
+            ZStack {
+                RoundedRectangle(cornerRadius: innerCornerRadius, style: .continuous)
+                    .fill(Color.black)
+                    .makeWindowDraggable()
+
+                Group {
+                    if appState.isMirroring {
+                        // Live Embedded Screen
+                        liveScreenView
+                    } else if appState.showPairingSheet {
+                        // In-Phone Pairing & Wireless Setup
+                        WirelessPairingView(appState: appState)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .move(edge: .bottom).combined(with: .opacity)
+                            ))
+                    } else {
+                        // Standby / Onboarding Screen
+                        standbyScreenView
+                            .transition(.opacity)
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
-                )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
+            }
+            .padding(bezelWidth)
         }
         .frame(width: baseWidth, height: baseHeight)
     }
@@ -142,6 +147,7 @@ public struct PhoneMirrorFrameView: View {
             // Live Video Stream decoded via VideoToolbox
             ScrcpyVideoView(
                 serial: appState.selectedDevice?.id,
+                screenClipRadius: screenClipRadius,
                 onFileDrop: { urls in
                     Task {
                         if let serial = appState.selectedDevice?.id {
