@@ -17,9 +17,13 @@
 
 ### Демонстрация возможностей
 
-| Трансляция 60 FPS и управление | Галерея и перенос фото на Mac (`Cmd+4`) | Общий буфер обмена (`macOS ↔ Android`) |
-| :---: | :---: | :---: |
-| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
+| Трансляция 60 FPS и Hover HUD | Рамки устройств и живой Ambilight |
+| :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Device Frames & Ambilight](./assets/demo-frames-ambilight.gif) |
+
+| Галерея и перенос фото на Mac (`Cmd+4`) | Общий буфер обмена (`macOS ↔ Android`) |
+| :---: | :---: |
+| ![Photo Transfer to Mac](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
 
 ---
 
