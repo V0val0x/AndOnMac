@@ -34,9 +34,13 @@ public final class ScrcpyClient: @unchecked Sendable {
 
     private let videoQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.video", qos: .userInteractive)
     private let controlQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.control", qos: .userInitiated)
+    private let gestureQueue = DispatchQueue(label: "com.andonmac.scrcpyclient.gesture", qos: .userInteractive)
     private let decoderLock = NSLock()
     private let socketLock = NSLock()
     private let pixelBufferLock = NSLock()
+    private let gestureStateLock = NSLock()
+    private var isAppSwitchInFlight = false
+    public var usesGesturalNavigation = true
     
     // VideoToolbox
     private var decompressionSession: VTDecompressionSession?
@@ -104,8 +108,16 @@ public final class ScrcpyClient: @unchecked Sendable {
         self.hasDecodedAnyFrame = false
         self.pendingDecodeFrames = 0
         
-        // 1. Wake up screen on start so user doesn't see a black locked screen
-        _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        // 1. Wake up screen on start & detect navigation mode (gestural vs 3-button)
+        async let wakeupTask: String? = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+        async let navModeTask: String? = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "settings", "get", "secure", "navigation_mode"], timeoutSeconds: 1.5)
+        _ = await wakeupTask
+        if let navRaw = await navModeTask {
+            let trimmed = navRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.usesGesturalNavigation = (trimmed != "0" && trimmed != "1")
+        } else {
+            self.usesGesturalNavigation = true
+        }
         guard sessionGeneration == myGen else { throw CancellationError() }
         
         // 2. Ensure scrcpy-server is pushed to phone
@@ -182,6 +194,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         self.activeCodec = codec
         socketLock.lock()
         self.isRunning = true
+        let currentGen = sessionGeneration
         socketLock.unlock()
 
         let vSock: Int32
@@ -226,7 +239,7 @@ public final class ScrcpyClient: @unchecked Sendable {
         
         // 7. Start reading raw video stream on dedicated videoQueue
         videoQueue.async { [weak self] in
-            self?.readRawVideoStream(socket: vSock)
+            self?.readRawVideoStream(socket: vSock, generation: currentGen)
         }
         
         // 8. Start automatic Universal Clipboard Sync (Mac -> Phone)
@@ -311,11 +324,15 @@ public final class ScrcpyClient: @unchecked Sendable {
         latestPixelBuffer = nil
         pixelBufferLock.unlock()
         pendingDecodeFrames = 0
-        if let session = session {
-            VTDecompressionSessionWaitForAsynchronousFrames(session)
-            VTDecompressionSessionInvalidate(session)
-        }
         decoderLock.unlock()
+
+        if let session = session {
+            nonisolated(unsafe) let sessionToInvalidate = session
+            DispatchQueue.global(qos: .utility).async {
+                VTDecompressionSessionWaitForAsynchronousFrames(sessionToInvalidate)
+                VTDecompressionSessionInvalidate(sessionToInvalidate)
+            }
+        }
         
         if wasRunning {
             onSessionStateChanged?(false)
@@ -410,15 +427,16 @@ public final class ScrcpyClient: @unchecked Sendable {
         return true
     }
 
-    private func readRawVideoStream(socket: Int32) {
+    private func readRawVideoStream(socket: Int32, generation: UInt64) {
         var buffer = Data()
+        var readOffset = 0
         var temp = [UInt8](repeating: 0, count: 65536)
         
         var vps: Data?
         var sps: Data?
         var pps: Data?
         
-        while isRunning && videoSocket == socket {
+        while isRunning && sessionGeneration == generation && videoSocket == socket {
             let bytesRead = recv(socket, &temp, temp.count, 0)
             if bytesRead < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
@@ -430,44 +448,65 @@ public final class ScrcpyClient: @unchecked Sendable {
             
             buffer.append(temp, count: bytesRead)
             if Self.trimOversizedStreamBuffer(&buffer) {
+                readOffset = 0
                 continue
             }
             
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
-            while isRunning && videoSocket == socket && buffer.count >= 12 {
-                let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
-                    rawPtr.loadUnaligned(fromByteOffset: 8, as: UInt32.self).bigEndian
+            while isRunning && sessionGeneration == generation && videoSocket == socket && (buffer.count - readOffset) >= 12 {
+                var shouldBreak = false
+                autoreleasepool {
+                    let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
+                        rawPtr.loadUnaligned(fromByteOffset: readOffset + 8, as: UInt32.self).bigEndian
+                    }
+                    
+                    if packetSize > 0 && packetSize < 10_000_000 {
+                        let totalFrameSize = 12 + Int(packetSize)
+                        if (buffer.count - readOffset) >= totalFrameSize {
+                            let payloadStart = readOffset + 12
+                            let payloadEnd = readOffset + totalFrameSize
+                            let payload = Data(buffer[payloadStart..<payloadEnd])
+                            readOffset = payloadEnd
+                            
+                            // Compact consumed prefix periodically instead of reallocating on every frame at 120Hz
+                            if readOffset >= buffer.count {
+                                buffer.removeAll(keepingCapacity: true)
+                                readOffset = 0
+                            } else if readOffset >= 65_536 && readOffset * 2 >= buffer.count {
+                                buffer = Data(buffer[readOffset...])
+                                readOffset = 0
+                            }
+                            
+                            // Note: Never drop compressed P-frame packets before VideoToolbox decoding,
+                            // as dropping inter-frames breaks reference chains and freezes video until next IDR.
+                            // Frame-queue lag is eliminated post-decode by presenting only the newest CVPixelBuffer.
+                            processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
+                        } else {
+                            shouldBreak = true
+                        }
+                    } else {
+                        if readOffset > 0 {
+                            buffer = Data(buffer[readOffset...])
+                            readOffset = 0
+                        }
+                        // Fallback to raw Annex-B NAL parser if not 12-byte framed
+                        if let (nalData, nextIdx) = extractNextNAL(from: buffer) {
+                            buffer = Data(buffer.dropFirst(nextIdx))
+                            handleNAL(nalData, vps: &vps, sps: &sps, pps: &pps)
+                        } else {
+                            shouldBreak = true
+                        }
+                    }
                 }
-                
-                if packetSize > 0 && packetSize < 10_000_000 {
-                    let totalFrameSize = 12 + Int(packetSize)
-                    if buffer.count >= totalFrameSize {
-                        let payload = Data(buffer.dropFirst(12).prefix(Int(packetSize)))
-                        buffer = Data(buffer.dropFirst(totalFrameSize))
-                        
-                        // Note: Never drop compressed P-frame packets before VideoToolbox decoding,
-                        // as dropping inter-frames breaks reference chains and freezes video until next IDR.
-                        // Frame-queue lag is eliminated post-decode by presenting only the newest CVPixelBuffer.
-                        processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
-                        continue
-                    } else {
-                        break
-                    }
-                } else {
-                    // Fallback to raw Annex-B NAL parser if not 12-byte framed
-                    if let (nalData, nextIdx) = extractNextNAL(from: buffer) {
-                        buffer = Data(buffer.dropFirst(nextIdx))
-                        handleNAL(nalData, vps: &vps, sps: &sps, pps: &pps)
-                    } else {
-                        break
-                    }
+                if shouldBreak {
+                    break
                 }
             }
         }
         
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.videoSocket == socket else { return }
+            guard let self = self, self.sessionGeneration == generation, self.videoSocket == socket else { return }
             self.stop()
         }
     }
@@ -941,23 +980,26 @@ public final class ScrcpyClient: @unchecked Sendable {
             flags: [._1xRealTimePlayback, ._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
-            guard decodeStatus == noErr, let pixelBuffer = imageBuffer, let self = self else { return }
-            self.hasDecodedAnyFrame = true
-            PerformanceEngine.recordPresentedFrame()
-            self.pixelBufferLock.lock()
-            self.latestPixelBuffer = pixelBuffer
-            self.pixelBufferLock.unlock()
+            autoreleasepool {
+                guard decodeStatus == noErr, let pixelBuffer = imageBuffer, let self = self else { return }
+                self.hasDecodedAnyFrame = true
+                PerformanceEngine.recordPresentedFrame()
+                AmbilightEngine.submitPixelBuffer(pixelBuffer)
+                self.pixelBufferLock.lock()
+                self.latestPixelBuffer = pixelBuffer
+                self.pixelBufferLock.unlock()
 
-            nonisolated(unsafe) let pb = pixelBuffer
-            // Submit directly to MetalVideoRenderer with zero main-thread dispatch jitter
-            self.onFrameDecoded?(pb)
+                nonisolated(unsafe) let pb = pixelBuffer
+                // Submit directly to MetalVideoRenderer with zero main-thread dispatch jitter
+                self.onFrameDecoded?(pb)
 
-            if let imageCallback = self.onFrameImageDecoded {
-                var cgImage: CGImage?
-                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-                if let cgImage = cgImage {
-                    DispatchQueue.main.async {
-                        imageCallback(cgImage)
+                if let imageCallback = self.onFrameImageDecoded {
+                    var cgImage: CGImage?
+                    VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+                    if let cgImage = cgImage {
+                        DispatchQueue.main.async {
+                            imageCallback(cgImage)
+                        }
                     }
                 }
             }
@@ -980,8 +1022,8 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Injects Touch Event: action (0=down, 1=up, 2=move), x/y normalized (0.0 ... 1.0)
     public func sendTouchEvent(action: UInt8, pointerId: UInt64 = 0, normalizedX: CGFloat, normalizedY: CGFloat, pressure: Float = 1.0) {
-        let x = Int32(max(0, min(1.0, normalizedX)) * CGFloat(deviceWidth))
-        let y = Int32(max(0, min(1.0, normalizedY)) * CGFloat(deviceHeight))
+        let x = Int32(max(0, min(max(0, deviceWidth - 1), Int(normalizedX * CGFloat(deviceWidth)))))
+        let y = Int32(max(0, min(max(0, deviceHeight - 1), Int(normalizedY * CGFloat(deviceHeight)))))
         
         var msg = Data()
         msg.append(2) // TYPE_INJECT_TOUCH_EVENT
@@ -1000,13 +1042,14 @@ public final class ScrcpyClient: @unchecked Sendable {
         msg.append(Data(bytes: &screenW, count: 2))
         msg.append(Data(bytes: &screenH, count: 2))
         
-        // Pressure as uint16
-        var pVal = UInt16(max(0.0, min(1.0, pressure)) * 65535.0).bigEndian
+        // Pressure as uint16 (0 on UP/CANCEL, non-zero on DOWN/MOVE)
+        let effectivePressure: Float = (action == 1 || action == 3) ? 0.0 : pressure
+        var pVal = UInt16(max(0.0, min(1.0, effectivePressure)) * 65535.0).bigEndian
         msg.append(Data(bytes: &pVal, count: 2))
         
-        // Buttons: primary=1
-        let actionButton: UInt32 = 1
-        let buttons: UInt32 = 1
+        // Buttons: primary=1 during touch, 0 on release/cancel
+        let actionButton: UInt32 = (action == 2) ? 0 : 1
+        let buttons: UInt32 = (action == 1 || action == 3) ? 0 : 1
         var abBig = actionButton.bigEndian
         var bBig = buttons.bigEndian
         msg.append(Data(bytes: &abBig, count: 4))
@@ -1017,8 +1060,8 @@ public final class ScrcpyClient: @unchecked Sendable {
     
     /// Injects Trackpad / Mouse Scroll Event
     public func sendScrollEvent(normalizedX: CGFloat, normalizedY: CGFloat, deltaH: Float, deltaV: Float) {
-        let x = Int32(max(0, min(1.0, normalizedX)) * CGFloat(deviceWidth))
-        let y = Int32(max(0, min(1.0, normalizedY)) * CGFloat(deviceHeight))
+        let x = Int32(max(0, min(max(0, deviceWidth - 1), Int(normalizedX * CGFloat(deviceWidth)))))
+        let y = Int32(max(0, min(max(0, deviceHeight - 1), Int(normalizedY * CGFloat(deviceHeight)))))
         
         var msg = Data()
         msg.append(3) // TYPE_INJECT_SCROLL_EVENT
@@ -1083,6 +1126,62 @@ public final class ScrcpyClient: @unchecked Sendable {
     /// Expands the Android notification shade
     public func expandNotificationsPanel() {
         sendControlMessage(Data([5])) // TYPE_EXPAND_NOTIFICATION_PANEL
+    }
+
+    /// Triggers Android Recents / App Switcher using a bottom swipe-up-and-hold gesture on gestural Android
+    /// (Android 14–17 Pixel devices ignore injected KEYCODE_APP_SWITCH in gestural mode), falling back to keycode 187 for 3-button nav.
+    public func triggerAppSwitch() {
+        guard isConnected, controlSocket >= 0 else { return }
+        if !usesGesturalNavigation {
+            sendKeycode(187)
+            return
+        }
+
+        gestureStateLock.lock()
+        guard !isAppSwitchInFlight else {
+            gestureStateLock.unlock()
+            return
+        }
+        isAppSwitchInFlight = true
+        gestureStateLock.unlock()
+
+        let startGen = sessionGeneration
+        gestureQueue.async { [weak self] in
+            guard let self else { return }
+            defer {
+                self.gestureStateLock.lock()
+                self.isAppSwitchInFlight = false
+                self.gestureStateLock.unlock()
+            }
+            guard self.isConnected, self.sessionGeneration == startGen else { return }
+
+            let pointerId: UInt64 = 99
+            let startY: CGFloat = 0.996
+            let holdY: CGFloat = 0.74
+            self.sendTouchEvent(action: 0, pointerId: pointerId, normalizedX: 0.5, normalizedY: startY)
+            usleep(20_000)
+
+            let steps = 6
+            for step in 1...steps {
+                guard self.isConnected, self.sessionGeneration == startGen else { return }
+                let progress = CGFloat(step) / CGFloat(steps)
+                let y = startY + (holdY - startY) * progress
+                self.sendTouchEvent(action: 2, pointerId: pointerId, normalizedX: 0.5, normalizedY: y)
+                usleep(22_000)
+            }
+
+            // Hold stationary at `holdY` and emit periodic micro-MOVE updates so Launcher's
+            // MotionPauseDetector locks Overview and VelocityTracker zeroes out upward velocity before ACTION_UP.
+            let holdAnchors: [CGFloat] = [holdY - 0.001, holdY, holdY - 0.001, holdY]
+            for anchorY in holdAnchors {
+                usleep(125_000)
+                guard self.isConnected, self.sessionGeneration == startGen else { return }
+                self.sendTouchEvent(action: 2, pointerId: pointerId, normalizedX: 0.5, normalizedY: anchorY)
+            }
+            usleep(60_000)
+            guard self.isConnected, self.sessionGeneration == startGen else { return }
+            self.sendTouchEvent(action: 1, pointerId: pointerId, normalizedX: 0.5, normalizedY: holdY)
+        }
     }
     
     /// Returns true if text contains non-ASCII characters (e.g. Cyrillic) that scrcpy's

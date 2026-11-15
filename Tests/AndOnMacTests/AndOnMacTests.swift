@@ -158,14 +158,14 @@ final class AndOnMacTests: XCTestCase {
         // Pixel
         let pixel = Device(id: "1", model: "Pixel 9 Pro", manufacturer: "Google")
         XCTAssertEqual(PhoneFrameStyle.detect(for: pixel), .pixel)
-        XCTAssertEqual(PhoneFrameStyle.pixel.cornerRadius, 28)
+        XCTAssertEqual(PhoneFrameStyle.pixel.cornerRadius, 44)
         XCTAssertTrue(PhoneFrameStyle.pixel.hasPunchHole)
         
         // Samsung Ultra
         let ultra1 = Device(id: "2", model: "SM-S928B", manufacturer: "Samsung") // S24 Ultra
         XCTAssertEqual(PhoneFrameStyle.detect(for: ultra1), .samsungUltra)
-        XCTAssertEqual(PhoneFrameStyle.samsungUltra.cornerRadius, 10) // Sharp signature Ultra corners
-        XCTAssertEqual(PhoneFrameStyle.samsungUltra.baseWidthMultiplier, 1.0)
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.cornerRadius, 12) // Sharp signature Ultra corners
+        XCTAssertEqual(PhoneFrameStyle.samsungUltra.baseWidthMultiplier, 1.03)
         
         let ultra2 = Device(id: "3", model: "Galaxy S25 Ultra", manufacturer: "Samsung")
         XCTAssertEqual(PhoneFrameStyle.detect(for: ultra2), .samsungUltra)
@@ -173,22 +173,22 @@ final class AndOnMacTests: XCTestCase {
         // Samsung Standard
         let s24 = Device(id: "4", model: "SM-S921B", manufacturer: "Samsung") // S24 Base
         XCTAssertEqual(PhoneFrameStyle.detect(for: s24), .samsung)
-        XCTAssertEqual(PhoneFrameStyle.samsung.cornerRadius, 24)
+        XCTAssertEqual(PhoneFrameStyle.samsung.cornerRadius, 36)
         
         // Xiaomi
         let xiaomi = Device(id: "5", model: "Xiaomi 14", manufacturer: "Xiaomi")
         XCTAssertEqual(PhoneFrameStyle.detect(for: xiaomi), .xiaomi)
-        XCTAssertEqual(PhoneFrameStyle.xiaomi.cornerRadius, 26)
+        XCTAssertEqual(PhoneFrameStyle.xiaomi.cornerRadius, 38)
         
         // Nothing Phone
         let nothing = Device(id: "6", model: "Phone (2)", manufacturer: "Nothing")
         XCTAssertEqual(PhoneFrameStyle.detect(for: nothing), .nothing)
-        XCTAssertEqual(PhoneFrameStyle.nothing.cornerRadius, 28)
+        XCTAssertEqual(PhoneFrameStyle.nothing.cornerRadius, 40)
         
         // OnePlus
         let oneplus = Device(id: "7", model: "CPH2581", manufacturer: "OnePlus")
         XCTAssertEqual(PhoneFrameStyle.detect(for: oneplus), .oneplus)
-        XCTAssertEqual(PhoneFrameStyle.oneplus.cornerRadius, 26)
+        XCTAssertEqual(PhoneFrameStyle.oneplus.cornerRadius, 38)
     }
     
     @MainActor
@@ -625,12 +625,39 @@ final class AndOnMacTests: XCTestCase {
             .appSwitcher
         )
         XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.72)),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.89), endNormalized: CGPoint(x: 0.5, y: 0.45)),
+            .appSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: false),
+            .home
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.95), endNormalized: CGPoint(x: 0.5, y: 0.78), held: true),
+            .appSwitcher
+        )
+        XCTAssertEqual(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), endNormalized: CGPoint(x: 0.5, y: 0.20)),
             .notifications
         )
         XCTAssertNil(
             ScrcpyDisplayNSView.detectEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.5), endNormalized: CGPoint(x: 0.7, y: 0.5))
         )
+    }
+
+    func testHomeBarDragClassificationAndNonDraggableArea() {
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -5), .none)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -10), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -41), .home)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -42), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -20, holdDuration: 0.22), .appSwitcher)
+        XCTAssertEqual(PhoneMirrorFrameView.classifyHomeBarDrag(translationHeight: -90), .appSwitcher)
+        XCTAssertFalse(NonDraggableNSView().mouseDownCanMoveWindow)
+        XCTAssertFalse(HomeBarInteractiveNSView().mouseDownCanMoveWindow)
     }
 
     func testTrackpadDragAndMouseWheelClamping() {
@@ -665,6 +692,113 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(withHiddenBySize.map(\.name), ["DCIM", "archive.zip", "notes.txt", ".nomedia"])
     }
 
+    func testADBDeviceFingerprintParsing() {
+        let raw = """
+        model=Pixel 11 Pro
+        mfr=Google
+        vendor=google
+        vendor_model=Pixel 11 Pro
+        vendor_brand=google
+        vendor_device=mustang
+        color=obsidian
+        ver=17
+        """
+        let fp = ADBService.parseFingerprintOutput(raw)
+        XCTAssertEqual(fp.model, "Pixel 11 Pro")
+        XCTAssertEqual(fp.manufacturer, "Google")
+        XCTAssertEqual(fp.vendor, "google")
+        XCTAssertEqual(fp.codename, "mustang")
+        XCTAssertEqual(fp.colorHint, "obsidian")
+        XCTAssertEqual(fp.androidVersion, "17")
+    }
+
+    func testDeviceHardwareSpecsAndFallback() {
+        let pixel11Pro = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", vendor: "google")
+        let spec11Pro = DeviceHardwareSpec.resolve(for: pixel11Pro, override: .auto)
+        XCTAssertEqual(spec11Pro.id, "pixel_11_pro")
+        XCTAssertNotNil(spec11Pro.punchHole)
+
+        let pixel11 = Device(id: "p11", model: "Pixel 11", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel11, override: .auto).id, "pixel_11")
+
+        let pixel10a = Device(id: "p10a", model: "Pixel 10a", manufacturer: "Google")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: pixel10a, override: .auto).id, "pixel_10a")
+
+        let pixel9 = Device(id: "p9", model: "Pixel 9", manufacturer: "Google")
+        let spec9 = DeviceHardwareSpec.resolve(for: pixel9, override: .auto)
+        XCTAssertEqual(spec9.id, "pixel_8_9_10")
+        XCTAssertEqual(spec9.punchHole?.normalizedCenterY ?? 0, 0.0258, accuracy: 0.0001)
+
+        let s25u = Device(id: "s25u", model: "SM-S938B", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s25u, override: .auto).id, "galaxy_s25_ultra")
+
+        let s24u = Device(id: "s24u", model: "SM-S928U", manufacturer: "Samsung")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: s24u, override: .auto).id, "galaxy_s24_ultra")
+
+        let nothing = Device(id: "np2", model: "A065", manufacturer: "Nothing")
+        let npSpec = DeviceHardwareSpec.resolve(for: nothing, override: .auto)
+        XCTAssertEqual(npSpec.id, "nothing_phone_2")
+        XCTAssertTrue(npSpec.hasGlyphAccent)
+
+        let op12 = Device(id: "op12", model: "CPH2581", manufacturer: "OnePlus")
+        XCTAssertEqual(DeviceHardwareSpec.resolve(for: op12, override: .auto).id, "oneplus_12")
+
+        // Unknown hardware falls back cleanly to Pro Display with no camera cutout
+        let unknown = Device(id: "unk", model: "Fairphone 5", manufacturer: "Fairphone")
+        let fallbackSpec = DeviceHardwareSpec.resolve(for: unknown, override: .auto)
+        XCTAssertEqual(fallbackSpec.id, "pro_display")
+        XCTAssertNil(fallbackSpec.punchHole)
+    }
+
+    func testPunchHoleCoordinatesAcrossScalesAndOrientations() {
+        let hole = DeviceHardwareSpec.pixel11Pro.punchHole!
+        let portrait100 = CGSize(width: 314, height: 698)
+        let portrait125 = CGSize(width: 392.5, height: 872.5)
+        let c100 = hole.resolvedCenter(in: portrait100, orientation: .portrait)
+        let c125 = hole.resolvedCenter(in: portrait125, orientation: .portrait)
+        XCTAssertEqual(c100.x, portrait100.width * 0.5, accuracy: 0.01)
+        XCTAssertEqual(c125.y / portrait125.height, c100.y / portrait100.height, accuracy: 0.0001)
+        XCTAssertGreaterThan(hole.resolvedRadius(in: portrait125), hole.resolvedRadius(in: portrait100))
+
+        // Landscape rotation moves portrait top camera cleanly onto left edge
+        let landscapeSize = CGSize(width: 698, height: 314)
+        let cLand = hole.resolvedCenter(in: landscapeSize, orientation: .landscape)
+        XCTAssertEqual(cLand.x, landscapeSize.width * hole.normalizedCenterY, accuracy: 0.01)
+        XCTAssertEqual(cLand.y, landscapeSize.height * 0.5, accuracy: 0.01)
+    }
+
+    func testDeviceChassisFinishAndMatchDeviceColorToggle() {
+        let porcelainPixel = Device(id: "p11p", model: "Pixel 11 Pro", manufacturer: "Google", deviceColorHint: "porcelain")
+        let spec = DeviceHardwareSpec.pixel11Pro
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: true), .porcelain)
+        XCTAssertEqual(DeviceChassisFinish.resolve(for: porcelainPixel, spec: spec, matchDeviceColor: false), .obsidian)
+    }
+
+    func testCoreAnimationEvenOddScreenMaskLayer() {
+        let layer = CoreAnimationDeviceMask.makeScreenMaskLayer(
+            size: CGSize(width: 314, height: 698),
+            cornerRadius: 42,
+            punchHoleCenter: CGPoint(x: 157, y: 16.4),
+            punchHoleRadius: 3.8
+        )
+        XCTAssertEqual(layer.fillRule, .evenOdd)
+        XCTAssertNotNil(layer.path)
+        XCTAssertEqual(layer.frame.size.width, 314, accuracy: 0.01)
+    }
+
+    func testAmbilightCoreImagePerimeterExtraction() {
+        let topBlue = CIImage(color: CIColor(red: 0.1, green: 0.3, blue: 0.9, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 50, width: 100, height: 50))
+        let bottomRed = CIImage(color: CIColor(red: 0.9, green: 0.15, blue: 0.1, alpha: 1.0))
+            .cropped(to: CGRect(x: 0, y: 0, width: 100, height: 50))
+        let composite = topBlue.composited(over: bottomRed)
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+
+        let palette = AmbilightEngine.extractPalette(from: composite, context: context)
+        XCTAssertGreaterThan(palette.top.b, palette.top.r)
+        XCTAssertGreaterThan(palette.bottom.r, palette.bottom.b)
+    }
+
     func testScrollHomeTriggerAtBottomEdge() {
         XCTAssertTrue(
             ScrcpyDisplayNSView.shouldTriggerScrollHome(
@@ -694,6 +828,84 @@ final class AndOnMacTests: XCTestCase {
                 horizontalDelta: 25
             )
         )
+    }
+
+    func testTrackpadFourEdgeGestureClassificationAndNaturalScrollingDeltas() {
+        // Natural Scrolling ON (inverted): sliding fingers UP gives negative scrollingDeltaY -> positive upwardDelta
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: -24, isDirectionInverted: true), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.upwardTrackpadDelta(scrollingDeltaY: 24, isDirectionInverted: false), 24)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: 25, isDirectionInverted: true), 25)
+        XCTAssertEqual(ScrcpyDisplayNSView.horizontalTrackpadFingerDelta(scrollingDeltaX: -25, isDirectionInverted: false), 25)
+
+        // Edge intents differentiate edge gesture vs normal scrolling near bottom/side edges
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: 10, accumulatedFingerX: 0),
+            .bottomHomeSwitcher
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.90), accumulatedUpwardDelta: -14, accumulatedFingerX: 0),
+            .pan
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.04, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: 12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: 0, accumulatedFingerX: -12),
+            .edgeGesture
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.classifyTrackpadEdgeIntent(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -12, accumulatedFingerX: 0),
+            .edgeGesture
+        )
+
+        // Edge Back & Notifications triggers
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.03, y: 0.5), accumulatedUpwardDelta: 2, accumulatedFingerX: 24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.96, y: 0.5), accumulatedUpwardDelta: -2, accumulatedFingerX: -24),
+            .back
+        )
+        XCTAssertEqual(
+            ScrcpyDisplayNSView.detectTrackpadEdgeGesture(startNormalized: CGPoint(x: 0.5, y: 0.04), accumulatedUpwardDelta: -26, accumulatedFingerX: 3),
+            .notifications
+        )
+    }
+
+    @MainActor
+    func testBottomTrackpadSwipeTrackerHomeVsAppSwitcher() async {
+        // 1. Quick upward flick fires Home ONLY on finger lift (.ended), never mid-gesture
+        var homeCount = 0
+        var appSwitchCount = 0
+        let tracker = BottomTrackpadSwipeTracker()
+        tracker.onHomeTriggered = { homeCount += 1 }
+        tracker.onAppSwitcherTriggered = { appSwitchCount += 1 }
+
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 24, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(homeCount, 0, "Must not fire Home prematurely during upward swipe before lift")
+        XCTAssertEqual(appSwitchCount, 0)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
+        XCTAssertEqual(appSwitchCount, 0)
+
+        // 2. Tall upward swipe fires App Switcher immediately without triggering Home
+        tracker.process(upwardDelta: 10, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 82, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        XCTAssertEqual(appSwitchCount, 1)
+        XCTAssertEqual(homeCount, 1)
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1, "Must not fire Home after App Switcher already triggered")
+
+        // 3. Upward swipe + stationary pause (~0.25s) fires App Switcher without firing Home
+        tracker.process(upwardDelta: 6, fingerDeltaX: 0, phase: .began, momentumPhase: [])
+        tracker.process(upwardDelta: 22, fingerDeltaX: 0, phase: .changed, momentumPhase: [])
+        try? await Task.sleep(nanoseconds: 280_000_000)
+        XCTAssertEqual(appSwitchCount, 2, "Pausing fingers during upward trackpad swipe should trigger App Switcher")
+        tracker.process(upwardDelta: 0, fingerDeltaX: 0, phase: .ended, momentumPhase: [])
+        XCTAssertEqual(homeCount, 1)
     }
 
     // MARK: - Security, Concurrency & Resource Safety Tests
@@ -1220,5 +1432,312 @@ final class AndOnMacTests: XCTestCase {
         """
         XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: dumpsys), "com.whatsapp")
         XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: "nothing here"), "unknown")
+    }
+
+    func testVisualNodeMatcherMapsUIAutomatorNodeAndFallback() {
+        let xml = """
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.LinearLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="$4,250.00" resource-id="com.bank.app:id/balance_amount" class="android.widget.TextView" content-desc="Account balance" clickable="false" scrollable="false" bounds="[100,400][540,520]" />
+            <node index="2" text="Transfer" resource-id="com.bank.app:id/btn_transfer" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[600,400][980,520]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        // Drag box over the balance TextView (~x: 0.1..0.5, y: 0.16..0.22 on 1080x2400)
+        let normRect = CGRect(x: 0.09, y: 0.165, width: 0.41, height: 0.055)
+        let matched = VisualNodeMatcher.matchBestNode(
+            normalizedRect: normRect,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertEqual(matched.node?.resource_id, "com.bank.app:id/balance_amount")
+        XCTAssertEqual(matched.node?.text, "$4,250.00")
+        XCTAssertEqual(matched.node?.class, "TextView")
+        XCTAssertGreaterThan(matched.iouScore, 0.7)
+
+        // Out-of-bounds drag should fall back to pixel center without matching a node
+        let emptyArea = CGRect(x: 0.1, y: 0.85, width: 0.2, height: 0.05)
+        let fallback = VisualNodeMatcher.matchBestNode(
+            normalizedRect: emptyArea,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertNil(fallback.node)
+        XCTAssertEqual(fallback.fallbackCenterX, 216)
+        XCTAssertEqual(fallback.fallbackCenterY, 2100)
+    }
+
+    func testCustomMCPToolSchemaValidationAndJSONRPCDefinition() throws {
+        XCTAssertTrue(CustomMCPToolSchema.isValidToolName("get_bank_balance"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("android_tap_element"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("Bad Name!"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidParameterName("serial"))
+        XCTAssertTrue(CustomMCPToolSchema.isValidParameterName("account_id"))
+
+        let schema = CustomMCPToolSchema(
+            name: "tap_transfer",
+            description: "Tap the Transfer button",
+            isEnabled: true,
+            action: .tapElement,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/btn_transfer",
+                className: "Button",
+                text: "Transfer",
+                contentDesc: nil,
+                fallbackX: 790,
+                fallbackY: 460,
+                normalizedRect: [0.55, 0.16, 0.35, 0.05]
+            ),
+            parameters: [
+                CustomMCPParameter(name: "amount", type: "integer", description: "Transfer amount", required: true)
+            ]
+        )
+        try schema.validate()
+        let def = schema.toMCPToolDefinition()
+        XCTAssertEqual(def.name, "tap_transfer")
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["serial"])
+        XCTAssertNotNil(props?["amount"])
+        if case .array(let reqValues) = def.inputSchema.objectValue?["required"] {
+            XCTAssertEqual(reqValues.compactMap(\.stringValue), ["amount"])
+        } else {
+            XCTFail("Expected required array in inputSchema")
+        }
+    }
+
+    func testCustomMCPToolRegistryPersistenceAndImportExport() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-mcptools-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let registry = CustomMCPToolRegistry(directoryURL: tmpDir)
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let schema = CustomMCPToolSchema(
+            name: "get_bank_balance",
+            description: "Read current balance",
+            isEnabled: true,
+            action: .readTextUIAutomator,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/balance_amount",
+                className: "TextView",
+                text: "$4,250.00",
+                contentDesc: nil,
+                fallbackX: 320,
+                fallbackY: 460,
+                normalizedRect: [0.09, 0.16, 0.41, 0.05]
+            )
+        )
+        try registry.saveTool(schema)
+        XCTAssertEqual(registry.enabledMCPDefinitions().map(\.name), ["get_bank_balance"])
+
+        let exported = try registry.exportJSON(name: "get_bank_balance")
+        try registry.setEnabled(name: "get_bank_balance", enabled: false)
+        XCTAssertTrue(registry.enabledMCPDefinitions().isEmpty)
+
+        try registry.deleteTool(name: "get_bank_balance")
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let imported = try registry.importFromJSON(exported)
+        XCTAssertEqual(imported.name, "get_bank_balance")
+        XCTAssertTrue(imported.isEnabled)
+    }
+
+    func testMCPServerCoreAdvertisesListChangedAndLoadsTools() async throws {
+        let initReq = Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}".utf8)
+        let initResp = await MCPServerCore.shared.handleRawRequestData(initReq)
+        let initText = try XCTUnwrap(initResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(initText.contains("\"listChanged\":true"))
+
+        let listReq = Data("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}".utf8)
+        let listResp = await MCPServerCore.shared.handleRawRequestData(listReq)
+        let listText = try XCTUnwrap(listResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(listText.contains("android_tap_element"))
+    }
+
+    func testMultiStepMacroSchemaAutoParametersAndOverrides() throws {
+        let searchTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/search_btn",
+            className: "ImageButton",
+            text: "Search",
+            contentDesc: "Search chats",
+            fallbackX: 900,
+            fallbackY: 160,
+            normalizedRect: [0.8, 0.05, 0.1, 0.05]
+        )
+        let inputTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/composer",
+            className: "EditText",
+            text: nil,
+            contentDesc: "Message",
+            fallbackX: 400,
+            fallbackY: 2200,
+            normalizedRect: [0.1, 0.88, 0.7, 0.06]
+        )
+        let sendTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/send_btn",
+            className: "ImageButton",
+            text: "Send",
+            contentDesc: nil,
+            fallbackX: 980,
+            fallbackY: 2200,
+            normalizedRect: [0.85, 0.88, 0.1, 0.06]
+        )
+
+        let macro = CustomMCPToolSchema(
+            name: "send_chat_macro",
+            description: "Search contact and send a message",
+            isEnabled: true,
+            action: .macro,
+            target: searchTarget,
+            parameters: [],
+            steps: [
+                VisualMacroStep(action: .tapElement, target: searchTarget, delayAfterMs: 300),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{contact_name}}", delayAfterMs: 500),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{message_body}}", delayAfterMs: 350),
+                VisualMacroStep(action: .tapElement, target: sendTarget, delayAfterMs: 250)
+            ],
+            defaultStepDelayMs: 650,
+            maxSteps: 12,
+            maxDurationSeconds: 25,
+            selfHealingEnabled: true
+        )
+        try macro.validate()
+
+        // Verify {{contact_name}} and {{message_body}} auto-exposed in JSON-RPC MCP schema
+        let def = macro.toMCPToolDefinition()
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["contact_name"])
+        XCTAssertNotNil(props?["message_body"])
+
+        let interpolated = CustomMCPToolSchema.interpolateTemplate(
+            "Hello {{contact_name}}: {{message_body}}",
+            arguments: [
+                "contact_name": .string("Alex"),
+                "message_body": .string("See you at 5")
+            ]
+        )
+        XCTAssertEqual(interpolated, "Hello Alex: See you at 5")
+
+        // Verify per-tool overrides take precedence over global UserDefaults
+        XCTAssertEqual(macro.effectiveStepDelayMs(), 650)
+        XCTAssertEqual(macro.effectiveMaxSteps(), 12)
+        XCTAssertEqual(macro.effectiveMaxDurationSeconds(), 25)
+        XCTAssertTrue(macro.effectiveSelfHealingEnabled())
+
+        // Verify legacy single-action JSON decodes cleanly with nil macro/override fields
+        let legacyJSON = """
+        {
+          "name": "legacy_tap",
+          "description": "Legacy tool",
+          "isEnabled": true,
+          "action": "tap_element",
+          "target": {
+            "resourceId": "com.app:id/ok",
+            "fallbackX": 500,
+            "fallbackY": 1000,
+            "normalizedRect": [0.4, 0.4, 0.2, 0.1]
+          },
+          "parameters": [],
+          "createdAt": "2026-11-15T00:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decodedLegacy = try decoder.decode(CustomMCPToolSchema.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(decodedLegacy.steps)
+        XCTAssertNil(decodedLegacy.defaultStepDelayMs)
+    }
+
+    func testSelfHealingThreeTierTapResolution() async {
+        let target = VisualNodeTarget(
+            resourceId: "com.bank.app:id/old_transfer_btn",
+            className: "Button",
+            text: "Transfer",
+            contentDesc: nil,
+            fallbackX: 100,
+            fallbackY: 200,
+            normalizedRect: [0.1, 0.1, 0.2, 0.05]
+        )
+
+        // Tier 1: Exact resource-id found -> uses XML node coordinates, never calls Vision OCR
+        let matchingNode = AndroidUINode(
+            index: 0,
+            text: "Transfer",
+            resource_id: "com.bank.app:id/old_transfer_btn",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[250,580][450,660]",
+            center_x: 350,
+            center_y: 620
+        )
+        let tier1 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [matchingNode],
+            target: target,
+            selfHealingEnabled: true
+        ) { _ in
+            XCTFail("Vision OCR should not be called when resource-id matches")
+            return nil
+        }
+        XCTAssertEqual(tier1.strategy, .resourceId)
+        XCTAssertEqual(tier1.x, 350)
+        XCTAssertEqual(tier1.y, 620)
+
+        // Tier 2: App updated its resource-id, so XML lacks old ID -> Vision OCR heals it
+        let updatedNodeDifferentText = AndroidUINode(
+            index: 1,
+            text: "Home",
+            resource_id: "com.bank.app:id/nav_home",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[60,2150][180,2250]",
+            center_x: 120,
+            center_y: 2200
+        )
+        let tier2 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: true
+        ) { query in
+            XCTAssertEqual(query, "Transfer")
+            return (x: 780, y: 1450, matchedText: "Transfer")
+        }
+        XCTAssertEqual(tier2.strategy, .visionOCRHealed)
+        XCTAssertEqual(tier2.x, 780)
+        XCTAssertEqual(tier2.y, 1450)
+        XCTAssertEqual(tier2.healedText, "Transfer")
+
+        // Tier 3: Self-Healing disabled -> falls back directly without Vision OCR
+        let tier3 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: false
+        ) { _ in
+            XCTFail("Vision OCR must not run when selfHealingEnabled is false")
+            return nil
+        }
+        XCTAssertEqual(tier3.strategy, .coordinateFallback)
+        XCTAssertEqual(tier3.x, 100)
+        XCTAssertEqual(tier3.y, 200)
+    }
+
+    func testProcessLifecycleManagerRegistrationAndCleanup() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["5"]
+        try proc.run()
+        let trackedId = ProcessLifecycleManager.shared.register(proc, tag: "unit-test")
+        XCTAssertGreaterThanOrEqual(ProcessLifecycleManager.shared.activeCount, 1)
+        ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 100)
+        proc.waitUntilExit()
+        ProcessLifecycleManager.shared.unregister(trackedId)
+        XCTAssertFalse(proc.isRunning)
     }
 }

@@ -18,6 +18,9 @@ public struct Device: Identifiable, Hashable, Sendable {
     public let id: String // Serial or IP:Port
     public var model: String
     public var manufacturer: String
+    public var vendor: String
+    public var hardwareCodename: String
+    public var deviceColorHint: String?
     public var androidVersion: String
     public var batteryLevel: Int?
     public var isCharging: Bool?
@@ -30,6 +33,9 @@ public struct Device: Identifiable, Hashable, Sendable {
         id: String,
         model: String = "Android Device",
         manufacturer: String = "Unknown",
+        vendor: String = "",
+        hardwareCodename: String = "",
+        deviceColorHint: String? = nil,
         androidVersion: String = "",
         batteryLevel: Int? = nil,
         isCharging: Bool? = nil,
@@ -41,6 +47,9 @@ public struct Device: Identifiable, Hashable, Sendable {
         self.id = id
         self.model = model
         self.manufacturer = manufacturer
+        self.vendor = vendor
+        self.hardwareCodename = hardwareCodename
+        self.deviceColorHint = deviceColorHint
         self.androidVersion = androidVersion
         self.batteryLevel = batteryLevel
         self.isCharging = isCharging

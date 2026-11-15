@@ -14,19 +14,20 @@
 
 ### Демонстрация возможностей
 
-| Трансляция до 120 FPS и управление | Галерея и перенос фото на Mac (`Cmd+4`) | Общий буфер обмена (`macOS ↔ Android`) |
-| :---: | :---: | :---: |
-| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
+| Трансляция до 120 FPS и жесты | Рамки устройств и Ambilight | Галерея и перенос фото (`Cmd+4`) | Общий буфер (`macOS ↔ Android`) |
+| :---: | :---: | :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Device Frames & Ambilight](./assets/demo-frames-ambilight.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
 
 ---
 
 ## Ключевые возможности
 
 - **Движок 120Hz ProMotion:** аппаратное ускорение `HEVC` (с автопереходом на `H.264`), zero-copy рендеринг через `CAMetalLayer` + `120Hz CADisplayLink`, адаптивный битрейт (ABR) и Performance HUD.
+- **Векторные рамки, Ambilight и macOS Vibrancy:** точное определение устройства и калиброванные вырезы камер (**Pixel 11 Pro / 11 / 10a / 8–10**, **Galaxy S24/S25 и Ultra**, **Nothing Phone (2)**, **OnePlus 12**, универсальный **Pro Display**), мягкий CoreImage Ambilight, жесты трекпада по 4 краям и нижней полоске, полупрозрачные панели `.ultraThinMaterial` и вкладка **Оформление** в настройках.
 - **Мгновенное подключение и обход изоляции:** USB-C, QR-сопряжение / Bonjour Wi-Fi для Android 11+, тихий переход USB → Wi-Fi и переключение на **Direct Hotspot / Bluetooth PAN** в 1 клик при изоляции роутера.
 - **Отдельные окна приложений и Menu Bar:** поиск и запуск любых приложений Android (включая YouTube, Chrome и системные) в отдельном окне macOS (`Запуск приложения Android`) и быстрые переключатели в строке меню.
 - **Медиатека (`Cmd+4`), файловый менеджер (`Cmd+5`) и Continuity:** двусторонний drag-and-drop фото, APK и файлов, плюс фоновая синхронизация текста и скриншотов на Android.
-- **Локальный ИИ, Vision OCR и память экрана:** распознавание любого текста на экране через Neural Engine (`Cmd+Shift+X`), поиск по истории экрана **Recall** (`Cmd+Shift+F`, локальный SQLite FTS5) и встроенный **MCP-сервер** для Claude/Cursor.
+- **Локальный ИИ, Vision OCR, Recall и Visual-to-MCP (`Cmd+Shift+M`):** распознавание текста через Neural Engine (`Cmd+Shift+X`), поиск по истории экрана **Recall** (`Cmd+Shift+F`, SQLite FTS5), встроенный **MCP-сервер** и запись самовосстанавливающихся макросов с **MCP Tool Hub**.
 
 > Подробное описание настройки MCP, модели безопасности, всех горячих клавиш и архитектуры: [**docs/FEATURES_RU.md**](docs/FEATURES_RU.md).
 

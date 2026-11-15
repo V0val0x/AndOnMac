@@ -1,9 +1,48 @@
 import SwiftUI
 import AppKit
 
+/// Hover/press-responsive button style for rows inside MenuBarView so items visibly invite clicking.
+private struct MenuBarInteractiveRowStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 6
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        configuration.isPressed
+                            ? Color.accentColor.opacity(0.22)
+                            : (isHovered ? Color.primary.opacity(0.10) : Color.primary.opacity(0.035))
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        isHovered || configuration.isPressed
+                            ? Color.primary.opacity(0.16)
+                            : Color.primary.opacity(0.05),
+                        lineWidth: 0.5
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+    }
+}
+
 /// Native macOS Control Center-style Menu Bar popover for AndOnMac.
 public struct MenuBarView: View {
     @ObservedObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject private var discovery = DiscoveryService.shared
     @ObservedObject private var qrPairing = QRPairingService.shared
     @ObservedObject private var routerBypass = RouterlessBypassService.shared
@@ -156,15 +195,18 @@ public struct MenuBarView: View {
                             qrPairing.stopSession()
                         }
                     } label: {
-                        HStack {
-                            Label(L10n.tr("Беспроводной QR-код (Android 11+)", "QR Code Wireless Pairing", lang: lang), systemImage: "qrcode")
-                                .font(.system(size: 11, weight: .semibold))
-                            Spacer()
-                            Image(systemName: showQRPairing ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 10))
+                            HStack {
+                                Label(L10n.tr("Беспроводной QR-код (Android 11+)", "QR Code Wireless Pairing", lang: lang), systemImage: "qrcode")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Spacer()
+                                Image(systemName: showQRPairing ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 10))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
                         }
-                    }
-                    .buttonStyle(.plain)
+                        .buttonStyle(MenuBarInteractiveRowStyle(cornerRadius: 7))
 
                     if showQRPairing && !qrPairing.qrPayload.isEmpty {
                         HStack(spacing: 10) {
@@ -256,7 +298,7 @@ public struct MenuBarView: View {
                                     Button {
                                         appState.launchStandaloneApp(app)
                                     } label: {
-                                        HStack {
+                                        HStack(spacing: 6) {
                                             Text(app.displayName)
                                                 .font(.system(size: 12, weight: .medium))
                                                 .lineLimit(1)
@@ -265,12 +307,15 @@ public struct MenuBarView: View {
                                                 .font(.system(size: 9))
                                                 .foregroundColor(.secondary)
                                                 .lineLimit(1)
+                                            Image(systemName: "arrow.up.forward.app")
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .foregroundColor(.secondary)
                                         }
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 4)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
                                         .contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(MenuBarInteractiveRowStyle(cornerRadius: 6))
                                 }
                             }
                         }
@@ -346,6 +391,27 @@ public struct MenuBarView: View {
                             systemImage: appState.isMCPAgentPaused ? "play.fill" : "hand.raised.fill"
                         )
                         .foregroundColor(appState.isMCPAgentPaused ? .green : .orange)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                HStack(spacing: 6) {
+                    Button {
+                        appState.triggerVisualMCPCapture()
+                    } label: {
+                        Label(L10n.tr("Создать MCP Tool", "Create MCP Tool", lang: lang), systemImage: "plus.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!appState.isMirroring)
+
+                    Button {
+                        openWindow(id: "tool-hub")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Label("Tool Hub", systemImage: "wrench.and.screwdriver")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

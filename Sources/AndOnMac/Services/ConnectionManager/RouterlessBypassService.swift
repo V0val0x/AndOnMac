@@ -331,15 +331,23 @@ public final class RouterlessBypassService: ObservableObject {
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         let trackedId = ProcessLifecycleManager.shared.register(proc, tag: "network-probe")
+        let timeoutItem = DispatchWorkItem {
+            if proc.isRunning {
+                ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 150)
+            }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3.0, execute: timeoutItem)
+        defer {
+            timeoutItem.cancel()
+            ProcessLifecycleManager.shared.unregister(trackedId)
+        }
         do {
             try proc.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
-            ProcessLifecycleManager.shared.unregister(trackedId)
             let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         } catch {
-            ProcessLifecycleManager.shared.unregister(trackedId)
             return nil
         }
     }

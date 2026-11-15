@@ -3,6 +3,13 @@ import Vision
 import CoreGraphics
 import AppKit
 
+/// Located OCR text match with top-left normalized (`0...1`) center coordinates.
+public struct VisionTextMatch: Sendable, Equatable {
+    public let matchedText: String
+    public let normalizedCenterX: Double
+    public let normalizedCenterY: Double
+}
+
 /// Performs on-device Neural Engine / Apple Silicon text recognition using Apple Vision.
 public final class VisionOCRService: @unchecked Sendable {
     public static let shared = VisionOCRService()
@@ -64,6 +71,70 @@ public final class VisionOCRService: @unchecked Sendable {
                     request.automaticallyDetectsLanguage = true
 
                     let handler = VNImageRequestHandler(cgImage: targetImage, options: [:])
+                    do {
+                        try handler.perform([request])
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Searches `image` on-device via Apple Vision OCR for `query` and returns its top-left normalized center coordinates.
+    public func findTextCenter(
+        matching query: String,
+        in image: CGImage,
+        qos: DispatchQoS.QoSClass = .userInitiated
+    ) async throws -> VisionTextMatch? {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return nil }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: qos).async {
+                autoreleasepool {
+                    let request = VNRecognizeTextRequest { request, error in
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+                        var exactMatch: VisionTextMatch?
+                        var bestContains: (match: VisionTextMatch, lengthDelta: Int)?
+
+                        for obs in observations {
+                            guard let candidate = obs.topCandidates(1).first else { continue }
+                            let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty else { continue }
+                            let box = obs.boundingBox
+                            // Vision uses bottom-left origin; convert to Android top-left normalized coordinates.
+                            let centerX = max(0, min(1, Double(box.midX)))
+                            let centerY = max(0, min(1, 1.0 - Double(box.midY)))
+                            let match = VisionTextMatch(
+                                matchedText: text,
+                                normalizedCenterX: centerX,
+                                normalizedCenterY: centerY
+                            )
+
+                            if text.compare(trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                                exactMatch = match
+                                break
+                            }
+                            if text.localizedCaseInsensitiveContains(trimmedQuery) {
+                                let delta = abs(text.count - trimmedQuery.count)
+                                if bestContains == nil || delta < bestContains!.lengthDelta {
+                                    bestContains = (match, delta)
+                                }
+                            }
+                        }
+
+                        continuation.resume(returning: exactMatch ?? bestContains?.match)
+                    }
+                    request.recognitionLevel = .accurate
+                    request.usesLanguageCorrection = true
+                    request.automaticallyDetectsLanguage = true
+
+                    let handler = VNImageRequestHandler(cgImage: image, options: [:])
                     do {
                         try handler.perform([request])
                     } catch {

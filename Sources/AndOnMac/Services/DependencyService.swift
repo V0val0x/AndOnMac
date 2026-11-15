@@ -66,15 +66,22 @@ public final class DependencyService: @unchecked Sendable {
                 }
                 
                 let trackedId = ProcessLifecycleManager.shared.register(process, tag: "brew")
+                let watchdog = DispatchWorkItem {
+                    if process.isRunning {
+                        ProcessLifecycleManager.shared.terminateProcess(process, gracePeriodMs: 500)
+                    }
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 300.0, execute: watchdog)
+                defer {
+                    watchdog.cancel()
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    ProcessLifecycleManager.shared.unregister(trackedId)
+                }
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    ProcessLifecycleManager.shared.unregister(trackedId)
-                    pipe.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(returning: process.terminationStatus == 0)
                 } catch {
-                    ProcessLifecycleManager.shared.unregister(trackedId)
-                    pipe.fileHandleForReading.readabilityHandler = nil
                     onOutput("Ошибка запуска авто-установщика: \(error.localizedDescription)\n")
                     continuation.resume(returning: false)
                 }

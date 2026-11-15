@@ -23,12 +23,12 @@ public final class ContinuityBridge: @unchecked Sendable {
             self.isEnabled = true
             self.lastChangeCount = NSPasteboard.general.changeCount
             self.timer?.invalidate()
-            let t = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+            let t = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.pollPasteboard()
                 }
             }
-            t.tolerance = 0.35
+            t.tolerance = 0.6
             self.timer = t
         }
     }

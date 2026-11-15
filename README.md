@@ -14,9 +14,9 @@ A native SwiftUI, VideoToolbox & Metal macOS application for mirroring, controll
 
 ### Feature Demos
 
-| Up to 120 FPS Mirroring & Gestures | Drag & Drop Photos to Mac Desktop (`Cmd+4`) | Universal Clipboard Sync (`macOS ↔ Android`) |
-| :---: | :---: | :---: |
-| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
+| Up to 120 FPS Mirroring & Gestures | Vector Device Frames & Ambilight | Drag & Drop Photos (`Cmd+4`) | Clipboard Sync (`macOS ↔ Android`) |
+| :---: | :---: | :---: | :---: |
+| ![Live Mirroring](./assets/demo-mirroring.gif) | ![Device Frames & Ambilight](./assets/demo-frames-ambilight.gif) | ![Photo Transfer to Desktop](./assets/demo-photo-transfer.gif) | ![Universal Clipboard Sync](./assets/demo-clipboard-sync.gif) |
 
 ---
 
@@ -45,6 +45,9 @@ A native SwiftUI, VideoToolbox & Metal macOS application for mirroring, controll
 | **Open-Source & Free (MIT)** | Yes | Proprietary | MIT | Proprietary | GPL |
 
 ---
+
+- **Vector Device Frames, Ambilight & macOS Vibrancy:** Hardware-fingerprinted bezels and calibrated camera cutouts (**Pixel 11 Pro / 11 / 10a / 8–10**, **Galaxy S24/S25 & Ultra**, **Nothing Phone (2)**, **OnePlus 12**, generic **Pro Display** fallback), subtle CoreImage `CIAreaAverage` edge lighting, trackpad edge/pill gestures, `.ultraThinMaterial` overlays, and a dedicated **Settings → Appearance** pane.
+- **Visual-to-MCP Bridge & Self-Healing Macros (`Cmd+Shift+M`):** Capture UI elements or record multi-step `{{parameter}}` macros with 3-tier Vision OCR self-healing, configurable waits, and **MCP Tool Hub** LiveReload.
 
 ## Installation & Quick Start
 

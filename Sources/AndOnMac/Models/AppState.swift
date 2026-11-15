@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import UserNotifications
 
 public enum SideDrawerMode: String, CaseIterable, Sendable {
     case gallery
@@ -42,7 +43,14 @@ public final class AppState: ObservableObject {
     @AppStorage("forwardAudio") public var forwardAudio: Bool = true
     @AppStorage("stayAwake") public var stayAwake: Bool = true
     @AppStorage("frameStyle") public var frameStyle: PhoneFrameStyle = .auto
+    @AppStorage("showDeviceBezel") public var showDeviceBezel: Bool = true
     @AppStorage("showFrontCamera") public var showFrontCamera: Bool = true
+    @AppStorage("matchDeviceColor") public var matchDeviceColor: Bool = true
+    @AppStorage("enableAmbilight") public var enableAmbilight: Bool = true {
+        didSet {
+            AmbilightEngine.shared.setSamplingEnabled(enableAmbilight && isMirroring)
+        }
+    }
     @AppStorage("windowScale") public var windowScale: PhoneWindowScale = .standard
     @AppStorage("maxFps") public var maxFps: Int = 120
     @AppStorage("showPerformanceHUD") public var showPerformanceHUD: Bool = false
@@ -58,6 +66,10 @@ public final class AppState: ObservableObject {
     @AppStorage("mcpServerEnabled") public var mcpServerEnabled: Bool = false
     @AppStorage("mcpServerPort") public var mcpServerPort: Int = 8765
     @AppStorage("screenMemoryEnabled") public var screenMemoryEnabled: Bool = false
+    @AppStorage(MCPExecutionDefaults.stepDelayKey) public var macroDefaultStepDelayMs: Int = MCPExecutionDefaults.defaultStepDelayMs
+    @AppStorage(MCPExecutionDefaults.maxStepsKey) public var macroMaxSteps: Int = MCPExecutionDefaults.defaultMaxSteps
+    @AppStorage(MCPExecutionDefaults.maxDurationKey) public var macroMaxTotalWaitSeconds: Int = MCPExecutionDefaults.defaultMaxDurationSeconds
+    @AppStorage(MCPExecutionDefaults.selfHealingKey) public var mcpSelfHealingEnabled: Bool = MCPExecutionDefaults.defaultSelfHealingEnabled
 
     public var lang: AppLanguage {
         appLanguage.resolved
@@ -78,25 +90,32 @@ public final class AppState: ObservableObject {
     @Published public var isMCPRunning: Bool = false
     @Published public var isMCPAgentPaused: Bool = false
     @Published public var mcpAgentActivity: String? = nil
+    @Published public var isVisualMCPCaptureActive: Bool = false
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
     @Published public var lastKnownWifiIP: String?
     
+    /// Effective hardware specification resolving `.auto` from device fingerprints or manual style override
+    public var effectiveHardwareSpec: DeviceHardwareSpec {
+        DeviceHardwareSpec.resolve(for: selectedDevice, override: frameStyle)
+    }
+
     /// Effective frame style resolving .auto to detected device hardware model
     public var effectiveFrameStyle: PhoneFrameStyle {
-        if frameStyle == .auto {
-            return PhoneFrameStyle.detect(for: selectedDevice)
-        }
-        return frameStyle
+        effectiveHardwareSpec.style
     }
-    
+
     // Video streaming frame dimensions
     @Published public var deviceWidth: Int = 1080
     @Published public var deviceHeight: Int = 2400
-    
+
     public var isLandscape: Bool {
         return deviceWidth > deviceHeight
+    }
+
+    public var displayOrientation: DeviceDisplayOrientation {
+        isLandscape ? .landscape : .portrait
     }
     
     public var effectiveAspect: CGFloat {
@@ -123,6 +142,7 @@ public final class AppState: ObservableObject {
     
     public init() {
         Self.shared = self
+        AmbilightEngine.shared.setSamplingEnabled(false)
         self.currentLanguageBadge = KeyboardLanguageSyncService.getCurrentMacLanguage().uppercased()
         
         KeyboardLanguageSyncService.shared.onLanguageChanged = { [weak self] badge in
@@ -147,7 +167,9 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopRecording()
             AndroidAppLauncherService.shared.stopAllAppWindows()
             ContinuityBridge.shared.stop()
+            DiscoveryService.shared.stopBrowsing()
             MCPHTTPServer.shared.stop()
+            ProcessLifecycleManager.shared.terminateAllProcesses()
         }
         loadDeviceProfiles()
         applyDockVisibility()
@@ -246,10 +268,18 @@ public final class AppState: ObservableObject {
             return
         }
         
-        self.lastKnownWifiIP = ip
+        if self.lastKnownWifiIP != ip {
+            self.lastKnownWifiIP = ip
+        }
         addSavedIP(ip)
         
         if let index = knownDevices.firstIndex(where: { $0.ipAddress == ip || $0.id == device.id }) {
+            let existing = knownDevices[index]
+            let portChanged = resolvedPort != nil && existing.port != resolvedPort
+            let nameChanged = existing.name != device.displayName
+            let ipChanged = existing.ipAddress != ip
+            let staleTimestamp = Date().timeIntervalSince(existing.lastConnected) >= 60.0
+            guard portChanged || nameChanged || ipChanged || staleTimestamp else { return }
             knownDevices[index].lastConnected = Date()
             knownDevices[index].name = device.displayName
             knownDevices[index].ipAddress = ip
@@ -368,14 +398,19 @@ public final class AppState: ObservableObject {
             let mirrorActive = MirrorService.shared.isMirroring || MirrorService.shared.isStarting
             if self.isMirroring != mirrorActive {
                 self.isMirroring = mirrorActive
+                AmbilightEngine.shared.setSamplingEnabled(mirrorActive && self.enableAmbilight)
             }
             
             if list.isEmpty {
                 self.hasAutoConnectedThisSession = false
                 self.isPhoneScreenOff = false
                 self.isPhoneLocked = false
+                self.syncContinuityBridgeState()
+                DiscoveryService.shared.setLowPowerPaused(false)
                 self.attemptAutoWifiReconnect()
             } else {
+                self.syncContinuityBridgeState()
+                DiscoveryService.shared.setLowPowerPaused(mirrorActive && !self.showPairingSheet)
                 let lockCheckInterval: TimeInterval = mirrorActive ? 4.0 : 12.0
                 if let ready = list.first(where: { $0.state == .ready }),
                    Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
@@ -483,7 +518,7 @@ public final class AppState: ObservableObject {
     
     public func triggerAppSwitch() {
         if ScrcpyClient.shared.isConnected {
-            ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            ScrcpyClient.shared.triggerAppSwitch()
             return
         }
         guard let device = selectedDevice else { return }
@@ -521,11 +556,24 @@ public final class AppState: ObservableObject {
         }
     }
     
+    public func stopMirroringOnWindowClose() {
+        guard isMirroring || isRecording || MirrorService.shared.isMirroring || MirrorService.shared.isStarting else { return }
+        MirrorService.shared.stopMirroring()
+        MirrorService.shared.stopRecording()
+        KeyboardLanguageSyncService.shared.stopSync()
+        isMirroring = false
+        isRecording = false
+        syncScreenMemoryState()
+        DiscoveryService.shared.setLowPowerPaused(false)
+        statusMessage = "Mirroring stopped"
+    }
+
     public func toggleMirroring() {
         if isMirroring || MirrorService.shared.isStarting {
             MirrorService.shared.stopMirroring()
             KeyboardLanguageSyncService.shared.stopSync()
             isMirroring = false
+            AmbilightEngine.shared.setSamplingEnabled(false)
             syncScreenMemoryState()
             statusMessage = "Mirroring stopped"
         } else {
@@ -546,12 +594,14 @@ public final class AppState: ObservableObject {
                 ) { [weak self] in
                     Task { @MainActor in
                         self?.isMirroring = false
+                        AmbilightEngine.shared.setSamplingEnabled(false)
                         self?.syncScreenMemoryState()
                         self?.statusMessage = "Mirroring session ended"
                         KeyboardLanguageSyncService.shared.stopSync()
                     }
                 }
                 isMirroring = true
+                AmbilightEngine.shared.setSamplingEnabled(enableAmbilight)
                 syncScreenMemoryState()
                 statusMessage = "Mirroring \(device.displayName)..."
                 KeyboardLanguageSyncService.shared.startSync(for: device.id)
@@ -569,7 +619,8 @@ public final class AppState: ObservableObject {
     }
 
     public func syncContinuityBridgeState() {
-        if continuityBridgeEnabled {
+        let hasReadyDevice = devices.contains(where: { $0.state == .ready })
+        if continuityBridgeEnabled && hasReadyDevice {
             ContinuityBridge.shared.onSyncEvent = { [weak self] msg in
                 Task { @MainActor in
                     self?.photoTransferNotice = msg
@@ -683,6 +734,44 @@ public final class AppState: ObservableObject {
                 self?.mcpAgentActivity = activity
             }
         }
+        MCPSelfHealingNotifier.shared.onHealed = { [weak self] toolName, expectedLabel, matchedText, x, y in
+            Task { @MainActor in
+                guard let self else { return }
+                let notice = L10n.tr(
+                    "Self-Healing (\(toolName)): ID не найден, нажато по OCR '\(matchedText)'",
+                    "Self-Healing (\(toolName)): ID missing, healed via OCR '\(matchedText)'",
+                    lang: self.lang
+                )
+                self.photoTransferNotice = notice
+                self.statusMessage = L10n.tr(
+                    "Vision OCR восстановил нажатие для '\(toolName)' (\(x), \(y))",
+                    "Vision OCR healed tap for '\(toolName)' at (\(x), \(y))",
+                    lang: self.lang
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    if self.photoTransferNotice == notice {
+                        self.photoTransferNotice = nil
+                    }
+                }
+
+                if Bundle.main.bundleURL.pathExtension == "app" {
+                    let content = UNMutableNotificationContent()
+                    content.title = "AndOnMac Self-Healing"
+                    content.body = L10n.tr(
+                        "Semantic ID для '\(toolName)' не найден (ожидался '\(expectedLabel)'). Выполнено нажатие по Vision OCR: '\(matchedText)'.",
+                        "Semantic ID failed for '\(toolName)' (expected '\(expectedLabel)'); healed via Vision OCR ('\(matchedText)').",
+                        lang: self.lang
+                    )
+                    content.sound = .default
+                    let req = UNNotificationRequest(
+                        identifier: "mcp-heal-\(UUID().uuidString)",
+                        content: content,
+                        trigger: nil
+                    )
+                    try? await UNUserNotificationCenter.current().add(req)
+                }
+            }
+        }
     }
 
     public func syncMCPServerState() {
@@ -719,6 +808,20 @@ public final class AppState: ObservableObject {
 
     public func triggerRecallSearch() {
         RecallPanelController.shared.toggle(appState: self)
+    }
+
+    // MARK: - Visual-to-MCP Bridge
+
+    public func triggerVisualMCPCapture() {
+        guard isMirroring, selectedDevice != nil else {
+            photoTransferNotice = L10n.tr("Сначала запустите трансляцию экрана", "Start screen mirroring first", lang: lang)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                self.photoTransferNotice = nil
+            }
+            return
+        }
+        isOCROverlayActive = false
+        isVisualMCPCaptureActive.toggle()
     }
 
     public func copyMCPConfigToClipboard() {
