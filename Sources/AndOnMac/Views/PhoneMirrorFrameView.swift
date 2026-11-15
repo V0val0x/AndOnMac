@@ -8,6 +8,7 @@ public struct PhoneMirrorFrameView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var pulseAnimation: Bool = false
     @State private var homeBarPulse: Bool = false
+    @StateObject private var agenticHUD = AgenticHUDViewModel()
     
     public init(appState: AppState) {
         self.appState = appState
@@ -148,6 +149,8 @@ public struct PhoneMirrorFrameView: View {
             ScrcpyVideoView(
                 serial: appState.selectedDevice?.id,
                 screenClipRadius: screenClipRadius,
+                inputWidth: appState.physicalDisplayWidth,
+                inputHeight: appState.physicalDisplayHeight,
                 onFileDrop: { urls in
                     Task {
                         if let serial = appState.selectedDevice?.id {
@@ -281,12 +284,35 @@ public struct PhoneMirrorFrameView: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
+
+            // Layer 3 Agentic HUD: 120Hz CAShapeLayer Crosshair + Status Toast
+            AgenticHUDLayer(
+                viewModel: agenticHUD,
+                deviceWidth: appState.deviceWidth,
+                deviceHeight: appState.deviceHeight,
+                inputWidth: appState.physicalDisplayWidth,
+                inputHeight: appState.physicalDisplayHeight,
+                bottomInset: appState.showPerformanceHUD ? 56 : 28
+            )
             
             // Phone Screen Off / Locked Overlay (1-in-1 with macOS Sequoia iPhone Mirroring)
             if appState.isPhoneScreenOff || appState.isPhoneLocked {
                 phoneLockedOrScreenOffOverlay
                     .transition(.opacity)
             }
+        }
+        .task {
+            await agenticHUD.listen(to: ShadowGraphManager.shared.macroExecutionEvents)
+        }
+        .task(id: appState.selectedDevice?.id) {
+            if !appState.isDemoMode,
+               let device = appState.selectedDevice,
+               device.state == .ready || device.state == .mirroring {
+                await ShadowGraphManager.shared.ensureStarted(serial: device.id)
+            }
+        }
+        .onDisappear {
+            agenticHUD.stopListening()
         }
     }
     

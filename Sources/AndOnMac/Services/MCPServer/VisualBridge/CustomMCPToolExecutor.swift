@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import os
+import AndroidShadowGraphKit
 
 /// Dispatches Self-Healing Vision OCR events to the console logger and macOS user notification layer.
 public final class MCPSelfHealingNotifier: @unchecked Sendable {
@@ -230,11 +231,14 @@ public enum CustomMCPToolExecutor {
             target: target,
             selfHealingEnabled: selfHealingEnabled
         )
+        let label = target.resourceId ?? target.text ?? target.contentDesc ?? "(\(resolved.x), \(resolved.y))"
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(kind: .tap, targetDescription: label, x: resolved.x, y: resolved.y)
+        )
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "tap", "\(resolved.x)", "\(resolved.y)"],
             timeoutSeconds: 5.0
         )
-        let label = target.resourceId ?? target.text ?? target.contentDesc ?? "(\(resolved.x), \(resolved.y))"
         if resolved.strategy == .visionOCRHealed, let healedText = resolved.healedText {
             return .text("Tapped '\(label)' at (\(resolved.x), \(resolved.y)). [Healed via Vision OCR: matched '\(healedText)']")
         }
@@ -257,6 +261,9 @@ public enum CustomMCPToolExecutor {
             toolName: toolName,
             target: target,
             selfHealingEnabled: selfHealingEnabled
+        )
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(kind: .typeText, targetDescription: target.resourceId ?? toolName, x: resolved.x, y: resolved.y)
         )
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "tap", "\(resolved.x)", "\(resolved.y)"],

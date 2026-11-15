@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import AndroidShadowGraphKit
 
 public struct AndroidNotificationSummary: Codable, Sendable, Equatable {
     public let package: String
@@ -10,7 +11,7 @@ public struct AndroidNotificationSummary: Codable, Sendable, Equatable {
     public let timestamp: String
 }
 
-/// Implements all 9 semantic Android UI & control tools exposed via MCP.
+/// Implements all 10 semantic Android UI & control tools exposed via MCP.
 public enum AndroidMCPTools {
     public static let allDefinitions: [MCPToolDefinition] = [
         MCPToolDefinition(
@@ -121,6 +122,20 @@ public enum AndroidMCPTools {
                     "serial": .object(["type": .string("string")])
                 ])
             ])
+        ),
+        MCPToolDefinition(
+            name: "android_navigate_to_node",
+            description: "Autonomously navigate across known Android UI screens using the Shadow Graph A* router without intermediate LLM roundtrips, verifying each step against the live Shadow DOM.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "serial": .object(["type": .string("string"), "description": .string("Optional ADB device serial.")]),
+                    "target": .object(["type": .string("string"), "description": .string("Semantic destination hint (package name, screen title, label, or resource_id). Required unless target_hash is provided.")]),
+                    "target_hash": .object(["type": .string("string"), "description": .string("Optional hex (0x...) or decimal UInt64 layoutHash for exact vertex pinning.")]),
+                    "max_steps": .object(["type": .string("integer"), "description": .string("Maximum transition hops allowed (default 12).")]),
+                    "step_timeout_ms": .object(["type": .string("integer"), "description": .string("Per-step Shadow DOM settle timeout in milliseconds (default 2000).")])
+                ])
+            ])
         )
     ]
 
@@ -156,9 +171,14 @@ public enum AndroidMCPTools {
                 let output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "dumpsys", "notification", "--noredact"], timeoutSeconds: 8.0)
                 let items = parseNotifications(from: output)
                 return .text(try encodeJSON(items))
+            case "android_navigate_to_node":
+                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                return try await navigateToNode(serial: serial, args: arguments)
             default:
                 return .text("Unknown tool: \(name)", isError: true)
             }
+        } catch let deviation as PathDeviationError {
+            return formatPathDeviationResult(deviation)
         } catch {
             return .text("Error executing \(name): \(error.localizedDescription)", isError: true)
         }
@@ -202,6 +222,13 @@ public enum AndroidMCPTools {
     }
 
     public static func fetchUITree(serial: String) async throws -> [AndroidUINode] {
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        if let cached = await ShadowGraphManager.shared.fastCompactTreeIfFresh(
+            maxWaitSeconds: 0.35,
+            maxAgeSeconds: 15.0
+        ) {
+            return cached
+        }
         var xml = (try? await ADBService.shared.execute(arguments: ["-s", serial, "exec-out", "uiautomator", "dump", "/dev/tty"], timeoutSeconds: 8.0)) ?? ""
         if !xml.contains("<hierarchy") {
             let remoteDump = "/sdcard/window_dump.xml"
@@ -253,29 +280,72 @@ public enum AndroidMCPTools {
 
     private static func tapElement(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
         if let x = args["x"]?.intValue, let y = args["y"]?.intValue {
+            await ShadowGraphManager.shared.ensureStarted(serial: serial)
+            await ShadowGraphManager.shared.recordAction(
+                AttributedUIAction(kind: .tap, targetDescription: "(\(x),\(y))", x: x, y: y)
+            )
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "tap", "\(x)", "\(y)"], timeoutSeconds: 5.0)
             return .text("Tapped at (\(x), \(y)).")
         }
 
-        let textQuery = args["text"]?.stringValue?.lowercased()
-        let idQuery = args["resource_id"]?.stringValue?.lowercased()
-        let descQuery = args["content_desc"]?.stringValue?.lowercased()
+        let textRaw = args["text"]?.stringValue
+        let idRaw = args["resource_id"]?.stringValue
+        let descRaw = args["content_desc"]?.stringValue
+        let textQuery = textRaw?.lowercased()
+        let idQuery = idRaw?.lowercased()
+        let descQuery = descRaw?.lowercased()
 
         guard textQuery != nil || idQuery != nil || descQuery != nil else {
             return .text("Provide either (x, y) or one of text, resource_id, content_desc.", isError: true)
         }
 
-        let nodes = try await fetchUITree(serial: serial)
-        let match = nodes.first { node in
-            if let t = textQuery, !node.text.lowercased().contains(t) { return false }
-            if let r = idQuery, !node.resource_id.lowercased().contains(r) { return false }
-            if let d = descQuery, !node.content_desc.lowercased().contains(d) { return false }
-            return true
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+
+        // Single-selector ShadowDOM fast path with exact/clickable scoring
+        var shadowTarget: AndroidUINode?
+        if let t = textRaw, idRaw == nil, descRaw == nil,
+           let node = await ShadowGraphManager.shared.findNode(byText: t) {
+            shadowTarget = node.toCompactNode()
+        } else if let r = idRaw, textRaw == nil, descRaw == nil,
+                  let node = await ShadowGraphManager.shared.findNode(byResourceID: r) {
+            shadowTarget = node.toCompactNode()
+        } else if let d = descRaw, textRaw == nil, idRaw == nil,
+                  let node = await ShadowGraphManager.shared.findNode(byContentDesc: d) {
+            shadowTarget = node.toCompactNode()
         }
 
-        guard let target = match else {
-            return .text("No matching UI element found in current hierarchy.", isError: true)
+        let target: AndroidUINode
+        if let shadowTarget {
+            target = shadowTarget
+        } else {
+            let nodes = try await fetchUITree(serial: serial)
+            let match = nodes.first { node in
+                if let t = textQuery, !node.text.lowercased().contains(t) { return false }
+                if let r = idQuery, !node.resource_id.lowercased().contains(r) { return false }
+                if let d = descQuery, !node.content_desc.lowercased().contains(d) { return false }
+                return true
+            }
+
+            guard let found = match else {
+                return .text("No matching UI element found in current hierarchy.", isError: true)
+            }
+            target = found
         }
+
+        let actionLabel = !target.text.isEmpty
+            ? target.text
+            : (!target.content_desc.isEmpty ? target.content_desc : target.resource_id)
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(
+                kind: .tap,
+                targetDescription: actionLabel,
+                x: target.center_x,
+                y: target.center_y,
+                selectorResourceId: target.resource_id.isEmpty ? nil : target.resource_id,
+                selectorText: target.text.isEmpty ? nil : target.text,
+                selectorContentDesc: target.content_desc.isEmpty ? nil : target.content_desc
+            )
+        )
 
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "tap", "\(target.center_x)", "\(target.center_y)"],
@@ -302,6 +372,18 @@ public enum AndroidMCPTools {
             return .text("Provide either direction or (x1, y1, x2, y2).", isError: true)
         }
 
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(
+                kind: .swipe,
+                targetDescription: args["direction"]?.stringValue ?? "(\(x1),\(y1))->(\(x2),\(y2))",
+                x: x1,
+                y: y1,
+                endX: x2,
+                endY: y2,
+                durationMs: duration
+            )
+        )
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"],
             timeoutSeconds: 6.0
@@ -330,6 +412,15 @@ public enum AndroidMCPTools {
             return .text("Missing 'text' parameter.", isError: true)
         }
         let pressEnter = args["press_enter"]?.boolValue ?? false
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(
+                kind: .typeText,
+                targetDescription: String(text.prefix(32)),
+                textInput: text,
+                pressEnter: pressEnter
+            )
+        )
         let cmd = buildSafeTypeTextCommand(text)
 
         if !cmd.useClipboard {
@@ -362,6 +453,10 @@ public enum AndroidMCPTools {
         guard let code = map[key.uppercased()] else {
             return .text("Unsupported keyevent: \(key)", isError: true)
         }
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(kind: .keyevent, targetDescription: key.uppercased())
+        )
         _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", code], timeoutSeconds: 4.0)
         return .text("Sent keyevent \(key.uppercased()) (\(code)).")
     }
@@ -390,11 +485,176 @@ public enum AndroidMCPTools {
             return .text("Invalid Android package name: '\(targetPackage)'.", isError: true)
         }
 
+        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        await ShadowGraphManager.shared.recordAction(
+            AttributedUIAction(kind: .launchApp, targetDescription: targetPackage)
+        )
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "monkey", "-p", targetPackage, "-c", "android.intent.category.LAUNCHER", "1"],
             timeoutSeconds: 6.0
         )
         return .text("Launched \(targetPackage).")
+    }
+
+    private static func navigateToNode(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
+        let targetHint = args["target"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetHash = try parseLayoutHash(args["target_hash"])
+        guard targetHash != nil || (targetHint?.isEmpty == false) else {
+            return .text("Provide either 'target' or 'target_hash'.", isError: true)
+        }
+
+        let maxSteps = max(1, min(32, args["max_steps"]?.intValue ?? 12))
+        let stepTimeoutMs = max(100, min(30_000, args["step_timeout_ms"]?.intValue ?? 2000))
+
+        let outcome = try await ShadowGraphManager.shared.navigateToNode(
+            serial: serial,
+            target: targetHint,
+            targetHash: targetHash,
+            maxSteps: maxSteps,
+            stepTimeoutMs: stepTimeoutMs
+        )
+        return formatNavigationOutcome(outcome)
+    }
+
+    public static func parseLayoutHash(_ value: MCPJSONValue?) throws -> UInt64? {
+        guard let value else { return nil }
+        switch value {
+        case .null:
+            return nil
+        case .int(let intVal):
+            guard intVal >= 0 else {
+                throw NSError(domain: "AndroidMCPTools", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid negative 'target_hash'."])
+            }
+            return UInt64(intVal)
+        case .string(let raw):
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
+                let hex = String(trimmed.dropFirst(2))
+                guard let parsed = UInt64(hex, radix: 16) else {
+                    throw NSError(domain: "AndroidMCPTools", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid hex 'target_hash': \(trimmed)"])
+                }
+                return parsed
+            }
+            if let decimal = UInt64(trimmed, radix: 10) {
+                return decimal
+            }
+            if let hex = UInt64(trimmed, radix: 16) {
+                return hex
+            }
+            throw NSError(domain: "AndroidMCPTools", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid 'target_hash': \(trimmed)"])
+        default:
+            throw NSError(domain: "AndroidMCPTools", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid 'target_hash' type; expected string."])
+        }
+    }
+
+    public static func formatNavigationOutcome(_ outcome: ShadowNavigationOutcome) -> MCPToolResult {
+        func hex(_ hash: UInt64) -> String { String(format: "0x%016llx", hash) }
+
+        switch outcome {
+        case .arrived(let report):
+            let summary: [MCPJSONValue] = report.steps.map { step in
+                .object([
+                    "step_index": .int(step.stepIndex),
+                    "action": .string(step.actionSignature),
+                    "target_hash": .string(hex(step.targetHash)),
+                    "elapsed_ms": .int(step.elapsedMs),
+                    "matched_by_exact_hash": .bool(step.matchedByExactHash),
+                    "skipped": .bool(step.wasSkipped)
+                ])
+            }
+            let payload: MCPJSONValue = .object([
+                "status": .string("arrived"),
+                "start_hash": .string(hex(report.startHash)),
+                "target_hash": .string(hex(report.finalHash)),
+                "steps_executed": .int(report.steps.count),
+                "total_elapsed_ms": .int(report.totalElapsedMs),
+                "path_summary": .array(summary)
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
+
+        case .alreadyAtTarget(let stateHash, let activePackage):
+            let payload: MCPJSONValue = .object([
+                "status": .string("already_at_target"),
+                "current_hash": .string(hex(stateHash)),
+                "active_package": .string(activePackage),
+                "steps_executed": .int(0),
+                "total_elapsed_ms": .int(0)
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
+
+        case .noRoute(let startHash, let activePackage, let candidates, let reachableCount, let knownCount):
+            let payload: MCPJSONValue = .object([
+                "status": .string("no_route"),
+                "current_hash": .string(hex(startHash)),
+                "active_package": .string(activePackage),
+                "candidate_target_hashes": .array(candidates.map { .string(hex($0)) }),
+                "reachable_vertex_count": .int(reachableCount),
+                "known_vertex_count": .int(knownCount)
+            ])
+            return .text(encodeJSONValue(payload), isError: true)
+
+        case .targetNotFound(let query, let knownCount):
+            let payload: MCPJSONValue = .object([
+                "status": .string("target_not_found"),
+                "query": .string(query),
+                "known_vertex_count": .int(knownCount)
+            ])
+            return .text(encodeJSONValue(payload), isError: true)
+
+        case .streamUnavailable:
+            let payload: MCPJSONValue = .object([
+                "status": .string("stream_unavailable"),
+                "message": .string("Shadow DOM stream is unavailable; ensure android-daemon is running and connected.")
+            ])
+            return .text(encodeJSONValue(payload), isError: true)
+        }
+    }
+
+    public static func formatPathDeviationResult(_ error: PathDeviationError) -> MCPToolResult {
+        func hex(_ hash: UInt64) -> String { String(format: "0x%016llx", hash) }
+
+        var obj: [String: MCPJSONValue] = [
+            "status": .string("path_deviation"),
+            "message": .string(error.description)
+        ]
+
+        switch error {
+        case .executionAlreadyInProgress:
+            obj["error_type"] = .string("execution_already_in_progress")
+        case .shadowStreamUnavailable:
+            obj["error_type"] = .string("shadow_stream_unavailable")
+        case .missingActionPayload(let stepIndex, let edgeId):
+            obj["error_type"] = .string("missing_action_payload")
+            obj["step_index"] = .int(stepIndex)
+            obj["edge_id"] = .string(edgeId.uuidString)
+        case .unexpectedStartState(let expectedHash, let actualHash, let actualPackage):
+            obj["error_type"] = .string("unexpected_start_state")
+            obj["expected_hash"] = .string(hex(expectedHash))
+            obj["last_observed_hash"] = actualHash.map { .string(hex($0)) } ?? .null
+            obj["last_observed_package"] = .string(actualPackage)
+        case .actionDispatchFailed(let stepIndex, let actionSignature, let underlyingMessage):
+            obj["error_type"] = .string("action_dispatch_failed")
+            obj["step_index"] = .int(stepIndex)
+            obj["action"] = .string(actionSignature)
+            obj["underlying_error"] = .string(underlyingMessage)
+        case .stepTimeout(let stepIndex, let expectedTargetHash, let lastObservedHash, let lastObservedPackage, let timeoutMs):
+            obj["error_type"] = .string("step_timeout")
+            obj["step_index"] = .int(stepIndex)
+            obj["expected_target_hash"] = .string(hex(expectedTargetHash))
+            obj["last_observed_hash"] = lastObservedHash.map { .string(hex($0)) } ?? .null
+            obj["last_observed_package"] = .string(lastObservedPackage)
+            obj["timeout_ms"] = .int(timeoutMs)
+        }
+
+        return .text(encodeJSONValue(.object(obj)), isError: true)
+    }
+
+    private static func encodeJSONValue(_ value: MCPJSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        guard let data = try? encoder.encode(value) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Parses `dumpsys notification --noredact` into clean notification summaries.

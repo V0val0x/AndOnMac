@@ -3,10 +3,13 @@ import AppKit
 import CoreVideo
 import VideoToolbox
 import os
+import AndroidShadowGraphKit
 
 public struct ScrcpyVideoView: NSViewRepresentable {
     public let serial: String?
     public var screenClipRadius: CGFloat = 24
+    public var inputWidth: Int? = nil
+    public var inputHeight: Int? = nil
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     public var onHomeGestureTriggered: (() -> Void)?
@@ -14,12 +17,16 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     public init(
         serial: String?,
         screenClipRadius: CGFloat = 24,
+        inputWidth: Int? = nil,
+        inputHeight: Int? = nil,
         onFileDrop: (([URL]) -> Void)? = nil,
         onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)? = nil,
         onHomeGestureTriggered: (() -> Void)? = nil
     ) {
         self.serial = serial
         self.screenClipRadius = screenClipRadius
+        self.inputWidth = inputWidth
+        self.inputHeight = inputHeight
         self.onFileDrop = onFileDrop
         self.onHoverZonesChanged = onHoverZonesChanged
         self.onHomeGestureTriggered = onHomeGestureTriggered
@@ -28,6 +35,8 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     public func makeNSView(context: Context) -> ScrcpyDisplayNSView {
         let view = ScrcpyDisplayNSView()
         view.serial = serial
+        view.inputWidth = inputWidth
+        view.inputHeight = inputHeight
         view.layer?.cornerRadius = screenClipRadius
         view.onFileDrop = onFileDrop
         view.onHoverZonesChanged = onHoverZonesChanged
@@ -37,6 +46,8 @@ public struct ScrcpyVideoView: NSViewRepresentable {
     
     public func updateNSView(_ nsView: ScrcpyDisplayNSView, context: Context) {
         nsView.serial = serial
+        nsView.inputWidth = inputWidth
+        nsView.inputHeight = inputHeight
         nsView.layer?.cornerRadius = screenClipRadius
         nsView.onFileDrop = onFileDrop
         nsView.onHoverZonesChanged = onHoverZonesChanged
@@ -51,9 +62,15 @@ public struct ScrcpyVideoView: NSViewRepresentable {
 
 public final class ScrcpyDisplayNSView: NSView {
     public var serial: String?
+    public var inputWidth: Int?
+    public var inputHeight: Int?
     public var onFileDrop: (([URL]) -> Void)?
     public var onHoverZonesChanged: ((_ isTop: Bool, _ isBottom: Bool) -> Void)?
     public var onHomeGestureTriggered: (() -> Void)?
+    /// Testability hooks for ShadowGraph action attribution & recording without hitting a live daemon.
+    public var onRecordAction: ((AttributedUIAction) -> Void)?
+    public var shadowIndexProvider: (() async -> ShadowTreeIndex?)?
+    internal var videoSizeProvider: (() -> (width: Int, height: Int))?
     
     override public var isFlipped: Bool { true }
     override public var acceptsFirstResponder: Bool { true }
@@ -68,8 +85,12 @@ public final class ScrcpyDisplayNSView: NSView {
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
     private var touchStartTime: TimeInterval = 0
+    private var pendingTapAction: AttributedUIAction?
+    private var pendingTapResolutionTask: Task<AttributedUIAction, Never>?
     private var isTrackpadPanning: Bool = false
     private var trackpadPanPoint: CGPoint = .zero
+    private var trackpadPanStartNormalized: CGPoint?
+    private var trackpadPanStartTime: TimeInterval = 0
     private var isBottomScrollHomeTracking: Bool = false
     private var bottomScrollAccumulatedUp: CGFloat = 0
     private var bottomScrollAccumulatedX: CGFloat = 0
@@ -192,6 +213,7 @@ public final class ScrcpyDisplayNSView: NSView {
     }
 
     public func teardown() {
+        cancelPendingTapResolution()
         displayLink?.invalidate()
         displayLink = nil
         if let occlusionObserver {
@@ -345,10 +367,18 @@ public final class ScrcpyDisplayNSView: NSView {
         onHoverZonesChanged?(false, false)
     }
     
+    private func currentVideoSize() -> (width: Int, height: Int) {
+        if let videoSizeProvider {
+            return videoSizeProvider()
+        }
+        return (Int(ScrcpyClient.shared.deviceWidth), Int(ScrcpyClient.shared.deviceHeight))
+    }
+
     // MARK: - Video Display Rect Calculator (Handles Letterbox & Pillarbox)
     private func videoRect() -> CGRect {
-        let dw = CGFloat(ScrcpyClient.shared.deviceWidth)
-        let dh = CGFloat(ScrcpyClient.shared.deviceHeight)
+        let videoSize = currentVideoSize()
+        let dw = CGFloat(videoSize.width)
+        let dh = CGFloat(videoSize.height)
         guard dw > 0, dh > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
         let viewAspect = bounds.width / bounds.height
         let videoAspect = dw / dh
@@ -376,6 +406,203 @@ public final class ScrcpyDisplayNSView: NSView {
         return (nx, ny)
     }
     
+    internal func setHasRenderedFrameForTesting(_ rendered: Bool) {
+        hasRenderedFrame = rendered
+    }
+
+    // MARK: - ShadowGraph Action Recording
+
+    public static func physicalDisplayPoint(
+        normalized: CGPoint,
+        inputWidth: Int?,
+        inputHeight: Int?,
+        videoWidth: Int,
+        videoHeight: Int
+    ) -> (x: Int, y: Int)? {
+        let rawInputW = (inputWidth ?? 0) > 0 ? inputWidth! : videoWidth
+        let rawInputH = (inputHeight ?? 0) > 0 ? inputHeight! : videoHeight
+        guard (rawInputW > 0 && rawInputH > 0) || (videoWidth > 0 && videoHeight > 0) else {
+            return nil
+        }
+        let size = AgenticHUDCoordinateMapper.orientedInputSize(
+            inputWidth: rawInputW,
+            inputHeight: rawInputH,
+            videoWidth: videoWidth,
+            videoHeight: videoHeight
+        )
+        guard size.width > 0, size.height > 0 else { return nil }
+        let clampedX = max(0.0, min(1.0, normalized.x))
+        let clampedY = max(0.0, min(1.0, normalized.y))
+        let x = max(0, min(size.width - 1, Int((clampedX * CGFloat(size.width)).rounded(.down))))
+        let y = max(0, min(size.height - 1, Int((clampedY * CGFloat(size.height)).rounded(.down))))
+        return (x, y)
+    }
+
+    private func currentPhysicalDisplayPoint(forNormalized pt: CGPoint) -> (x: Int, y: Int)? {
+        let videoSize = currentVideoSize()
+        return Self.physicalDisplayPoint(
+            normalized: pt,
+            inputWidth: inputWidth,
+            inputHeight: inputHeight,
+            videoWidth: videoSize.width,
+            videoHeight: videoSize.height
+        )
+    }
+
+    private func currentOrientedDisplaySize() -> (width: Int, height: Int)? {
+        let videoSize = currentVideoSize()
+        let videoW = videoSize.width
+        let videoH = videoSize.height
+        let rawInputW = (inputWidth ?? 0) > 0 ? inputWidth! : videoW
+        let rawInputH = (inputHeight ?? 0) > 0 ? inputHeight! : videoH
+        guard (rawInputW > 0 && rawInputH > 0) || (videoW > 0 && videoH > 0) else {
+            return nil
+        }
+        let size = AgenticHUDCoordinateMapper.orientedInputSize(
+            inputWidth: rawInputW,
+            inputHeight: rawInputH,
+            videoWidth: videoW,
+            videoHeight: videoH
+        )
+        guard size.width > 0, size.height > 0 else { return nil }
+        return size
+    }
+
+    private func dispatchRecordedAction(_ action: AttributedUIAction) {
+        if let onRecordAction {
+            onRecordAction(action)
+            return
+        }
+        Task(priority: .userInitiated) {
+            await ShadowGraphManager.shared.recordAction(action)
+        }
+    }
+
+    private func recordKeyAction(_ keyName: String) {
+        dispatchRecordedAction(
+            AttributedUIAction(
+                kind: .keyevent,
+                targetDescription: keyName
+            )
+        )
+    }
+
+    private func recordSwipeAction(
+        startNormalized: CGPoint,
+        endNormalized: CGPoint,
+        durationMs: Int,
+        descriptionPrefix: String = "manual swipe"
+    ) {
+        guard let startPx = currentPhysicalDisplayPoint(forNormalized: startNormalized),
+              let endPx = currentPhysicalDisplayPoint(forNormalized: endNormalized) else {
+            return
+        }
+        let clampedDuration = max(50, min(5000, durationMs))
+        dispatchRecordedAction(
+            AttributedUIAction(
+                kind: .swipe,
+                targetDescription: "\(descriptionPrefix) (\(startPx.x),\(startPx.y))->(\(endPx.x),\(endPx.y))",
+                x: startPx.x,
+                y: startPx.y,
+                endX: endPx.x,
+                endY: endPx.y,
+                durationMs: clampedDuration
+            )
+        )
+    }
+
+    private func cancelPendingTapResolution() {
+        pendingTapAction = nil
+        pendingTapResolutionTask?.cancel()
+        pendingTapResolutionTask = nil
+    }
+
+    private func resolveAndRecordTap(atNormalized pt: CGPoint) {
+        if let action = pendingTapAction {
+            cancelPendingTapResolution()
+            dispatchRecordedAction(action)
+            return
+        }
+        if let tapTask = pendingTapResolutionTask {
+            pendingTapResolutionTask = nil
+            pendingTapAction = nil
+            Task(priority: .userInitiated) { [weak self] in
+                let action = await tapTask.value
+                self?.dispatchRecordedAction(action)
+            }
+            return
+        }
+        guard let coords = currentPhysicalDisplayPoint(forNormalized: pt) else { return }
+        if let provider = shadowIndexProvider {
+            Task(priority: .userInitiated) { [weak self] in
+                let action: AttributedUIAction
+                if let index = await provider() {
+                    action = index.attributedTapAction(atX: coords.x, y: coords.y)
+                } else {
+                    action = AttributedUIAction(
+                        kind: .tap,
+                        targetDescription: "manual tap at (\(coords.x),\(coords.y))",
+                        x: coords.x,
+                        y: coords.y
+                    )
+                }
+                self?.dispatchRecordedAction(action)
+            }
+            return
+        }
+        let action = ShadowGraphManager.shared.resolveTapActionSync(atX: coords.x, y: coords.y)
+        dispatchRecordedAction(action)
+    }
+
+    private func startPendingTapResolution(atNormalized pt: CGPoint) {
+        cancelPendingTapResolution()
+        guard let coords = currentPhysicalDisplayPoint(forNormalized: pt) else {
+            return
+        }
+        guard let provider = shadowIndexProvider else {
+            pendingTapAction = ShadowGraphManager.shared.resolveTapActionSync(atX: coords.x, y: coords.y)
+            return
+        }
+        pendingTapResolutionTask = Task(priority: .userInitiated) {
+            if let index = await provider() {
+                return index.attributedTapAction(atX: coords.x, y: coords.y)
+            }
+            return AttributedUIAction(
+                kind: .tap,
+                targetDescription: "manual tap at (\(coords.x),\(coords.y))",
+                x: coords.x,
+                y: coords.y
+            )
+        }
+    }
+
+    private func finishTrackpadPan(atTimestamp timestamp: TimeInterval) {
+        guard isTrackpadPanning else { return }
+        isTrackpadPanning = false
+        let startNorm = trackpadPanStartNormalized
+        trackpadPanStartNormalized = nil
+        if let startNorm,
+           let startPx = currentPhysicalDisplayPoint(forNormalized: startNorm),
+           let endPx = currentPhysicalDisplayPoint(forNormalized: trackpadPanPoint) {
+            let distance = hypot(Double(endPx.x - startPx.x), Double(endPx.y - startPx.y))
+            if distance >= 28.0 {
+                let durationMs = max(50, min(5000, Int(((timestamp - trackpadPanStartTime) * 1000.0).rounded())))
+                recordSwipeAction(
+                    startNormalized: startNorm,
+                    endNormalized: trackpadPanPoint,
+                    durationMs: durationMs,
+                    descriptionPrefix: "trackpad swipe"
+                )
+            }
+        }
+        ScrcpyClient.shared.sendTouchEvent(
+            action: 1,
+            pointerId: 10,
+            normalizedX: trackpadPanPoint.x,
+            normalizedY: trackpadPanPoint.y
+        )
+    }
+
     // MARK: - Mouse Events (Forwarded to scrcpy touch protocol)
     override public func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
@@ -385,6 +612,7 @@ public final class ScrcpyDisplayNSView: NSView {
               let pt = normalizedPoint(from: event, allowClamping: false) else {
             // Drag when no frame rendered yet, in top HUD/status bar region, or on bezel/letterbox margin moves the macOS window
             isTrackingTouch = false
+            cancelPendingTapResolution()
             window?.performDrag(with: event)
             return
         }
@@ -392,6 +620,8 @@ public final class ScrcpyDisplayNSView: NSView {
         let startPt = CGPoint(x: pt.x, y: pt.y)
         touchStartNormalized = startPt
         touchStartTime = event.timestamp
+        // Capture pre-click ShadowDOM node immediately before any touch-up triggers a UI transition
+        startPendingTapResolution(atNormalized: startPt)
         // Snap edge touches to exact 0/1 boundary so Android system edge gestures also engage natively
         let clampedX: CGFloat = startPt.x <= 0.05 ? 0.0 : (startPt.x >= 0.95 ? 1.0 : startPt.x)
         let clampedY: CGFloat = startPt.y >= 0.94 ? 1.0 : (startPt.y <= 0.05 ? 0.0 : startPt.y)
@@ -408,36 +638,70 @@ public final class ScrcpyDisplayNSView: NSView {
         isTrackingTouch = false
         let start = touchStartNormalized
         touchStartNormalized = nil
-        guard let pt = normalizedPoint(from: event, allowClamping: true) else { return }
+        guard let pt = normalizedPoint(from: event, allowClamping: true) else {
+            cancelPendingTapResolution()
+            return
+        }
+        let endPt = CGPoint(x: pt.x, y: pt.y)
+        let durationMs = max(50, min(5000, Int(((event.timestamp - touchStartTime) * 1000.0).rounded())))
 
-        if let start, var gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: CGPoint(x: pt.x, y: pt.y)) {
+        if let start, var gesture = Self.detectEdgeGesture(startNormalized: start, endNormalized: endPt) {
             // Swipe-up-and-hold (>= 250ms) from bottom opens App Switcher (native Android gesture behavior)
             if gesture == .home && (event.timestamp - touchStartTime) >= 0.25 {
                 gesture = .appSwitcher
             }
+            cancelPendingTapResolution()
             ScrcpyClient.shared.sendTouchEvent(action: 3, normalizedX: pt.x, normalizedY: pt.y) // ACTION_CANCEL
-            performEdgeGesture(gesture)
+            performEdgeGesture(gesture, startNormalized: start, endNormalized: endPt, durationMs: durationMs)
             return
         }
+
+        if let start,
+           let startPx = currentPhysicalDisplayPoint(forNormalized: start),
+           let endPx = currentPhysicalDisplayPoint(forNormalized: endPt) {
+            let distance = hypot(Double(endPx.x - startPx.x), Double(endPx.y - startPx.y))
+            if distance >= 28.0 {
+                cancelPendingTapResolution()
+                recordSwipeAction(startNormalized: start, endNormalized: endPt, durationMs: durationMs)
+                ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
+                return
+            }
+        }
+        resolveAndRecordTap(atNormalized: endPt)
         ScrcpyClient.shared.sendTouchEvent(action: 1, normalizedX: pt.x, normalizedY: pt.y)
     }
 
-    private func performEdgeGesture(_ gesture: SmartphoneEdgeGesture) {
+    private func performEdgeGesture(
+        _ gesture: SmartphoneEdgeGesture,
+        startNormalized: CGPoint,
+        endNormalized: CGPoint,
+        durationMs: Int
+    ) {
         switch gesture {
         case .back:
             ScrcpyClient.shared.sendKeycode(4) // KEYCODE_BACK
+            recordKeyAction("BACK")
         case .home:
             ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+            recordKeyAction("HOME")
         case .appSwitcher:
             ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            recordKeyAction("RECENTS")
         case .notifications:
             ScrcpyClient.shared.expandNotificationsPanel()
+            recordSwipeAction(
+                startNormalized: startNormalized,
+                endNormalized: endNormalized,
+                durationMs: durationMs,
+                descriptionPrefix: "edge swipe Notifications"
+            )
         }
     }
     
     override public func rightMouseDown(with event: NSEvent) {
         // Right click behaves as Android BACK button (Apple iPhone Mirroring behavior)
         ScrcpyClient.shared.sendBackOrScreenOn()
+        recordKeyAction("BACK")
     }
     
     // MARK: - Trackpad & Mouse Scrolling + Multi-Touch Gestures
@@ -448,8 +712,7 @@ public final class ScrcpyDisplayNSView: NSView {
             // Suppress macOS momentum inertia so lifting fingers stops scrolling cleanly instead of flinging pages
             guard event.momentumPhase == [] else {
                 if isTrackpadPanning {
-                    ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
-                    isTrackpadPanning = false
+                    finishTrackpadPan(atTimestamp: event.timestamp)
                 }
                 if isBottomScrollHomeTracking {
                     isBottomScrollHomeTracking = false
@@ -485,6 +748,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     ) {
                         bottomScrollTriggered = true
                         ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+                        recordKeyAction("HOME")
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                         DispatchQueue.main.async { [weak self] in
                             self?.onHomeGestureTriggered?()
@@ -497,6 +761,7 @@ public final class ScrcpyDisplayNSView: NSView {
                     ) {
                         bottomScrollAppSwitcherTriggered = true
                         ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+                        recordKeyAction("RECENTS")
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     }
                 case .ended, .cancelled:
@@ -520,11 +785,15 @@ public final class ScrcpyDisplayNSView: NSView {
             case .began:
                 isTrackpadPanning = true
                 trackpadPanPoint = CGPoint(x: max(0.08, min(0.92, pt.x)), y: max(0.08, min(0.92, pt.y)))
+                trackpadPanStartNormalized = trackpadPanPoint
+                trackpadPanStartTime = event.timestamp
                 ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
             case .changed, []:
                 if !isTrackpadPanning {
                     isTrackpadPanning = true
                     trackpadPanPoint = CGPoint(x: max(0.08, min(0.92, pt.x)), y: max(0.08, min(0.92, pt.y)))
+                    trackpadPanStartNormalized = trackpadPanPoint
+                    trackpadPanStartTime = event.timestamp
                     ScrcpyClient.shared.sendTouchEvent(action: 0, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
                 }
                 trackpadPanPoint = CGPoint(
@@ -534,8 +803,7 @@ public final class ScrcpyDisplayNSView: NSView {
                 ScrcpyClient.shared.sendTouchEvent(action: 2, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
             case .ended, .cancelled:
                 if isTrackpadPanning {
-                    ScrcpyClient.shared.sendTouchEvent(action: 1, pointerId: 10, normalizedX: trackpadPanPoint.x, normalizedY: trackpadPanPoint.y)
-                    isTrackpadPanning = false
+                    finishTrackpadPan(atTimestamp: event.timestamp)
                 }
             default:
                 break
@@ -574,10 +842,20 @@ public final class ScrcpyDisplayNSView: NSView {
         guard hasRenderedFrame else { return }
         if abs(event.deltaX) > abs(event.deltaY) {
             ScrcpyClient.shared.sendKeycode(4) // 3-finger swipe left/right -> Back
+            recordKeyAction("BACK")
         } else if event.deltaY > 0 {
             ScrcpyClient.shared.sendKeycode(3) // 3-finger swipe up -> Home
+            recordKeyAction("HOME")
         } else if event.deltaY < 0 {
             ScrcpyClient.shared.expandNotificationsPanel() // 3-finger swipe down -> Notifications
+            if currentOrientedDisplaySize() != nil {
+                recordSwipeAction(
+                    startNormalized: CGPoint(x: 0.5, y: 0.02),
+                    endNormalized: CGPoint(x: 0.5, y: 0.65),
+                    durationMs: 250,
+                    descriptionPrefix: "3-finger swipe Notifications"
+                )
+            }
         }
     }
     
@@ -643,6 +921,7 @@ public final class ScrcpyDisplayNSView: NSView {
             ScrcpyClient.shared.sendKeycode(67) // KEYCODE_DEL
         case 53: // Escape -> Back
             ScrcpyClient.shared.sendKeycode(4) // KEYCODE_BACK
+            recordKeyAction("BACK")
         case 48: // Tab
             ScrcpyClient.shared.sendKeycode(61) // KEYCODE_TAB
         case 126: // Arrow Up

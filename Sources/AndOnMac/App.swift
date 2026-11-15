@@ -20,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ContinuityBridge.shared.stop()
         ScreenMemorySnapshotter.shared.stop()
         MCPHTTPServer.shared.stop()
+        let stopSem = DispatchSemaphore(value: 0)
+        Task.detached {
+            await ShadowGraphManager.shared.stop()
+            stopSem.signal()
+        }
+        _ = stopSem.wait(timeout: .now() + 1.5)
         ProcessLifecycleManager.shared.terminateAllProcesses(synchronousWait: true, gracePeriodMs: 250)
     }
 }

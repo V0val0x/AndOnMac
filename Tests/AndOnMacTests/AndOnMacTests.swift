@@ -1,7 +1,9 @@
 import XCTest
 import SwiftUI
 import AppKit
+import Network
 @testable import AndOnMac
+import AndroidShadowGraphKit
 
 final class AndOnMacTests: XCTestCase {
     func testDeviceInitialization() {
@@ -904,7 +906,8 @@ final class AndOnMacTests: XCTestCase {
         let listJSON = try JSONSerialization.jsonObject(with: listRespData!) as? [String: Any]
         let listResult = listJSON?["result"] as? [String: Any]
         let tools = listResult?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 9)
+        XCTAssertEqual(tools?.count, 10)
+        XCTAssertTrue(tools?.contains(where: { ($0["name"] as? String) == "android_navigate_to_node" }) == true)
 
         // Kill-switch must block tool calls while paused
         core.isAgentPaused = true
@@ -1344,6 +1347,32 @@ final class AndOnMacTests: XCTestCase {
         let listResp = await MCPServerCore.shared.handleRawRequestData(listReq)
         let listText = try XCTUnwrap(listResp.flatMap { String(data: $0, encoding: .utf8) })
         XCTAssertTrue(listText.contains("android_tap_element"))
+        XCTAssertTrue(listText.contains("android_navigate_to_node"))
+    }
+
+    func testAndroidNavigateToNodeHashParsingAndOutcomeFormatting() throws {
+        XCTAssertEqual(try AndroidMCPTools.parseLayoutHash(.string("0x1a2b3c4d")), 0x1a2b3c4d)
+        XCTAssertEqual(try AndroidMCPTools.parseLayoutHash(.string("123456789")), 123456789)
+        XCTAssertEqual(try AndroidMCPTools.parseLayoutHash(.string("deadbeef")), 0xdeadbeef)
+        XCTAssertNil(try AndroidMCPTools.parseLayoutHash(.string("   ")))
+        XCTAssertThrowsError(try AndroidMCPTools.parseLayoutHash(.string("not_a_hash")))
+
+        let devRes = AndroidMCPTools.formatPathDeviationResult(.stepTimeout(
+            stepIndex: 1,
+            expectedTargetHash: 0xABCD,
+            lastObservedHash: 0x1234,
+            lastObservedPackage: "com.popup",
+            timeoutMs: 2000
+        ))
+        XCTAssertTrue(devRes.isError)
+        let text = AndroidMCPTools.formatNavigationOutcome(.noRoute(
+            startHash: 0x1111,
+            activePackage: "com.launcher",
+            candidateTargetHashes: [0x2222],
+            reachableVertexCount: 3,
+            knownVertexCount: 5
+        ))
+        XCTAssertTrue(text.isError)
     }
 
     func testMultiStepMacroSchemaAutoParametersAndOverrides() throws {
@@ -1527,5 +1556,1094 @@ final class AndOnMacTests: XCTestCase {
         proc.waitUntilExit()
         ProcessLifecycleManager.shared.unregister(trackedId)
         XCTAssertFalse(proc.isRunning)
+    }
+
+    func testAgenticHUDCoordinateMapperHandlesAspectFitLetterboxPillarboxAndEndXY() {
+        // Exact 9:20 fit -> videoRect matches bounds
+        let exactRect = AgenticHUDCoordinateMapper.videoRect(
+            in: CGSize(width: 320, height: 711.1111),
+            deviceWidth: 1080,
+            deviceHeight: 2400
+        )
+        XCTAssertEqual(exactRect.origin.x, 0, accuracy: 0.5)
+        XCTAssertEqual(exactRect.origin.y, 0, accuracy: 0.5)
+        XCTAssertEqual(exactRect.width, 320, accuracy: 0.5)
+
+        // Pillarbox (wide view for portrait phone)
+        let pillarRect = AgenticHUDCoordinateMapper.videoRect(
+            in: CGSize(width: 400, height: 400),
+            deviceWidth: 1000,
+            deviceHeight: 2000
+        )
+        XCTAssertEqual(pillarRect.width, 200, accuracy: 0.01)
+        XCTAssertEqual(pillarRect.origin.x, 100, accuracy: 0.01)
+        XCTAssertEqual(pillarRect.origin.y, 0, accuracy: 0.01)
+
+        let centerPt = AgenticHUDCoordinateMapper.viewPoint(
+            deviceX: 500,
+            deviceY: 1000,
+            in: CGSize(width: 400, height: 400),
+            deviceWidth: 1000,
+            deviceHeight: 2000
+        )
+        XCTAssertEqual(centerPt.x, 200, accuracy: 0.01)
+        XCTAssertEqual(centerPt.y, 200, accuracy: 0.01)
+
+        // Letterbox (tall view for wide landscape phone)
+        let letterRect = AgenticHUDCoordinateMapper.videoRect(
+            in: CGSize(width: 400, height: 400),
+            deviceWidth: 2000,
+            deviceHeight: 1000
+        )
+        XCTAssertEqual(letterRect.height, 200, accuracy: 0.01)
+        XCTAssertEqual(letterRect.origin.y, 100, accuracy: 0.01)
+
+        // Zero-size defensive edge case
+        let zeroRect = AgenticHUDCoordinateMapper.videoRect(in: .zero, deviceWidth: 0, deviceHeight: 0)
+        XCTAssertEqual(zeroRect, .zero)
+
+        // Target coordinate extraction: prefers (endX, endY), falls back to (x, y)
+        let swipe = AttributedUIAction(kind: .swipe, targetDescription: "Scroll", x: 540, y: 1800, endX: 540, endY: 620)
+        let swipeTarget = AgenticHUDCoordinateMapper.targetCoordinates(for: swipe)
+        XCTAssertEqual(swipeTarget?.x, 540)
+        XCTAssertEqual(swipeTarget?.y, 620)
+
+        let tap = AttributedUIAction(kind: .tap, targetDescription: "Battery Share", x: 312, y: 1140)
+        let tapTarget = AgenticHUDCoordinateMapper.targetCoordinates(for: tap)
+        XCTAssertEqual(tapTarget?.x, 312)
+        XCTAssertEqual(tapTarget?.y, 1140)
+
+        let key = AttributedUIAction(kind: .keyevent, targetDescription: "BACK")
+        XCTAssertNil(AgenticHUDCoordinateMapper.targetCoordinates(for: key))
+    }
+
+    @MainActor
+    func testAgenticHUDViewModelTransitionsAndCrosshairHitTesting() async {
+        let vm = AgenticHUDViewModel()
+        XCTAssertNil(vm.toastTitle)
+        XCTAssertEqual(vm.toastPhase, .idle)
+        XCTAssertNil(vm.activeReticle)
+
+        vm.handle(event: .pathComputed(totalSteps: 4, targetHint: "Battery Share"))
+        XCTAssertEqual(vm.toastTitle, "🤖 A* Path Computed: 4 steps. Executing...")
+        XCTAssertEqual(vm.toastSubtitle, "Target: Battery Share")
+        XCTAssertEqual(vm.toastPhase, .executing)
+
+        let action = AttributedUIAction(
+            kind: .tap,
+            targetDescription: "Battery Share",
+            x: 540,
+            y: 1200,
+            endX: 545,
+            endY: 1210
+        )
+        vm.handle(event: .willExecuteAction(stepIndex: 1, totalSteps: 4, action: action))
+        XCTAssertEqual(vm.activeReticle?.x, 545)
+        XCTAssertEqual(vm.activeReticle?.y, 1210)
+        XCTAssertEqual(vm.toastPhase, .executing)
+
+        let report = MacroExecutionReport(startHash: 1, finalHash: 2, steps: [], totalElapsedMs: 142)
+        vm.handle(event: .completed(report: report))
+        XCTAssertEqual(vm.toastPhase, .completed)
+        XCTAssertEqual(vm.toastTitle, "🤖 Arrived in 142ms (0 steps)")
+
+        vm.handle(event: .failed(message: "Timeout"))
+        XCTAssertEqual(vm.toastPhase, .failed)
+        XCTAssertEqual(vm.toastSubtitle, "Timeout")
+
+        // Verify AgenticCrosshairNSView is top-left flipped and never intercepts mouse events
+        let crosshairView = AgenticCrosshairNSView(frame: NSRect(x: 0, y: 0, width: 320, height: 700))
+        XCTAssertTrue(crosshairView.isFlipped)
+        XCTAssertNil(crosshairView.hitTest(NSPoint(x: 160, y: 350)))
+        crosshairView.update(reticle: vm.activeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        crosshairView.layout()
+        crosshairView.update(reticle: nil, deviceWidth: 1080, deviceHeight: 2400)
+
+        vm.clear()
+        XCTAssertEqual(vm.toastPhase, .idle)
+        XCTAssertNil(vm.activeReticle)
+    }
+
+    @MainActor
+    func testAgenticHUDViewModelStreamsFromMacroExecutionEngineWithoutBlocking() async throws {
+        let domState = ShadowDOMState()
+        let graphEngine = SpatialGraphEngine()
+
+        let nodeA = ShadowUINode(
+            index: 0, text: "Settings", resourceId: "", contentDesc: "", className: "TextView",
+            clickable: false, scrollable: false, bounds: "[0,0][200,100]", centerX: 100, centerY: 50,
+            nodeId: 1, parentId: nil, windowId: 1, childIndex: 0, depth: 1,
+            packageName: "com.android.settings", editable: false, focused: false, checked: false,
+            enabled: true, visible: true
+        )
+        let nodeB = ShadowUINode(
+            index: 0, text: "Battery Share", resourceId: "", contentDesc: "", className: "TextView",
+            clickable: true, scrollable: false, bounds: "[100,1100][500,1300]", centerX: 300, centerY: 1200,
+            nodeId: 2, parentId: nil, windowId: 1, childIndex: 0, depth: 1,
+            packageName: "com.android.settings", editable: false, focused: false, checked: false,
+            enabled: true, visible: true
+        )
+
+        await domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 1, timestampMs: 100, reason: "init", activePackage: "com.android.settings",
+            activeWindowId: 1, nodeCount: 1, nodes: [nodeA]
+        )))
+        let fpA = ScreenLayoutHasher().fingerprint(for: await domState.currentIndex!)
+        let idxB = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.android.settings", activeWindowId: 1, nodes: [nodeB])
+        let fpB = ScreenLayoutHasher().fingerprint(for: idxB)
+
+        struct LiveMockExecutor: MacroActionExecutor {
+            let domState: ShadowDOMState
+            let nodeB: ShadowUINode
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                await domState.handleMessage(.snapshot(WireSnapshotPayload(
+                    seq: 2, timestampMs: 200, reason: "step", activePackage: "com.android.settings",
+                    activeWindowId: 1, nodeCount: 1, nodes: [nodeB]
+                )))
+            }
+        }
+
+        let engine = MacroExecutionEngine(
+            domState: domState,
+            graphEngine: graphEngine,
+            executor: LiveMockExecutor(domState: domState, nodeB: nodeB),
+            configuration: MacroExecutionConfiguration(stepTimeoutMs: 1000, postSettleQuiescenceMs: 0)
+        )
+
+        let vm = AgenticHUDViewModel()
+        vm.attach(to: engine)
+        try await Task.sleep(for: .milliseconds(20))
+
+        let edge = ScreenTransitionEdge(
+            fromHash: fpA.layoutHash,
+            toHash: fpB.layoutHash,
+            action: AttributedUIAction(kind: .tap, targetDescription: "Battery Share", x: 300, y: 1200),
+            actionSignature: "tap:Battery Share"
+        )
+        let report = try await engine.execute(path: [edge], serial: "61061JEA307110")
+        XCTAssertEqual(report.steps.count, 1)
+
+        // Allow MainActor stream task to drain the queued events
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(vm.toastPhase, .completed)
+        XCTAssertEqual(vm.activeReticle?.x, 300)
+        XCTAssertEqual(vm.activeReticle?.y, 1200)
+        vm.stopListening()
+    }
+
+    func testADBServiceParseDisplaySizeHandlesPhysicalOverrideAndInvalidOutput() {
+        let physicalOnly = """
+        Physical size: 1080x2424
+        """
+        let physical = ADBService.parseDisplaySize(from: physicalOnly)
+        XCTAssertEqual(physical?.width, 1080)
+        XCTAssertEqual(physical?.height, 2424)
+
+        let withOverride = """
+        Physical size: 1080x2424
+        Override size: 720x1616
+        """
+        let overridden = ADBService.parseDisplaySize(from: withOverride)
+        XCTAssertEqual(overridden?.width, 720)
+        XCTAssertEqual(overridden?.height, 1616)
+
+        XCTAssertNil(ADBService.parseDisplaySize(from: "error: no devices/emulators found"))
+        XCTAssertNil(ADBService.parseDisplaySize(from: "Physical size: 0x2424"))
+    }
+
+    func testAgenticHUDCoordinateMapperDecouplesDownscaledVideoFromPhysicalInputDimensions() {
+        // Pixel 10a: scrcpy stream downscaled to 640x1440 (max_size=1440),
+        // while ADB input/ShadowUINode coordinates remain in physical 1080x2424.
+        let viewSize = CGSize(width: 400, height: 900)
+        let portraitPoint = AgenticHUDCoordinateMapper.viewPoint(
+            deviceX: 540,
+            deviceY: 1450,
+            in: viewSize,
+            videoWidth: 640,
+            videoHeight: 1440,
+            inputWidth: 1080,
+            inputHeight: 2424
+        )
+        XCTAssertEqual(portraitPoint.x, 200, accuracy: 0.5)
+        // 1450 / 2424 * 900 = 538.37pt (NOT clamped to 900 as it would be if divided by 1440!)
+        XCTAssertEqual(portraitPoint.y, CGFloat(1450.0 / 2424.0 * 900.0), accuracy: 1.0)
+
+        // Landscape rotation: video becomes 1440x640, physical input 1080x2424 must auto-orient to 2424x1080
+        let landscapeView = CGSize(width: 900, height: 400)
+        let landscapePoint = AgenticHUDCoordinateMapper.viewPoint(
+            deviceX: 1212,
+            deviceY: 540,
+            in: landscapeView,
+            videoWidth: 1440,
+            videoHeight: 640,
+            inputWidth: 1080,
+            inputHeight: 2424
+        )
+        XCTAssertEqual(landscapePoint.x, 450, accuracy: 0.5)
+        XCTAssertEqual(landscapePoint.y, 200, accuracy: 0.5)
+
+        let nsView = AgenticCrosshairNSView(frame: NSRect(origin: .zero, size: viewSize))
+        nsView.update(
+            reticle: AgenticTargetReticle(
+                id: UUID(),
+                x: 540,
+                y: 1450,
+                startX: nil,
+                startY: nil,
+                kind: .tap,
+                label: "Tap"
+            ),
+            deviceWidth: 640,
+            deviceHeight: 1440,
+            inputWidth: 1080,
+            inputHeight: 2424
+        )
+        nsView.layoutSubtreeIfNeeded()
+        XCTAssertFalse(nsView.isHidden)
+    }
+
+    @MainActor
+    func testAgenticHUDViewModelListenCancelsCleanlyWithTask() async throws {
+        let vm = AgenticHUDViewModel()
+        var continuationRef: AsyncStream<MacroExecutionEvent>.Continuation?
+        let stream = AsyncStream<MacroExecutionEvent> { cont in
+            continuationRef = cont
+        }
+
+        let listenTask = Task { @MainActor in
+            await vm.listen(to: stream)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        continuationRef?.yield(.pathComputed(totalSteps: 3, targetHint: "Battery Share"))
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(vm.toastPhase, .executing)
+        XCTAssertEqual(vm.toastTitle, "🤖 A* Path Computed: 3 steps. Executing...")
+
+        listenTask.cancel()
+        await listenTask.value
+        continuationRef?.finish()
+    }
+
+    func testScrcpyDisplayNSViewPhysicalDisplayPointMapping() {
+        // Portrait: downscaled video 640x1440 with physical 1080x2424 display
+        let center = ScrcpyDisplayNSView.physicalDisplayPoint(
+            normalized: CGPoint(x: 0.5, y: 0.5),
+            inputWidth: 1080,
+            inputHeight: 2424,
+            videoWidth: 640,
+            videoHeight: 1440
+        )
+        XCTAssertEqual(center?.x, 540)
+        XCTAssertEqual(center?.y, 1212)
+
+        let maxCorner = ScrcpyDisplayNSView.physicalDisplayPoint(
+            normalized: CGPoint(x: 1.0, y: 1.0),
+            inputWidth: 1080,
+            inputHeight: 2424,
+            videoWidth: 640,
+            videoHeight: 1440
+        )
+        XCTAssertEqual(maxCorner?.x, 1079)
+        XCTAssertEqual(maxCorner?.y, 2423)
+
+        // Landscape rotation: video 1440x640 auto-orients physical 1080x2424 -> 2424x1080
+        let landscapeCenter = ScrcpyDisplayNSView.physicalDisplayPoint(
+            normalized: CGPoint(x: 0.5, y: 0.5),
+            inputWidth: 1080,
+            inputHeight: 2424,
+            videoWidth: 1440,
+            videoHeight: 640
+        )
+        XCTAssertEqual(landscapeCenter?.x, 1212)
+        XCTAssertEqual(landscapeCenter?.y, 540)
+
+        // Missing both physical and video dimensions returns nil
+        XCTAssertNil(
+            ScrcpyDisplayNSView.physicalDisplayPoint(
+                normalized: CGPoint(x: 0.5, y: 0.5),
+                inputWidth: nil,
+                inputHeight: nil,
+                videoWidth: 0,
+                videoHeight: 0
+            )
+        )
+    }
+
+    @MainActor
+    func testScrcpyDisplayNSViewRecordsManualTapSwipeAndBackActions() async throws {
+        let viewSize = CGSize(width: 400, height: 800)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: viewSize),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let view = ScrcpyDisplayNSView(frame: NSRect(origin: .zero, size: viewSize))
+        window.contentView = view
+        view.inputWidth = 1080
+        view.inputHeight = 2424
+        view.videoSizeProvider = { (640, 1440) }
+        view.setHasRenderedFrameForTesting(true)
+
+        let nightLightNode = ShadowUINode(
+            index: 0,
+            text: "Night Light",
+            resourceId: "android:id/title",
+            contentDesc: "",
+            className: "android.widget.TextView",
+            clickable: true,
+            scrollable: false,
+            bounds: "[400,1150][700,1270]",
+            centerX: 550,
+            centerY: 1210,
+            nodeId: 42,
+            parentId: nil,
+            windowId: 1,
+            childIndex: 0,
+            depth: 1,
+            packageName: "com.android.settings",
+            editable: false,
+            focused: false,
+            checked: false,
+            enabled: true,
+            visible: true
+        )
+        let shadowIndex = ShadowTreeIndex(
+            seq: 10,
+            timestampMs: 500,
+            activePackage: "com.android.settings",
+            activeWindowId: 1,
+            nodes: [nightLightNode]
+        )
+        view.shadowIndexProvider = { shadowIndex }
+
+        var recorded: [AttributedUIAction] = []
+        view.onRecordAction = { action in
+            recorded.append(action)
+        }
+
+        // 1. Click center of view -> (200, 400) in flipped view = (200, 400) in 400x800 window -> physical (540, 1212) -> hits Night Light
+        let downEvent = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 200, y: 400),
+            modifierFlags: [],
+            timestamp: 1.0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1.0
+        ))
+        let upEvent = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 200, y: 400),
+            modifierFlags: [],
+            timestamp: 1.05,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 0.0
+        ))
+        view.mouseDown(with: downEvent)
+        view.mouseUp(with: upEvent)
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(recorded.count, 1)
+        XCTAssertEqual(recorded[0].kind, .tap)
+        XCTAssertEqual(recorded[0].selectorText, "Night Light")
+        XCTAssertEqual(recorded[0].selectorResourceId, "android:id/title")
+
+        // 2. Drag upward in middle of screen -> swipe
+        let swipeDown = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 200, y: 200),
+            modifierFlags: [],
+            timestamp: 2.0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 3,
+            clickCount: 1,
+            pressure: 1.0
+        ))
+        let swipeUp = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: 200, y: 500),
+            modifierFlags: [],
+            timestamp: 2.2,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 4,
+            clickCount: 1,
+            pressure: 0.0
+        ))
+        view.mouseDown(with: swipeDown)
+        view.mouseUp(with: swipeUp)
+        XCTAssertEqual(recorded.count, 2)
+        XCTAssertEqual(recorded[1].kind, .swipe)
+        XCTAssertEqual(recorded[1].x, 540)
+        XCTAssertEqual(recorded[1].endX, 540)
+        XCTAssertNotEqual(recorded[1].y, recorded[1].endY)
+
+        // 3. Right click -> BACK
+        let rightClick = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: NSPoint(x: 200, y: 400),
+            modifierFlags: [],
+            timestamp: 3.0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 5,
+            clickCount: 1,
+            pressure: 1.0
+        ))
+        view.rightMouseDown(with: rightClick)
+        XCTAssertEqual(recorded.count, 3)
+        XCTAssertEqual(recorded[2].kind, .keyevent)
+        XCTAssertEqual(recorded[2].targetDescription, "BACK")
+
+        // 4. Escape key -> BACK
+        let escKey = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 4.0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 53
+        ))
+        view.keyDown(with: escKey)
+        XCTAssertEqual(recorded.count, 4)
+        XCTAssertEqual(recorded[3].kind, .keyevent)
+        XCTAssertEqual(recorded[3].targetDescription, "BACK")
+    }
+
+    @MainActor
+    func testAgenticHUDViewModelDisplaysFailedToastOnNoRouteEvent() async throws {
+        let vm = AgenticHUDViewModel()
+        var continuationRef: AsyncStream<MacroExecutionEvent>.Continuation?
+        let stream = AsyncStream<MacroExecutionEvent> { cont in
+            continuationRef = cont
+        }
+
+        let listenTask = Task { @MainActor in
+            await vm.listen(to: stream)
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        continuationRef?.yield(.failed(message: "No route to 'Night Light' (1/20 reachable)"))
+        try await Task.sleep(for: .milliseconds(30))
+
+        XCTAssertEqual(vm.toastPhase, .failed)
+        XCTAssertEqual(vm.toastTitle, "🤖 Path Execution Stopped")
+        XCTAssertEqual(vm.toastSubtitle, "No route to 'Night Light' (1/20 reachable)")
+
+        listenTask.cancel()
+        await listenTask.value
+        continuationRef?.finish()
+    }
+
+    func testShadowGraphManagerConcurrentEnsureStartedAndResolveTapActionSync() async throws {
+        actor ForwardRecorder {
+            var calls: [(serial: String?, port: UInt16)] = []
+            func record(serial: String?, port: UInt16) {
+                calls.append((serial, port))
+            }
+            func all() -> [(serial: String?, port: UInt16)] { calls }
+        }
+
+        let recorder = ForwardRecorder()
+        let bridge = ShadowGraphBridge()
+        let manager = ShadowGraphManager(bridge: bridge) { serial, port in
+            try? await Task.sleep(for: .milliseconds(25))
+            await recorder.record(serial: serial, port: port)
+        }
+
+        async let first: Void = manager.ensureStarted(serial: nil)
+        try await Task.sleep(for: .milliseconds(5))
+        async let second: Void = manager.ensureStarted(serial: "61061JEA307110")
+        _ = await (first, second)
+
+        let calls = await recorder.all()
+        XCTAssertGreaterThanOrEqual(calls.count, 2)
+        XCTAssertNil(calls.first?.serial)
+        XCTAssertTrue(calls.contains(where: { $0.serial == "61061JEA307110" }))
+
+        let node = ShadowUINode(
+            index: 0,
+            text: "Night Light",
+            resourceId: "android:id/title",
+            contentDesc: "",
+            className: "android.widget.TextView",
+            clickable: true,
+            scrollable: false,
+            bounds: "[100,200][500,350]",
+            centerX: 300,
+            centerY: 275,
+            nodeId: 42,
+            parentId: nil,
+            windowId: 1,
+            childIndex: 0,
+            depth: 0,
+            packageName: "com.android.settings",
+            editable: false,
+            focused: false,
+            checked: false,
+            enabled: true,
+            visible: true
+        )
+        let snapshot = WireMessage.snapshot(WireSnapshotPayload(
+            seq: 1,
+            timestampMs: 1000,
+            reason: "test",
+            activePackage: "com.android.settings",
+            activeWindowId: 1,
+            nodeCount: 1,
+            nodes: [node]
+        ))
+        await bridge.domState.handleMessage(snapshot)
+
+        let resolved = manager.resolveTapActionSync(atX: 300, y: 275)
+        XCTAssertEqual(resolved.kind, .tap)
+        XCTAssertEqual(resolved.selectorText, "Night Light")
+        XCTAssertEqual(resolved.selectorResourceId, "android:id/title")
+
+        await bridge.domState.markDisconnected()
+        let fallback = manager.resolveTapActionSync(atX: 300, y: 275)
+        XCTAssertNil(fallback.selectorText)
+        XCTAssertEqual(fallback.targetDescription, "manual tap at (300,275)")
+
+        await manager.stop()
+        let finalState = await bridge.client.state
+        XCTAssertEqual(finalState, .stopped)
+    }
+
+    @MainActor
+    func testScrcpyDisplayNSViewTapUsesSyncShadowGraphManagerWithoutProvider() async throws {
+        let domState = ShadowGraphManager.shared.bridge.domState
+        await domState.reset()
+        addTeardownBlock {
+            Task { await domState.reset() }
+        }
+
+        let node = ShadowUINode(
+            index: 0,
+            text: "Display & touch",
+            resourceId: "com.android.settings:id/display_item",
+            contentDesc: "",
+            className: "android.widget.LinearLayout",
+            clickable: true,
+            scrollable: false,
+            bounds: "[0,400][1080,600]",
+            centerX: 540,
+            centerY: 500,
+            nodeId: 77,
+            parentId: nil,
+            windowId: 1,
+            childIndex: 0,
+            depth: 0,
+            packageName: "com.android.settings",
+            editable: false,
+            focused: false,
+            checked: false,
+            enabled: true,
+            visible: true
+        )
+        await domState.handleMessage(WireMessage.snapshot(WireSnapshotPayload(
+            seq: 1,
+            timestampMs: 1000,
+            reason: "test",
+            activePackage: "com.android.settings",
+            activeWindowId: 1,
+            nodeCount: 1,
+            nodes: [node]
+        )))
+
+        let view = ScrcpyDisplayNSView(frame: CGRect(x: 0, y: 0, width: 300, height: 600))
+        view.setHasRenderedFrameForTesting(true)
+        view.videoSizeProvider = { (width: 1080, height: 2400) }
+        view.inputWidth = 1080
+        view.inputHeight = 2400
+
+        var recorded: [AttributedUIAction] = []
+        view.onRecordAction = { recorded.append($0) }
+
+        // y = 500/2400 = 0.2083 normalized from top -> AppKit y = 600 * (1 - 0.2083) = 475
+        let pt = CGPoint(x: 150, y: 475)
+        let down = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: pt,
+            modifierFlags: [],
+            timestamp: 10.0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1.0
+        )!
+        let up = NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: pt,
+            modifierFlags: [],
+            timestamp: 10.05,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 2,
+            clickCount: 1,
+            pressure: 0.0
+        )!
+
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+
+        // Recorded synchronously before mouseUp returned, with no shadowIndexProvider async hop
+        XCTAssertEqual(recorded.count, 1)
+        XCTAssertEqual(recorded[0].kind, .tap)
+        XCTAssertEqual(recorded[0].selectorText, "Display & touch")
+        XCTAssertEqual(recorded[0].selectorResourceId, "com.android.settings:id/display_item")
+
+        await domState.reset()
+    }
+
+    @MainActor
+    func testScrcpyDisplayNSViewScrollWheelAndThreeFingerSwipeActions() throws {
+        final class SyntheticSwipeEvent: NSEvent {
+            private let _deltaX: CGFloat
+            private let _deltaY: CGFloat
+            private let _location: NSPoint
+
+            init(deltaX: CGFloat, deltaY: CGFloat, location: NSPoint = .zero) {
+                self._deltaX = deltaX
+                self._deltaY = deltaY
+                self._location = location
+                super.init()
+            }
+
+            required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+            override var type: NSEvent.EventType { .swipe }
+            override var deltaX: CGFloat { _deltaX }
+            override var deltaY: CGFloat { _deltaY }
+            override var locationInWindow: NSPoint { _location }
+        }
+
+        final class SyntheticScrollEvent: NSEvent {
+            private let _scrollingDeltaX: CGFloat
+            private let _scrollingDeltaY: CGFloat
+            private let _phase: NSEvent.Phase
+            private let _momentumPhase: NSEvent.Phase
+            private let _location: NSPoint
+            private let _timestamp: TimeInterval
+
+            init(
+                scrollingDeltaX: CGFloat,
+                scrollingDeltaY: CGFloat,
+                phase: NSEvent.Phase,
+                momentumPhase: NSEvent.Phase = [],
+                location: NSPoint,
+                timestamp: TimeInterval
+            ) {
+                self._scrollingDeltaX = scrollingDeltaX
+                self._scrollingDeltaY = scrollingDeltaY
+                self._phase = phase
+                self._momentumPhase = momentumPhase
+                self._location = location
+                self._timestamp = timestamp
+                super.init()
+            }
+
+            required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+            override var type: NSEvent.EventType { .scrollWheel }
+            override var hasPreciseScrollingDeltas: Bool { true }
+            override var isDirectionInvertedFromDevice: Bool { false }
+            override var scrollingDeltaX: CGFloat { _scrollingDeltaX }
+            override var scrollingDeltaY: CGFloat { _scrollingDeltaY }
+            override var phase: NSEvent.Phase { _phase }
+            override var momentumPhase: NSEvent.Phase { _momentumPhase }
+            override var locationInWindow: NSPoint { _location }
+            override var timestamp: TimeInterval { _timestamp }
+        }
+
+        let view = ScrcpyDisplayNSView(frame: CGRect(x: 0, y: 0, width: 300, height: 600))
+        view.setHasRenderedFrameForTesting(true)
+        view.videoSizeProvider = { (width: 1080, height: 2400) }
+        view.inputWidth = 1080
+        view.inputHeight = 2400
+
+        var recorded: [AttributedUIAction] = []
+        view.onRecordAction = { recorded.append($0) }
+
+        // 1. Trackpad two-finger precise pan -> .swipe
+        let centerLoc = CGPoint(x: 150, y: 300)
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .began, location: centerLoc, timestamp: 1.0))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: -120, phase: .changed, location: centerLoc, timestamp: 1.1))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .ended, location: centerLoc, timestamp: 1.2))
+
+        XCTAssertTrue(recorded.contains(where: {
+            $0.kind == .swipe && $0.targetDescription.hasPrefix("trackpad swipe")
+        }), "Expected trackpad pan .swipe, got \(recorded)")
+
+        // 2. Bottom-edge upward scroll -> HOME keyevent
+        recorded.removeAll()
+        let bottomLoc = CGPoint(x: 150, y: 30) // normalizedY = 1 - 30/600 = 0.95 >= 0.85
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .began, location: bottomLoc, timestamp: 2.0))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 90, phase: .changed, location: bottomLoc, timestamp: 2.05))
+        view.scrollWheel(with: SyntheticScrollEvent(scrollingDeltaX: 0, scrollingDeltaY: 0, phase: .ended, location: bottomLoc, timestamp: 2.1))
+
+        XCTAssertTrue(recorded.contains(where: {
+            $0.kind == .keyevent && $0.targetDescription == "HOME"
+        }), "Expected bottom-scroll HOME keyevent, got \(recorded)")
+
+        // 3. Three-finger swipes -> BACK, HOME, Notifications swipe
+        recorded.removeAll()
+        view.swipe(with: SyntheticSwipeEvent(deltaX: -1.0, deltaY: 0.0))
+        view.swipe(with: SyntheticSwipeEvent(deltaX: 0.0, deltaY: 1.0))
+        view.swipe(with: SyntheticSwipeEvent(deltaX: 0.0, deltaY: -1.0))
+
+        XCTAssertEqual(recorded.count, 3)
+        XCTAssertEqual(recorded[0].kind, .keyevent)
+        XCTAssertEqual(recorded[0].targetDescription, "BACK")
+        XCTAssertEqual(recorded[1].kind, .keyevent)
+        XCTAssertEqual(recorded[1].targetDescription, "HOME")
+        XCTAssertEqual(recorded[2].kind, .swipe)
+        XCTAssertTrue(recorded[2].targetDescription.hasPrefix("3-finger swipe Notifications"))
+    }
+
+    func testShadowGraphManagerPersistsGraphAcrossRestartAndAutoRecoversDaemon() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-shadow-graph-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let storageURL = tempDir.appendingPathComponent("shadow_graph.json", isDirectory: false)
+
+        func makeNode(
+            nodeId: Int64,
+            index: Int,
+            packageName: String,
+            className: String = "android.widget.TextView",
+            text: String,
+            clickable: Bool = false,
+            centerX: Int = 100,
+            centerY: Int = 100
+        ) -> ShadowUINode {
+            ShadowUINode(
+                index: index,
+                text: text,
+                resourceId: "",
+                contentDesc: "",
+                className: className,
+                clickable: clickable,
+                scrollable: false,
+                bounds: "[\(centerX - 40),\(centerY - 20)][\(centerX + 40),\(centerY + 20)]",
+                centerX: centerX,
+                centerY: centerY,
+                nodeId: nodeId,
+                parentId: nil,
+                windowId: 1,
+                childIndex: index,
+                depth: 0,
+                packageName: packageName,
+                editable: false,
+                focused: false,
+                checked: false,
+                enabled: true,
+                visible: true
+            )
+        }
+
+        let homeNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.google.android.apps.nexuslauncher", text: "Home"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.google.android.apps.nexuslauncher", text: "Settings", clickable: true, centerX: 250, centerY: 450)
+        ]
+        let settingsNodes = [
+            makeNode(nodeId: 10, index: 0, packageName: "com.android.settings", text: "Settings"),
+            makeNode(nodeId: 11, index: 1, packageName: "com.android.settings", text: "Display & touch", clickable: true, centerX: 500, centerY: 700)
+        ]
+        let displayNodes = [
+            makeNode(nodeId: 20, index: 0, packageName: "com.android.settings", text: "Display & touch"),
+            makeNode(nodeId: 21, index: 1, packageName: "com.android.settings", text: "Night Light", clickable: true, centerX: 500, centerY: 850)
+        ]
+
+        // Session 1: explore Home -> Settings -> Display & touch and verify passive save to disk
+        let manager1 = ShadowGraphManager(
+            bridge: ShadowGraphBridge(),
+            portForwarder: { _, _ in },
+            graphStorageURL: storageURL
+        )
+        await manager1.loadPersistedGraphIfNeeded()
+
+        let homeIdx = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.google.android.apps.nexuslauncher", activeWindowId: 1, nodes: homeNodes)
+        let settingsIdx = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.android.settings", activeWindowId: 1, nodes: settingsNodes)
+        let displayIdx = ShadowTreeIndex(seq: 3, timestampMs: 300, activePackage: "com.android.settings", activeWindowId: 1, nodes: displayNodes)
+
+        await manager1.bridge.graphEngine.process(update: ShadowDOMUpdate(index: homeIdx, isFullSnapshot: true, insertedCount: 2, updatedCount: 0, removedCount: 0))
+        await manager1.recordAction(AttributedUIAction(kind: .tap, targetDescription: "Settings", x: 250, y: 450, selectorText: "Settings"))
+        await manager1.bridge.graphEngine.process(update: ShadowDOMUpdate(index: settingsIdx, isFullSnapshot: true, insertedCount: 2, updatedCount: 0, removedCount: 0))
+        await manager1.recordAction(AttributedUIAction(kind: .tap, targetDescription: "Display & touch", x: 500, y: 700, selectorText: "Display & touch"))
+        await manager1.bridge.graphEngine.process(update: ShadowDOMUpdate(index: displayIdx, isFullSnapshot: true, insertedCount: 2, updatedCount: 0, removedCount: 0))
+
+        await manager1.flushPersistedGraph()
+        await manager1.stop()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storageURL.path), "Expected shadow_graph.json to be passively saved")
+
+        // Bind a mock daemon NWListener on an ephemeral port (stopped/not listening until daemonLauncher starts it)
+        final class MockDaemonServer: @unchecked Sendable {
+            let queue = DispatchQueue(label: "test.shadowgraph.recovery.daemon")
+            let lock = NSLock()
+            var listener: NWListener?
+            var connections: [NWConnection] = []
+            var launchCount = 0
+            let port: UInt16
+
+            init() throws {
+                let probe = try NWListener(using: .tcp, on: .any)
+                probe.cancel()
+                // Choose a high port and retry if busy
+                self.port = UInt16.random(in: 38_000...55_000)
+            }
+
+            static func encodeHelloLine() -> Data {
+                let obj: [String: Any] = [
+                    "type": "hello",
+                    "protocol_version": 1,
+                    "format": "ndjson/1",
+                    "sdk_int": 35,
+                    "device_model": "Pixel 10a",
+                    "pid": 9999
+                ]
+                var data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
+                data.append(0x0A)
+                return data
+            }
+
+            static func encodeSnapshotLine(seq: UInt64, reason: String, package: String, nodes: [ShadowUINode]) -> Data {
+                let nodesData = (try? JSONEncoder().encode(nodes)) ?? Data("[]".utf8)
+                let nodesObj = (try? JSONSerialization.jsonObject(with: nodesData)) ?? []
+                let obj: [String: Any] = [
+                    "type": "snapshot",
+                    "seq": seq,
+                    "ts_ms": Int64(seq) * 1000,
+                    "reason": reason,
+                    "package": package,
+                    "window_id": 1,
+                    "node_count": nodes.count,
+                    "nodes": nodesObj
+                ]
+                var data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
+                data.append(0x0A)
+                return data
+            }
+
+            func startServing(initialPackage: String, initialNodes: [ShadowUINode]) throws {
+                lock.withLock { launchCount += 1 }
+                let params = NWParameters.tcp
+                params.allowLocalEndpointReuse = true
+                let nwPort = NWEndpoint.Port(rawValue: port)!
+                let listener = try NWListener(using: params, on: nwPort)
+                let readySem = DispatchSemaphore(value: 0)
+                listener.stateUpdateHandler = { state in
+                    if case .ready = state {
+                        readySem.signal()
+                    }
+                }
+                listener.newConnectionHandler = { [weak self] conn in
+                    guard let self else { return }
+                    self.lock.withLock { self.connections.append(conn) }
+                    conn.start(queue: self.queue)
+
+                    var bytes = Self.encodeHelloLine()
+                    bytes.append(Self.encodeSnapshotLine(
+                        seq: 1,
+                        reason: "initial",
+                        package: initialPackage,
+                        nodes: initialNodes
+                    ))
+                    conn.send(content: bytes, completion: .contentProcessed { _ in })
+                }
+                self.listener = listener
+                listener.start(queue: queue)
+                _ = readySem.wait(timeout: .now() + 2.0)
+            }
+
+            func broadcastSnapshot(seq: UInt64, package: String, nodes: [ShadowUINode]) {
+                let bytes = Self.encodeSnapshotLine(
+                    seq: seq,
+                    reason: "settled",
+                    package: package,
+                    nodes: nodes
+                )
+                let conns = lock.withLock { connections }
+                for conn in conns {
+                    conn.send(content: bytes, completion: .contentProcessed { _ in })
+                }
+            }
+
+            func stop() {
+                listener?.cancel()
+                listener = nil
+                let conns = lock.withLock { () -> [NWConnection] in
+                    let copy = connections
+                    connections.removeAll()
+                    return copy
+                }
+                for conn in conns {
+                    conn.cancel()
+                }
+            }
+        }
+
+        let mockDaemon = try MockDaemonServer()
+        defer { mockDaemon.stop() }
+
+        // Session 2: simulated Mac app restart (new ShadowGraphManager, disconnected daemon initially)
+        let bridge2 = ShadowGraphBridge(configuration: DaemonEndpointConfiguration(
+            host: "127.0.0.1",
+            port: mockDaemon.port,
+            initialReconnectDelay: 0.05,
+            maxReconnectDelay: 0.25,
+            heartbeatTimeout: 5.0
+        ))
+        let manager2 = ShadowGraphManager(
+            bridge: bridge2,
+            portForwarder: { _, _ in },
+            daemonLauncher: { _, _ in
+                try mockDaemon.startServing(
+                    initialPackage: "com.google.android.apps.nexuslauncher",
+                    initialNodes: homeNodes
+                )
+            },
+            graphStorageURL: storageURL
+        )
+
+        // Verify startup load populates the persisted 3-screen DAG before any connection
+        await manager2.loadPersistedGraphIfNeeded()
+        let restoredVertices = await manager2.bridge.graphEngine.vertexCount
+        let restoredEdges = await manager2.bridge.graphEngine.edgeCount
+        XCTAssertEqual(restoredVertices, 3)
+        XCTAssertEqual(restoredEdges, 2)
+
+        final class MockTapExecutor: MacroActionExecutor, @unchecked Sendable {
+            let server: MockDaemonServer
+            let settingsNodes: [ShadowUINode]
+            let displayNodes: [ShadowUINode]
+            var nextSeq: UInt64 = 2
+            var dispatchedTargets: [String] = []
+
+            init(server: MockDaemonServer, settingsNodes: [ShadowUINode], displayNodes: [ShadowUINode]) {
+                self.server = server
+                self.settingsNodes = settingsNodes
+                self.displayNodes = displayNodes
+            }
+
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                dispatchedTargets.append(action.targetDescription)
+                let seq = nextSeq
+                nextSeq += 1
+                if action.targetDescription == "Settings" {
+                    server.broadcastSnapshot(seq: seq, package: "com.android.settings", nodes: settingsNodes)
+                } else if action.targetDescription == "Display & touch" {
+                    server.broadcastSnapshot(seq: seq, package: "com.android.settings", nodes: displayNodes)
+                }
+            }
+        }
+
+        let executor = MockTapExecutor(server: mockDaemon, settingsNodes: settingsNodes, displayNodes: displayNodes)
+
+        // Call navigateToNode while daemon is DOWN -> must auto-recover daemon, wait for TCP + UI tree, and execute macro!
+        let outcome = try await manager2.navigateToNode(
+            serial: "61061JEA307110",
+            target: "Night Light",
+            targetHash: nil,
+            maxSteps: 6,
+            stepTimeoutMs: 2000,
+            executor: executor
+        )
+
+        let launches = mockDaemon.lock.withLock { mockDaemon.launchCount }
+        XCTAssertEqual(launches, 1)
+        XCTAssertEqual(executor.dispatchedTargets, ["Settings", "Display & touch"])
+        if case .arrived(let report) = outcome {
+            XCTAssertEqual(report.steps.count, 2)
+        } else {
+            XCTFail("Expected .arrived after auto-recovery + persisted graph load, got \(outcome)")
+        }
+
+        await manager2.stop()
+    }
+
+    func testShadowGraphManagerResolvesWorkspaceDaemonJarPath() {
+        let jarPath = ShadowGraphManager.resolveDaemonJarPath()
+        XCTAssertNotNil(jarPath)
+        XCTAssertTrue(jarPath?.hasSuffix("android-daemon.jar") == true)
+    }
+
+    func testShadowGraphManagerStopFlushesLatestDOMAndHandlesCorruptedJSON() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-shadow-corrupt-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let storageURL = tempDir.appendingPathComponent("shadow_graph.json", isDirectory: false)
+
+        // Write corrupted JSON to disk before startup
+        try Data("{\"vertices\": [truncated".utf8).write(to: storageURL)
+
+        let manager = ShadowGraphManager(
+            bridge: ShadowGraphBridge(),
+            portForwarder: { _, _ in },
+            graphStorageURL: storageURL
+        )
+        await manager.loadPersistedGraphIfNeeded()
+
+        let emptyCount = await manager.bridge.graphEngine.vertexCount
+        XCTAssertEqual(emptyCount, 0)
+
+        let node = ShadowUINode(
+            index: 0,
+            text: "Display and touch",
+            resourceId: "android:id/title",
+            contentDesc: "",
+            className: "android.widget.TextView",
+            clickable: true,
+            scrollable: false,
+            bounds: "[0,100][500,200]",
+            centerX: 250,
+            centerY: 150,
+            nodeId: 101,
+            parentId: nil,
+            windowId: 1,
+            childIndex: 0,
+            depth: 0,
+            packageName: "com.android.settings",
+            editable: false,
+            focused: false,
+            checked: false,
+            enabled: true,
+            visible: true
+        )
+        // Simulate snapshot delivered right before immediate stop() without waiting for utility graphPumpTask
+        await manager.bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 1,
+            timestampMs: 1000,
+            reason: "immediate_before_exit",
+            activePackage: "com.android.settings",
+            activeWindowId: 1,
+            nodeCount: 1,
+            nodes: [node]
+        )))
+
+        // stop() alone (without explicit flushPersistedGraph) must commit & flush to disk
+        await manager.stop()
+
+        let savedData = try Data(contentsOf: storageURL)
+        let verifier = SpatialGraphEngine()
+        try await verifier.importGraphJSON(savedData)
+        let savedVertexCount = await verifier.vertexCount
+        XCTAssertEqual(savedVertexCount, 1)
+        let matches = await verifier.resolveTargetVertices(matching: "Display and touch")
+        XCTAssertEqual(matches.count, 1)
     }
 }

@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Combine
 import UserNotifications
+import AndroidShadowGraphKit
 
 public enum SideDrawerMode: String, CaseIterable, Sendable {
     case gallery
@@ -97,9 +98,14 @@ public final class AppState: ObservableObject {
         return frameStyle
     }
     
-    // Video streaming frame dimensions
+    // Video streaming frame dimensions (downscaled by scrcpy max_size)
     @Published public var deviceWidth: Int = 1080
     @Published public var deviceHeight: Int = 2400
+
+    // Android physical/override display dimensions used by Accessibility & input tap
+    @Published public var physicalDisplayWidth: Int = 1080
+    @Published public var physicalDisplayHeight: Int = 2400
+    private var lastQueriedDisplaySizeSerial: String?
     
     public var isLandscape: Bool {
         return deviceWidth > deviceHeight
@@ -161,6 +167,9 @@ public final class AppState: ObservableObject {
         applyDockVisibility()
         syncContinuityBridgeState()
         setupMCPCallbacks()
+        Task {
+            await ShadowGraphManager.shared.loadPersistedGraphIfNeeded()
+        }
         if mcpServerEnabled {
             syncMCPServerState()
         }
@@ -382,6 +391,7 @@ public final class AppState: ObservableObject {
                 self.hasAutoConnectedThisSession = false
                 self.isPhoneScreenOff = false
                 self.isPhoneLocked = false
+                self.lastQueriedDisplaySizeSerial = nil
                 self.syncContinuityBridgeState()
                 DiscoveryService.shared.setLowPowerPaused(false)
                 self.attemptAutoWifiReconnect()
@@ -389,15 +399,21 @@ public final class AppState: ObservableObject {
                 self.syncContinuityBridgeState()
                 DiscoveryService.shared.setLowPowerPaused(mirrorActive && !self.showPairingSheet)
                 let lockCheckInterval: TimeInterval = mirrorActive ? 4.0 : 12.0
-                if let ready = list.first(where: { $0.state == .ready }),
-                   Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
-                    self.lastLockStateCheck = Date()
-                    let lockState = await ADBService.shared.fetchScreenAndLockState(serial: ready.id)
-                    if self.isPhoneScreenOff != lockState.isScreenOff {
-                        self.isPhoneScreenOff = lockState.isScreenOff
+                if let ready = list.first(where: { $0.state == .ready }) {
+                    let targetSerial = self.selectedDevice?.state == .ready ? self.selectedDevice!.id : ready.id
+                    await self.refreshPhysicalDisplaySizeIfNeeded(for: targetSerial)
+                    if !self.isRunningTests && (mirrorActive || self.mcpServerEnabled || self.isMCPRunning) {
+                        await ShadowGraphManager.shared.ensureStarted(serial: targetSerial)
                     }
-                    if self.isPhoneLocked != lockState.isLocked {
-                        self.isPhoneLocked = lockState.isLocked
+                    if Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
+                        self.lastLockStateCheck = Date()
+                        let lockState = await ADBService.shared.fetchScreenAndLockState(serial: ready.id)
+                        if self.isPhoneScreenOff != lockState.isScreenOff {
+                            self.isPhoneScreenOff = lockState.isScreenOff
+                        }
+                        if self.isPhoneLocked != lockState.isLocked {
+                            self.isPhoneLocked = lockState.isLocked
+                        }
                     }
                 }
                 self.handleAutomation(devices: list)
@@ -408,6 +424,22 @@ public final class AppState: ObservableObject {
     private var tcpipPromotedSerials: Set<String> = []
     private var isAttemptingWifiReconnect: Bool = false
     private var lastReconnectAttemptTime: Date = .distantPast
+
+    public func refreshPhysicalDisplaySizeIfNeeded(for serial: String, force: Bool = false) async {
+        guard !isRunningTests else { return }
+        if !force && lastQueriedDisplaySizeSerial == serial {
+            return
+        }
+        lastQueriedDisplaySizeSerial = serial
+        if let size = await ADBService.shared.fetchDisplaySize(serial: serial) {
+            if physicalDisplayWidth != size.width {
+                physicalDisplayWidth = size.width
+            }
+            if physicalDisplayHeight != size.height {
+                physicalDisplayHeight = size.height
+            }
+        }
+    }
     
     private func attemptAutoWifiReconnect() {
         ConnectionManager.shared.attemptAutoReconnect(knownDevices: knownDevices) { [weak self] target in
@@ -471,12 +503,23 @@ public final class AppState: ObservableObject {
     
     // MARK: - Actions (1-in-1 with iPhone Mirroring in macOS Sequoia)
     
+    private func recordShadowKeyEvent(_ keyName: String) {
+        guard !isRunningTests else { return }
+        Task {
+            await ShadowGraphManager.shared.recordAction(
+                AttributedUIAction(kind: .keyevent, targetDescription: keyName)
+            )
+        }
+    }
+
     public func triggerHome() {
         if ScrcpyClient.shared.isConnected {
             ScrcpyClient.shared.sendKeycode(3) // KEYCODE_HOME
+            recordShadowKeyEvent("HOME")
             return
         }
         guard let device = selectedDevice else { return }
+        recordShadowKeyEvent("HOME")
         Task {
             await ADBService.shared.sendHome(serial: device.id)
         }
@@ -485,9 +528,11 @@ public final class AppState: ObservableObject {
     public func triggerBack() {
         if ScrcpyClient.shared.isConnected {
             ScrcpyClient.shared.sendBackOrScreenOn()
+            recordShadowKeyEvent("BACK")
             return
         }
         guard let device = selectedDevice else { return }
+        recordShadowKeyEvent("BACK")
         Task {
             await ADBService.shared.sendBack(serial: device.id)
         }
@@ -496,9 +541,11 @@ public final class AppState: ObservableObject {
     public func triggerAppSwitch() {
         if ScrcpyClient.shared.isConnected {
             ScrcpyClient.shared.sendKeycode(187) // KEYCODE_APP_SWITCH
+            recordShadowKeyEvent("RECENTS")
             return
         }
         guard let device = selectedDevice else { return }
+        recordShadowKeyEvent("RECENTS")
         Task {
             await ADBService.shared.sendAppSwitch(serial: device.id)
         }
@@ -579,6 +626,13 @@ public final class AppState: ObservableObject {
                 syncScreenMemoryState()
                 statusMessage = "Mirroring \(device.displayName)..."
                 KeyboardLanguageSyncService.shared.startSync(for: device.id)
+                let serial = device.id
+                Task { [weak self] in
+                    await self?.refreshPhysicalDisplaySizeIfNeeded(for: serial, force: true)
+                    if self?.isRunningTests == false {
+                        await ShadowGraphManager.shared.ensureStarted(serial: serial, forceReconnectIfWaiting: true)
+                    }
+                }
             } catch {
                 statusMessage = "Failed to start: \(error.localizedDescription)"
             }
@@ -754,6 +808,12 @@ public final class AppState: ObservableObject {
             MCPHTTPServer.shared.start(port: clampedPort) { [weak self] running in
                 Task { @MainActor in
                     self?.isMCPRunning = running
+                    if running, self?.isRunningTests == false {
+                        let serial = self?.selectedDevice?.state == .ready
+                            ? self?.selectedDevice?.id
+                            : self?.devices.first(where: { $0.state == .ready })?.id
+                        await ShadowGraphManager.shared.ensureStarted(serial: serial)
+                    }
                 }
             }
         } else {

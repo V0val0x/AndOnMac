@@ -1,18 +1,8 @@
 import Foundation
+import AndroidShadowGraphKit
 
-/// Compact, token-efficient representation of a meaningful Android UI node.
-public struct AndroidUINode: Codable, Sendable, Equatable {
-    public let index: Int
-    public let text: String
-    public let resource_id: String
-    public let content_desc: String
-    public let `class`: String
-    public let clickable: Bool
-    public let scrollable: Bool
-    public let bounds: String
-    public let center_x: Int
-    public let center_y: Int
-}
+/// Shared compact representation of a meaningful Android UI node provided by `AndroidShadowGraphKit`.
+public typealias AndroidUINode = ShadowCompactNode
 
 /// Parses `uiautomator dump` XML into compact `AndroidUINode` entries, stripping empty layout containers.
 public final class AndroidUITreeParser: NSObject, XMLParserDelegate {

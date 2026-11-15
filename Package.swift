@@ -7,6 +7,10 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .library(
+            name: "AndroidShadowGraphKit",
+            targets: ["AndroidShadowGraphKit"]
+        ),
         .executable(
             name: "AndOnMac",
             targets: ["AndOnMac"]
@@ -14,8 +18,13 @@ let package = Package(
     ],
     dependencies: [],
     targets: [
+        .target(
+            name: "AndroidShadowGraphKit",
+            path: "Sources/AndroidShadowGraphKit"
+        ),
         .executableTarget(
             name: "AndOnMac",
+            dependencies: ["AndroidShadowGraphKit"],
             path: "Sources/AndOnMac",
             resources: [
                 .process("Resources")
@@ -26,8 +35,13 @@ let package = Package(
         ),
         .testTarget(
             name: "AndOnMacTests",
-            dependencies: ["AndOnMac"],
+            dependencies: ["AndOnMac", "AndroidShadowGraphKit"],
             path: "Tests/AndOnMacTests"
+        ),
+        .testTarget(
+            name: "AndroidShadowGraphKitTests",
+            dependencies: ["AndroidShadowGraphKit"],
+            path: "Tests/AndroidShadowGraphKitTests"
         )
     ]
 )

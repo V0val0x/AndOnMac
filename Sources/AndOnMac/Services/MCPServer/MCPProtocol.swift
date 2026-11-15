@@ -338,6 +338,11 @@ public final class MCPServerCore: @unchecked Sendable {
             return "AI Agent: Launching \(args["app"]?.stringValue ?? "app")..."
         case "android_get_notifications":
             return "AI Agent: Reading notifications..."
+        case "android_navigate_to_node":
+            if let target = args["target"]?.stringValue, !target.isEmpty {
+                return "AI Agent: Navigating to '\(target)'..."
+            }
+            return "AI Agent: Navigating via Shadow Graph..."
         default:
             return "AI Agent: \(toolName)"
         }

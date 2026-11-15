@@ -6,6 +6,13 @@ public enum MCPStdioTransport {
     public static func runBlocking() {
         logError("AndOnMac MCP stdio server started (protocol \(MCPServerCore.protocolVersion))")
 
+        let loadSem = DispatchSemaphore(value: 0)
+        Task {
+            await ShadowGraphManager.shared.loadPersistedGraphIfNeeded()
+            loadSem.signal()
+        }
+        loadSem.wait()
+
         let stdinHandle = FileHandle.standardInput
         let stdoutHandle = FileHandle.standardOutput
         var buffer = Data()
@@ -39,6 +46,12 @@ public enum MCPStdioTransport {
                 }
             }
         }
+        let stopSem = DispatchSemaphore(value: 0)
+        Task.detached {
+            await ShadowGraphManager.shared.stop()
+            stopSem.signal()
+        }
+        _ = stopSem.wait(timeout: .now() + 2.5)
         logError("AndOnMac MCP stdio server exiting on EOF")
     }
 

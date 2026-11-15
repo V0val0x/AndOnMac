@@ -16,7 +16,7 @@ echo "==> Creating macOS App Bundle layout at ${APP_BUNDLE}..."
 RES_BACKUP_DIR="${OUTPUT_DIR}/.res_backup"
 rm -rf "${RES_BACKUP_DIR}"
 mkdir -p "${RES_BACKUP_DIR}"
-for bin_name in adb scrcpy scrcpy-server; do
+for bin_name in adb scrcpy scrcpy-server android-daemon.jar; do
     if [ -f "${RESOURCES_DIR}/bin/${bin_name}" ]; then
         cp "${RESOURCES_DIR}/bin/${bin_name}" "${RES_BACKUP_DIR}/${bin_name}"
     elif [ -f "${RESOURCES_DIR}/${bin_name}" ]; then
@@ -127,6 +127,18 @@ if [ ! -x "${RESOURCES_DIR}/bin/adb" ] && [ -f "${RES_BACKUP_DIR}/adb" ]; then
     echo "==> Restoring existing bundled adb binary..."
     cp "${RES_BACKUP_DIR}/adb" "${RESOURCES_DIR}/bin/adb"
     chmod +x "${RESOURCES_DIR}/bin/adb"
+fi
+
+# Copy android-daemon.jar if available
+DAEMON_JAR="android-daemon/build/dist/android-daemon.jar"
+if [ -f "${DAEMON_JAR}" ]; then
+    echo "==> Bundling android-daemon.jar from ${DAEMON_JAR}..."
+    cp "${DAEMON_JAR}" "${RESOURCES_DIR}/bin/android-daemon.jar" 2>/dev/null || true
+    cp "${DAEMON_JAR}" "${RESOURCES_DIR}/android-daemon.jar" 2>/dev/null || true
+elif [ -f "${RES_BACKUP_DIR}/android-daemon.jar" ]; then
+    echo "==> Restoring existing bundled android-daemon.jar..."
+    cp "${RES_BACKUP_DIR}/android-daemon.jar" "${RESOURCES_DIR}/bin/android-daemon.jar"
+    cp "${RES_BACKUP_DIR}/android-daemon.jar" "${RESOURCES_DIR}/android-daemon.jar"
 fi
 rm -rf "${RES_BACKUP_DIR}"
 

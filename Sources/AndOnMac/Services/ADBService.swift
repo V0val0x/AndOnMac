@@ -300,6 +300,42 @@ public final class ADBService: @unchecked Sendable {
         let policyOut = (try? await policyTask) ?? ""
         return Self.parsePowerAndLockState(powerDump: powerOut, policyDump: policyOut)
     }
+
+    /// Parses Android physical or override display dimensions (`1080x2424`) from `adb shell wm size` output.
+    /// Prefers `Override size:` when present, matching Accessibility `getBoundsInScreen` and `input tap` coordinates.
+    public static func parseDisplaySize(from wmSizeOutput: String) -> (width: Int, height: Int)? {
+        func extractPair(from line: String) -> (Int, Int)? {
+            let pattern = "([0-9]+)\\s*[xX]\\s*([0-9]+)"
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)),
+                  match.numberOfRanges >= 3,
+                  let wRange = Range(match.range(at: 1), in: line),
+                  let hRange = Range(match.range(at: 2), in: line),
+                  let w = Int(line[wRange]),
+                  let h = Int(line[hRange]),
+                  w > 0, h > 0 else {
+                return nil
+            }
+            return (w, h)
+        }
+
+        let lines = wmSizeOutput.components(separatedBy: .newlines)
+        for line in lines where line.lowercased().contains("override size") {
+            if let pair = extractPair(from: line) { return pair }
+        }
+        for line in lines where line.lowercased().contains("physical size") {
+            if let pair = extractPair(from: line) { return pair }
+        }
+        return extractPair(from: wmSizeOutput)
+    }
+
+    /// Queries the device's physical/override display resolution via `adb shell wm size`.
+    public func fetchDisplaySize(serial: String) async -> (width: Int, height: Int)? {
+        guard let output = try? await execute(arguments: ["-s", serial, "shell", "wm", "size"], timeoutSeconds: 2.0) else {
+            return nil
+        }
+        return Self.parseDisplaySize(from: output)
+    }
     
     /// Lists all connected Android devices with metadata
     public func listDevices() async -> [Device] {
