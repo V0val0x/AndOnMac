@@ -50,16 +50,13 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
     
     // MARK: - Public Control
     public func startSync(for serial: String) {
+        // Android IME layout auto-sync is disabled; only track Mac input language badge locally.
         self.currentDeviceSerial = serial
-        self.isSyncing = true
-        
-        Task {
-            await refreshDeviceSubtypes(serial: serial)
-            await MainActor.run {
-                self.checkAndSyncLanguage(force: true)
-                self.startPeriodicSync()
-            }
-        }
+        self.isSyncing = false
+        self.pollTimer?.invalidate()
+        self.pollTimer = nil
+        self.syncTask?.cancel()
+        self.syncTask = nil
     }
     
     public func stopSync() {
@@ -164,94 +161,18 @@ public final class KeyboardLanguageSyncService: @unchecked Sendable {
             }
             return
         }
-        guard isSyncing, let serial = currentDeviceSerial else { return }
-        
+
         let currentLang = Self.getCurrentMacLanguage()
         if !force && currentLang == lastSyncedLanguage {
             return
         }
-        
+
         lastSyncedLanguage = currentLang
         let badge = currentLang.uppercased()
-        
+
         Task { @MainActor in
             self.onLanguageChanged?(badge)
             AppState.shared?.currentLanguageBadge = badge
-            
-            let uiLang = AppState.shared?.lang ?? L10n.currentLanguage()
-            AppState.shared?.photoTransferNotice = Self.formatInputLanguageNotice(code: currentLang, uiLang: uiLang)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-                if AppState.shared?.photoTransferNotice?.hasPrefix("🌐") == true {
-                    AppState.shared?.photoTransferNotice = nil
-                }
-            }
-        }
-        
-        syncTask?.cancel()
-        syncTask = Task {
-            var (targetSubtype, mapCount) = mapLock.withLock {
-                (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
-            }
-
-            if targetSubtype == nil {
-                await self.refreshDeviceSubtypes(serial: serial)
-                (targetSubtype, mapCount) = mapLock.withLock {
-                    (self.languageToSubtypeMap[currentLang], self.languageToSubtypeMap.count)
-                }
-            }
-
-            guard !Task.isCancelled else { return }
-
-            if let targetSubtype = targetSubtype {
-                let currentOut = (try? await ADBService.shared.execute(
-                    arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
-                    timeoutSeconds: 1.5
-                )) ?? ""
-                var lastSubtype = Self.parseCurrentSubtype(from: currentOut)
-                if lastSubtype == targetSubtype {
-                    return
-                }
-
-                let maxAttempts = max(1, min(mapCount, 5))
-                for _ in 0..<maxAttempts {
-                    guard !Task.isCancelled else { return }
-                    if ScrcpyClient.shared.isConnected {
-                        ScrcpyClient.shared.sendKeycode(204)
-                    } else {
-                        _ = try? await ADBService.shared.execute(
-                            arguments: ["-s", serial, "shell", "input keyevent 204"],
-                            timeoutSeconds: 2.0
-                        )
-                    }
-                    // Allow Gboard and InputMethodManagerService enough time to commit the subtype switch
-                    try? await Task.sleep(nanoseconds: 220_000_000)
-                    guard !Task.isCancelled else { return }
-
-                    let checkOut = (try? await ADBService.shared.execute(
-                        arguments: ["-s", serial, "shell", "dumpsys input_method | grep -m 1 mCurrentSubtype="],
-                        timeoutSeconds: 1.5
-                    )) ?? ""
-                    let updatedSubtype = Self.parseCurrentSubtype(from: checkOut)
-                    if updatedSubtype == targetSubtype {
-                        break
-                    }
-                    // If keyevent 204 did not advance the subtype at all, stop rather than spamming toggles
-                    if let prev = lastSubtype, let updated = updatedSubtype, prev == updated {
-                        break
-                    }
-                    lastSubtype = updatedSubtype
-                }
-            } else if !force {
-                // Universal fallback only on explicit user switch when subtype map is unavailable
-                if ScrcpyClient.shared.isConnected {
-                    ScrcpyClient.shared.sendKeycode(204)
-                } else {
-                    _ = try? await ADBService.shared.execute(
-                        arguments: ["-s", serial, "shell", "input keyevent 204"],
-                        timeoutSeconds: 2.0
-                    )
-                }
-            }
         }
     }
     
