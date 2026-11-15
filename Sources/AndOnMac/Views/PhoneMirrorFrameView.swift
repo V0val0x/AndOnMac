@@ -172,34 +172,33 @@ public struct PhoneMirrorFrameView: View {
                 }
             )
             .clipShape(RoundedRectangle(cornerRadius: screenClipRadius, style: .continuous))
-            
-            // Front Camera Punch Hole Cutout
-            if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
-                VStack {
+            .overlay(alignment: .top) {
+                // Front Camera Punch Hole Cutout
+                if appState.showFrontCamera && appState.effectiveFrameStyle.hasPunchHole && !appState.isLandscape {
                     frontCameraView
-                    Spacer()
                 }
             }
-            
-            // Sequoia Top Hover HUD & Home Bar (Fades in smoothly only when hovering near top/bottom)
-            VStack {
-                topHoverHUDView
-                    .padding(.horizontal, AndSpacing.md)
-                    .padding(.top, 6)
-                    .opacity(isHoveringTop ? 1.0 : 0.0)
-                    .offset(y: isHoveringTop ? 0 : -6)
-                    .scaleEffect(isHoveringTop ? 1.0 : 0.96)
-                    .allowsHitTesting(isHoveringTop)
-                    .animation(AndMotion.hudSpring, value: isHoveringTop)
-                
-                Spacer()
-                
-                bottomHomeBarView
-                    .padding(.bottom, 6)
-                    .opacity(isHoveringHome ? 1.0 : 0.0)
-                    .offset(y: isHoveringHome ? 0 : 6)
-                    .allowsHitTesting(isHoveringHome)
-                    .animation(AndMotion.hudSpring, value: isHoveringHome)
+            .overlay {
+                // Sequoia Top Hover HUD & Home Bar (overlay prevents expanding ZStack/NSWindow width)
+                VStack {
+                    topHoverHUDView
+                        .padding(.horizontal, 8)
+                        .padding(.top, 6)
+                        .opacity(isHoveringTop ? 1.0 : 0.0)
+                        .offset(y: isHoveringTop ? 0 : -6)
+                        .scaleEffect(isHoveringTop ? 1.0 : 0.96)
+                        .allowsHitTesting(isHoveringTop)
+                        .animation(AndMotion.hudSpring, value: isHoveringTop)
+                    
+                    Spacer()
+                    
+                    bottomHomeBarView
+                        .padding(.bottom, 6)
+                        .opacity(isHoveringHome ? 1.0 : 0.0)
+                        .offset(y: isHoveringHome ? 0 : 6)
+                        .allowsHitTesting(isHoveringHome)
+                        .animation(AndMotion.hudSpring, value: isHoveringHome)
+                }
             }
             
             // On-Device Apple Vision OCR Drag Selection Overlay
@@ -340,7 +339,7 @@ public struct PhoneMirrorFrameView: View {
     
     // MARK: - Top Hover HUD (macOS Sequoia style)
     private var topHoverHUDView: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             // Red Close / Stop button
             Button {
                 appState.toggleMirroring()
@@ -358,11 +357,11 @@ public struct PhoneMirrorFrameView: View {
             .buttonStyle(.plain)
             .help(L10n.tr("Завершить трансляцию (Cmd+W)", "Stop mirroring (Cmd+W)", lang: appState.lang))
             
-            Spacer()
+            Spacer(minLength: 2)
             
             // Glass action capsule
             if isHoveringTop {
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Button {
                         appState.triggerAppSwitch()
                     } label: {
@@ -438,16 +437,16 @@ public struct PhoneMirrorFrameView: View {
                     .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Блокировка / Экран (Cmd+P)", "Lock / Screen (Cmd+P)", lang: appState.lang))
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.28, shadowRadius: 10)
                 .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
             
-            Spacer()
+            Spacer(minLength: 2)
             
             // Status: Language / Battery / Wifi
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 if !appState.currentLanguageBadge.isEmpty {
                     Text(appState.currentLanguageBadge)
                         .font(.system(size: 9, weight: .black, design: .rounded))
