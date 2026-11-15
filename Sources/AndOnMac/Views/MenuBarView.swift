@@ -239,12 +239,16 @@ public struct MenuBarView: View {
                         ProgressView()
                             .controlSize(.small)
                             .frame(maxWidth: .infinity, alignment: .center)
-                    } else if filteredApps.isEmpty {
+                    } else if appState.installedApps.isEmpty {
                         Button(L10n.tr("Загрузить список приложений", "Load Installed Apps", lang: lang)) {
                             appState.loadInstalledApps()
                         }
                         .buttonStyle(.link)
                         .font(.system(size: 11))
+                    } else if filteredApps.isEmpty {
+                        Text(L10n.tr("Приложения не найдены", "No matching apps found", lang: lang))
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     } else {
                         ScrollView {
                             VStack(spacing: 3) {
@@ -270,7 +274,7 @@ public struct MenuBarView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 130)
+                        .frame(height: min(CGFloat(filteredApps.count) * 27.0 + 4.0, 135.0))
                     }
                 }
             }
@@ -393,6 +397,13 @@ public struct MenuBarView: View {
         .onAppear {
             if appState.selectedDevice != nil && appState.installedApps.isEmpty {
                 appState.loadInstalledApps()
+            }
+        }
+        .onChange(of: appState.selectedDevice?.id) { _, newSerial in
+            if newSerial != nil {
+                appState.loadInstalledApps()
+            } else {
+                appState.installedApps = []
             }
         }
     }

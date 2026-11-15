@@ -60,7 +60,7 @@ public final class AndroidAppLauncherService: @unchecked Sendable {
 
     private init() {}
 
-    /// Parses `adb shell cmd package list packages -3` output into sorted `AndroidAppItem` entries.
+    /// Parses `cmd package query-activities --brief` or `cmd package list packages` output into sorted `AndroidAppItem` entries.
     public static func parsePackageList(_ output: String) -> [AndroidAppItem] {
         var seen = Set<String>()
         var items: [AndroidAppItem] = []
@@ -68,29 +68,40 @@ public final class AndroidAppLauncherService: @unchecked Sendable {
         for rawLine in output.components(separatedBy: .newlines) {
             let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let pkg: String
+            var pkg: String
             if trimmed.hasPrefix("package:") {
                 pkg = String(trimmed.dropFirst("package:".count))
+            } else if let slashIdx = trimmed.firstIndex(of: "/"), !trimmed.contains(" "), !trimmed.contains("=") {
+                pkg = String(trimmed[..<slashIdx])
             } else {
                 pkg = trimmed
             }
-            guard !pkg.isEmpty, !pkg.contains(" "), seen.insert(pkg).inserted else { continue }
+            guard !pkg.isEmpty, !pkg.contains(" "), pkg.contains("."), !pkg.contains("="), seen.insert(pkg).inserted else { continue }
             items.append(AndroidAppItem(packageName: pkg))
         }
 
         return items.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    /// Fetches installed third-party packages on the target Android device.
+    /// Fetches launchable apps (both user-installed and pre-installed/system like YouTube, Chrome, Settings).
     public func fetchInstalledApps(serial: String) async throws -> [AndroidAppItem] {
         guard ADBService.validateSerial(serial) else {
             throw NSError(domain: "AndroidAppLauncher", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid device serial"])
         }
+        if let launchable = try? await ADBService.shared.execute(
+            arguments: ["-s", serial, "shell", "cmd", "package", "query-activities", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER"],
+            timeoutSeconds: 8.0
+        ) {
+            let parsed = Self.parsePackageList(launchable)
+            if !parsed.isEmpty {
+                return parsed
+            }
+        }
         let output: String
         do {
-            output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "package", "list", "packages", "-3"], timeoutSeconds: 8.0)
+            output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "package", "list", "packages"], timeoutSeconds: 8.0)
         } catch {
-            output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "pm", "list", "packages", "-3"], timeoutSeconds: 8.0)
+            output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "pm", "list", "packages"], timeoutSeconds: 8.0)
         }
         return Self.parsePackageList(output)
     }

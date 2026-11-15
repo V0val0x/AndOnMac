@@ -826,6 +826,15 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertTrue(apps.contains(where: { $0.packageName == "com.whatsapp" && $0.displayName == "WhatsApp" }))
         XCTAssertTrue(apps.contains(where: { $0.packageName == "org.telegram.messenger" && $0.displayName == "Telegram" }))
         XCTAssertTrue(apps.contains(where: { $0.packageName == "com.example.my_custom_notes" && $0.displayName == "My Custom Notes" }))
+
+        let queryActivitiesOutput = """
+        priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false
+            com.google.android.youtube/.app.honeycomb.Shell$HomeActivity
+            com.google.android.apps.youtube.music/.activities.MusicActivity
+        """
+        let launchable = AndroidAppLauncherService.parsePackageList(queryActivitiesOutput)
+        XCTAssertEqual(launchable.count, 2)
+        XCTAssertTrue(launchable.contains(where: { $0.packageName == "com.google.android.youtube" && $0.displayName == "YouTube" }))
     }
 
     func testVisionOCRPixelCropRectAndContinuityImageEncoding() {
