@@ -88,6 +88,19 @@ See the full shortcuts and gestures table in [**docs/FEATURES.md**](docs/FEATURE
 
 ---
 
+## Modular Open-Source Ecosystem (Standalone Swift Packages)
+
+Core engines extracted from AndOnMac into standalone **MIT-licensed Swift 5.9+ packages** (`macOS 14+`) so any developer can drop them straight into their own apps or workflows:
+
+| Repository | Purpose | Install (SPM / CLI) |
+| :--- | :--- | :--- |
+| [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | Zero-copy **120Hz ProMotion** `VideoToolbox` H.264/HEVC decoder, `CAMetalLayer` + `CVMetalTextureCache` renderer, ABR `PerformanceEngine`, and `ProcessLifecycleManager` | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
+| [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Zero-dependency Swift **ADB** SDK with **USB**, **Wi-Fi QR Pairing**, Bonjour auto-discovery, and 1-click **Direct Hotspot / Bluetooth PAN** router-isolation bypass | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
+| [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | Zero-dependency **MCP Server** (`stdio` & HTTP/SSE), Visual-to-MCP `{{parameter}}` macros, 3-tier Vision OCR Self-Healing, and standalone `android-mcp` CLI | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |
+| [**VisionScreenRecallKit**](https://github.com/V0val0x/VisionScreenRecallKit) | On-device **Apple Silicon Vision OCR**, FNV-1a delta gating, **SQLite FTS5** Semantic Screen Memory ("Recall"), and drop-in SwiftUI overlays | `.package(url: "https://github.com/V0val0x/VisionScreenRecallKit.git", from: "1.0.0")` |
+
+---
+
 ## Support & License
 
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Leave%20a%20tip-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)

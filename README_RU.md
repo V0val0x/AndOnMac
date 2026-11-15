@@ -72,6 +72,19 @@ chmod +x scripts/*.sh && ./scripts/create_dmg.sh
 
 ---
 
+## Модульная open-source экосистема (отдельные Swift-пакеты)
+
+Ключевые движки AndOnMac выделены в самостоятельные **MIT Swift 5.9+ пакеты** (`macOS 14+`), чтобы разработчики могли легко встраивать их в свои проекты:
+
+| Репозиторий | Назначение | Подключение (SPM / CLI) |
+| :--- | :--- | :--- |
+| [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | Zero-copy **120Hz ProMotion** декодер `VideoToolbox` (H.264/HEVC), Metal-рендерер на `CAMetalLayer` + `CVMetalTextureCache`, ABR `PerformanceEngine` и `ProcessLifecycleManager` | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
+| [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Swift SDK для **ADB** без внешних зависимостей: **USB**, **Wi-Fi QR-сопряжение**, Bonjour и обход изоляции роутера (**Direct Hotspot / Bluetooth PAN**) | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
+| [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | Встроенный **MCP-сервер** (`stdio` и HTTP/SSE), Visual-to-MCP `{{parameter}}`-макросы с 3-уровневым Self-Healing через Vision OCR и готовый CLI `android-mcp` | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |
+| [**VisionScreenRecallKit**](https://github.com/V0val0x/VisionScreenRecallKit) | Локальный **Apple Silicon Vision OCR**, детектор изменений кадра, **SQLite FTS5** память экрана («Recall») и готовые SwiftUI-оверлеи | `.package(url: "https://github.com/V0val0x/VisionScreenRecallKit.git", from: "1.0.0")` |
+
+---
+
 ## Поддержка и лицензия
 
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Leave%20a%20tip-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)
