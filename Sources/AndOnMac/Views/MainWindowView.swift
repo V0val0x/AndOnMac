@@ -90,6 +90,8 @@ public struct MainWindowView: View {
                 window.standardWindowButton(.closeButton)?.isHidden = true
                 window.standardWindowButton(.miniaturizeButton)?.isHidden = true
                 window.standardWindowButton(.zoomButton)?.isHidden = true
+            } onWillClose: {
+                appState.stopMirroringOnWindowClose()
             }
         )
     }
@@ -99,12 +101,27 @@ public struct MainWindowView: View {
 // sizing is handled natively by .windowResizability(.contentSize) + finite frame.
 private struct WindowConfigurator: NSViewRepresentable {
     let configure: (NSWindow) -> Void
+    var onWillClose: (() -> Void)? = nil
+
+    final class Coordinator {
+        var observedWindow: NSWindow?
+        var closeObserver: NSObjectProtocol?
+
+        deinit {
+            if let closeObserver {
+                NotificationCenter.default.removeObserver(closeObserver)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
                 configure(window)
+                attachCloseObserver(to: window, coordinator: context.coordinator)
             }
         }
         return view
@@ -114,6 +131,24 @@ private struct WindowConfigurator: NSViewRepresentable {
         DispatchQueue.main.async {
             if let window = nsView.window {
                 configure(window)
+                attachCloseObserver(to: window, coordinator: context.coordinator)
+            }
+        }
+    }
+
+    private func attachCloseObserver(to window: NSWindow, coordinator: Coordinator) {
+        guard coordinator.observedWindow !== window else { return }
+        if let prev = coordinator.closeObserver {
+            NotificationCenter.default.removeObserver(prev)
+        }
+        coordinator.observedWindow = window
+        coordinator.closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                onWillClose?()
             }
         }
     }

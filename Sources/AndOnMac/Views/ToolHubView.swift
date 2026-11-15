@@ -8,6 +8,7 @@ public struct ToolHubView: View {
 
     @State private var showImportSheet: Bool = false
     @State private var importJSONText: String = ""
+    @State private var editingTool: CustomMCPToolSchema? = nil
     @State private var statusBanner: String? = nil
     @State private var errorMessage: String? = nil
 
@@ -111,6 +112,9 @@ public struct ToolHubView: View {
                                     showBanner(error.localizedDescription)
                                 }
                             },
+                            onConfigure: {
+                                editingTool = tool
+                            },
                             onExport: {
                                 do {
                                     _ = try registry.copyExportJSONToClipboard(name: tool.name)
@@ -139,6 +143,19 @@ public struct ToolHubView: View {
         }
         .sheet(isPresented: $showImportSheet) {
             importSheetView
+        }
+        .sheet(item: $editingTool) { tool in
+            VisualMCPToolSheet(
+                appState: appState,
+                existingTool: tool,
+                onSaved: { saved in
+                    editingTool = nil
+                    showBanner(L10n.tr("Настройки '\(saved.name)' сохранены", "Updated '\(saved.name)'", lang: lang))
+                },
+                onCancel: {
+                    editingTool = nil
+                }
+            )
         }
     }
 
@@ -202,6 +219,7 @@ private struct ToolHubRow: View {
     let tool: CustomMCPToolSchema
     let lang: AppLanguage
     let onToggle: (Bool) -> Void
+    let onConfigure: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
 
@@ -219,12 +237,14 @@ private struct ToolHubRow: View {
                 HStack(spacing: 6) {
                     Text(tool.name)
                         .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    Text(tool.action.rawValue)
+                    Text(tool.action == .macro
+                         ? "macro · \(tool.steps?.count ?? 0) steps"
+                         : tool.action.rawValue)
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.cyan.opacity(0.14))
-                        .foregroundColor(.cyan)
+                        .background((tool.action == .macro ? Color.orange : Color.cyan).opacity(0.14))
+                        .foregroundColor(tool.action == .macro ? .orange : .cyan)
                         .cornerRadius(4)
                 }
 
@@ -243,6 +263,15 @@ private struct ToolHubRow: View {
             }
 
             Spacer()
+
+            Button {
+                onConfigure()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n.tr("Настроить параметры и лимиты", "Configure delays & limits", lang: lang))
 
             Button {
                 onExport()
@@ -264,6 +293,11 @@ private struct ToolHubRow: View {
     }
 
     private var targetSummary: String {
+        if tool.action == .macro {
+            let params = tool.extractTemplateParameterNames()
+            let paramDesc = params.isEmpty ? "" : " · params: \(params.map { "{{\($0)}}" }.joined(separator: ", "))"
+            return "wait: \(tool.effectiveStepDelayMs())ms · cap: \(tool.effectiveMaxSteps()) steps/\(tool.effectiveMaxDurationSeconds())s\(paramDesc)"
+        }
         if let rid = tool.target.resourceId, !rid.isEmpty {
             return "id: \(rid) · (\(tool.target.fallbackX), \(tool.target.fallbackY))"
         }

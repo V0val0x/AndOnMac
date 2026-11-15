@@ -1345,4 +1345,187 @@ final class AndOnMacTests: XCTestCase {
         let listText = try XCTUnwrap(listResp.flatMap { String(data: $0, encoding: .utf8) })
         XCTAssertTrue(listText.contains("android_tap_element"))
     }
+
+    func testMultiStepMacroSchemaAutoParametersAndOverrides() throws {
+        let searchTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/search_btn",
+            className: "ImageButton",
+            text: "Search",
+            contentDesc: "Search chats",
+            fallbackX: 900,
+            fallbackY: 160,
+            normalizedRect: [0.8, 0.05, 0.1, 0.05]
+        )
+        let inputTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/composer",
+            className: "EditText",
+            text: nil,
+            contentDesc: "Message",
+            fallbackX: 400,
+            fallbackY: 2200,
+            normalizedRect: [0.1, 0.88, 0.7, 0.06]
+        )
+        let sendTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/send_btn",
+            className: "ImageButton",
+            text: "Send",
+            contentDesc: nil,
+            fallbackX: 980,
+            fallbackY: 2200,
+            normalizedRect: [0.85, 0.88, 0.1, 0.06]
+        )
+
+        let macro = CustomMCPToolSchema(
+            name: "send_chat_macro",
+            description: "Search contact and send a message",
+            isEnabled: true,
+            action: .macro,
+            target: searchTarget,
+            parameters: [],
+            steps: [
+                VisualMacroStep(action: .tapElement, target: searchTarget, delayAfterMs: 300),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{contact_name}}", delayAfterMs: 500),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{message_body}}", delayAfterMs: 350),
+                VisualMacroStep(action: .tapElement, target: sendTarget, delayAfterMs: 250)
+            ],
+            defaultStepDelayMs: 650,
+            maxSteps: 12,
+            maxDurationSeconds: 25,
+            selfHealingEnabled: true
+        )
+        try macro.validate()
+
+        // Verify {{contact_name}} and {{message_body}} auto-exposed in JSON-RPC MCP schema
+        let def = macro.toMCPToolDefinition()
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["contact_name"])
+        XCTAssertNotNil(props?["message_body"])
+
+        let interpolated = CustomMCPToolSchema.interpolateTemplate(
+            "Hello {{contact_name}}: {{message_body}}",
+            arguments: [
+                "contact_name": .string("Alex"),
+                "message_body": .string("See you at 5")
+            ]
+        )
+        XCTAssertEqual(interpolated, "Hello Alex: See you at 5")
+
+        // Verify per-tool overrides take precedence over global UserDefaults
+        XCTAssertEqual(macro.effectiveStepDelayMs(), 650)
+        XCTAssertEqual(macro.effectiveMaxSteps(), 12)
+        XCTAssertEqual(macro.effectiveMaxDurationSeconds(), 25)
+        XCTAssertTrue(macro.effectiveSelfHealingEnabled())
+
+        // Verify legacy single-action JSON decodes cleanly with nil macro/override fields
+        let legacyJSON = """
+        {
+          "name": "legacy_tap",
+          "description": "Legacy tool",
+          "isEnabled": true,
+          "action": "tap_element",
+          "target": {
+            "resourceId": "com.app:id/ok",
+            "fallbackX": 500,
+            "fallbackY": 1000,
+            "normalizedRect": [0.4, 0.4, 0.2, 0.1]
+          },
+          "parameters": [],
+          "createdAt": "2026-11-15T00:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decodedLegacy = try decoder.decode(CustomMCPToolSchema.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(decodedLegacy.steps)
+        XCTAssertNil(decodedLegacy.defaultStepDelayMs)
+    }
+
+    func testSelfHealingThreeTierTapResolution() async {
+        let target = VisualNodeTarget(
+            resourceId: "com.bank.app:id/old_transfer_btn",
+            className: "Button",
+            text: "Transfer",
+            contentDesc: nil,
+            fallbackX: 100,
+            fallbackY: 200,
+            normalizedRect: [0.1, 0.1, 0.2, 0.05]
+        )
+
+        // Tier 1: Exact resource-id found -> uses XML node coordinates, never calls Vision OCR
+        let matchingNode = AndroidUINode(
+            index: 0,
+            text: "Transfer",
+            resource_id: "com.bank.app:id/old_transfer_btn",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[250,580][450,660]",
+            center_x: 350,
+            center_y: 620
+        )
+        let tier1 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [matchingNode],
+            target: target,
+            selfHealingEnabled: true
+        ) { _ in
+            XCTFail("Vision OCR should not be called when resource-id matches")
+            return nil
+        }
+        XCTAssertEqual(tier1.strategy, .resourceId)
+        XCTAssertEqual(tier1.x, 350)
+        XCTAssertEqual(tier1.y, 620)
+
+        // Tier 2: App updated its resource-id, so XML lacks old ID -> Vision OCR heals it
+        let updatedNodeDifferentText = AndroidUINode(
+            index: 1,
+            text: "Home",
+            resource_id: "com.bank.app:id/nav_home",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[60,2150][180,2250]",
+            center_x: 120,
+            center_y: 2200
+        )
+        let tier2 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: true
+        ) { query in
+            XCTAssertEqual(query, "Transfer")
+            return (x: 780, y: 1450, matchedText: "Transfer")
+        }
+        XCTAssertEqual(tier2.strategy, .visionOCRHealed)
+        XCTAssertEqual(tier2.x, 780)
+        XCTAssertEqual(tier2.y, 1450)
+        XCTAssertEqual(tier2.healedText, "Transfer")
+
+        // Tier 3: Self-Healing disabled -> falls back directly without Vision OCR
+        let tier3 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: false
+        ) { _ in
+            XCTFail("Vision OCR must not run when selfHealingEnabled is false")
+            return nil
+        }
+        XCTAssertEqual(tier3.strategy, .coordinateFallback)
+        XCTAssertEqual(tier3.x, 100)
+        XCTAssertEqual(tier3.y, 200)
+    }
+
+    func testProcessLifecycleManagerRegistrationAndCleanup() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["5"]
+        try proc.run()
+        let trackedId = ProcessLifecycleManager.shared.register(proc, tag: "unit-test")
+        XCTAssertGreaterThanOrEqual(ProcessLifecycleManager.shared.activeCount, 1)
+        ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 100)
+        proc.waitUntilExit()
+        ProcessLifecycleManager.shared.unregister(trackedId)
+        XCTAssertFalse(proc.isRunning)
+    }
 }

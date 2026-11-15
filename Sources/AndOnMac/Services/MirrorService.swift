@@ -201,6 +201,17 @@ public final class MirrorService: @unchecked Sendable {
             pkill.arguments = ["-f", "scrcpy .*--no-video --no-control"]
             pkill.standardOutput = FileHandle.nullDevice
             pkill.standardError = FileHandle.nullDevice
+            let trackedId = ProcessLifecycleManager.shared.register(pkill, tag: "cleanup-pkill")
+            let timeoutItem = DispatchWorkItem {
+                if pkill.isRunning {
+                    ProcessLifecycleManager.shared.terminateProcess(pkill, gracePeriodMs: 150)
+                }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0, execute: timeoutItem)
+            defer {
+                timeoutItem.cancel()
+                ProcessLifecycleManager.shared.unregister(trackedId)
+            }
             try? pkill.run()
             if waitUntilExit {
                 pkill.waitUntilExit()
@@ -318,7 +329,7 @@ public final class MirrorService: @unchecked Sendable {
         return outputURL
     }
 
-    /// Stops active screen recording gracefully (`SIGINT` so MP4 moov atom is finalized).
+    /// Stops active screen recording gracefully (`SIGINT` so MP4 moov atom is finalized, with `SIGTERM`/`SIGKILL` fallback).
     public func stopRecording() {
         stateLock.lock()
         let proc = recordingProcess
@@ -326,6 +337,11 @@ public final class MirrorService: @unchecked Sendable {
         stateLock.unlock()
         if let proc, proc.isRunning {
             proc.interrupt()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) {
+                if proc.isRunning {
+                    ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 250)
+                }
+            }
         }
     }
 }

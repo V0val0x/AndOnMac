@@ -412,6 +412,7 @@ public final class ScrcpyClient: @unchecked Sendable {
 
     private func readRawVideoStream(socket: Int32) {
         var buffer = Data()
+        var readOffset = 0
         var temp = [UInt8](repeating: 0, count: 65536)
         
         var vps: Data?
@@ -430,38 +431,59 @@ public final class ScrcpyClient: @unchecked Sendable {
             
             buffer.append(temp, count: bytesRead)
             if Self.trimOversizedStreamBuffer(&buffer) {
+                readOffset = 0
                 continue
             }
             
             // 1. First attempt: Parse scrcpy 12-byte framed packets (send_frame_meta=true)
             // Header: 8 bytes pts_and_flags (MSB=is_config, 2nd MSB=is_keyframe, lower 62=pts) + 4 bytes packet_size
-            while isRunning && videoSocket == socket && buffer.count >= 12 {
-                let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
-                    rawPtr.loadUnaligned(fromByteOffset: 8, as: UInt32.self).bigEndian
+            while isRunning && videoSocket == socket && (buffer.count - readOffset) >= 12 {
+                var shouldBreak = false
+                autoreleasepool {
+                    let packetSize = buffer.withUnsafeBytes { rawPtr -> UInt32 in
+                        rawPtr.loadUnaligned(fromByteOffset: readOffset + 8, as: UInt32.self).bigEndian
+                    }
+                    
+                    if packetSize > 0 && packetSize < 10_000_000 {
+                        let totalFrameSize = 12 + Int(packetSize)
+                        if (buffer.count - readOffset) >= totalFrameSize {
+                            let payloadStart = readOffset + 12
+                            let payloadEnd = readOffset + totalFrameSize
+                            let payload = Data(buffer[payloadStart..<payloadEnd])
+                            readOffset = payloadEnd
+                            
+                            // Compact consumed prefix periodically instead of reallocating on every frame at 120Hz
+                            if readOffset >= buffer.count {
+                                buffer.removeAll(keepingCapacity: true)
+                                readOffset = 0
+                            } else if readOffset >= 65_536 && readOffset * 2 >= buffer.count {
+                                buffer = Data(buffer[readOffset...])
+                                readOffset = 0
+                            }
+                            
+                            // Note: Never drop compressed P-frame packets before VideoToolbox decoding,
+                            // as dropping inter-frames breaks reference chains and freezes video until next IDR.
+                            // Frame-queue lag is eliminated post-decode by presenting only the newest CVPixelBuffer.
+                            processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
+                        } else {
+                            shouldBreak = true
+                        }
+                    } else {
+                        if readOffset > 0 {
+                            buffer = Data(buffer[readOffset...])
+                            readOffset = 0
+                        }
+                        // Fallback to raw Annex-B NAL parser if not 12-byte framed
+                        if let (nalData, nextIdx) = extractNextNAL(from: buffer) {
+                            buffer = Data(buffer.dropFirst(nextIdx))
+                            handleNAL(nalData, vps: &vps, sps: &sps, pps: &pps)
+                        } else {
+                            shouldBreak = true
+                        }
+                    }
                 }
-                
-                if packetSize > 0 && packetSize < 10_000_000 {
-                    let totalFrameSize = 12 + Int(packetSize)
-                    if buffer.count >= totalFrameSize {
-                        let payload = Data(buffer.dropFirst(12).prefix(Int(packetSize)))
-                        buffer = Data(buffer.dropFirst(totalFrameSize))
-                        
-                        // Note: Never drop compressed P-frame packets before VideoToolbox decoding,
-                        // as dropping inter-frames breaks reference chains and freezes video until next IDR.
-                        // Frame-queue lag is eliminated post-decode by presenting only the newest CVPixelBuffer.
-                        processPacketPayload(payload, vps: &vps, sps: &sps, pps: &pps)
-                        continue
-                    } else {
-                        break
-                    }
-                } else {
-                    // Fallback to raw Annex-B NAL parser if not 12-byte framed
-                    if let (nalData, nextIdx) = extractNextNAL(from: buffer) {
-                        buffer = Data(buffer.dropFirst(nextIdx))
-                        handleNAL(nalData, vps: &vps, sps: &sps, pps: &pps)
-                    } else {
-                        break
-                    }
+                if shouldBreak {
+                    break
                 }
             }
         }
@@ -941,23 +963,25 @@ public final class ScrcpyClient: @unchecked Sendable {
             flags: [._1xRealTimePlayback, ._EnableAsynchronousDecompression],
             infoFlagsOut: &flags
         ) { [weak self] decodeStatus, infoFlags, imageBuffer, presentationTimeStamp, presentationDuration in
-            guard decodeStatus == noErr, let pixelBuffer = imageBuffer, let self = self else { return }
-            self.hasDecodedAnyFrame = true
-            PerformanceEngine.recordPresentedFrame()
-            self.pixelBufferLock.lock()
-            self.latestPixelBuffer = pixelBuffer
-            self.pixelBufferLock.unlock()
+            autoreleasepool {
+                guard decodeStatus == noErr, let pixelBuffer = imageBuffer, let self = self else { return }
+                self.hasDecodedAnyFrame = true
+                PerformanceEngine.recordPresentedFrame()
+                self.pixelBufferLock.lock()
+                self.latestPixelBuffer = pixelBuffer
+                self.pixelBufferLock.unlock()
 
-            nonisolated(unsafe) let pb = pixelBuffer
-            // Submit directly to MetalVideoRenderer with zero main-thread dispatch jitter
-            self.onFrameDecoded?(pb)
+                nonisolated(unsafe) let pb = pixelBuffer
+                // Submit directly to MetalVideoRenderer with zero main-thread dispatch jitter
+                self.onFrameDecoded?(pb)
 
-            if let imageCallback = self.onFrameImageDecoded {
-                var cgImage: CGImage?
-                VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
-                if let cgImage = cgImage {
-                    DispatchQueue.main.async {
-                        imageCallback(cgImage)
+                if let imageCallback = self.onFrameImageDecoded {
+                    var cgImage: CGImage?
+                    VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+                    if let cgImage = cgImage {
+                        DispatchQueue.main.async {
+                            imageCallback(cgImage)
+                        }
                     }
                 }
             }

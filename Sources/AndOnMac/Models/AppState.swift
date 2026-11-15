@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import UserNotifications
 
 public enum SideDrawerMode: String, CaseIterable, Sendable {
     case gallery
@@ -58,6 +59,10 @@ public final class AppState: ObservableObject {
     @AppStorage("mcpServerEnabled") public var mcpServerEnabled: Bool = false
     @AppStorage("mcpServerPort") public var mcpServerPort: Int = 8765
     @AppStorage("screenMemoryEnabled") public var screenMemoryEnabled: Bool = false
+    @AppStorage(MCPExecutionDefaults.stepDelayKey) public var macroDefaultStepDelayMs: Int = MCPExecutionDefaults.defaultStepDelayMs
+    @AppStorage(MCPExecutionDefaults.maxStepsKey) public var macroMaxSteps: Int = MCPExecutionDefaults.defaultMaxSteps
+    @AppStorage(MCPExecutionDefaults.maxDurationKey) public var macroMaxTotalWaitSeconds: Int = MCPExecutionDefaults.defaultMaxDurationSeconds
+    @AppStorage(MCPExecutionDefaults.selfHealingKey) public var mcpSelfHealingEnabled: Bool = MCPExecutionDefaults.defaultSelfHealingEnabled
 
     public var lang: AppLanguage {
         appLanguage.resolved
@@ -148,7 +153,9 @@ public final class AppState: ObservableObject {
             MirrorService.shared.stopRecording()
             AndroidAppLauncherService.shared.stopAllAppWindows()
             ContinuityBridge.shared.stop()
+            DiscoveryService.shared.stopBrowsing()
             MCPHTTPServer.shared.stop()
+            ProcessLifecycleManager.shared.terminateAllProcesses()
         }
         loadDeviceProfiles()
         applyDockVisibility()
@@ -375,8 +382,12 @@ public final class AppState: ObservableObject {
                 self.hasAutoConnectedThisSession = false
                 self.isPhoneScreenOff = false
                 self.isPhoneLocked = false
+                self.syncContinuityBridgeState()
+                DiscoveryService.shared.setLowPowerPaused(false)
                 self.attemptAutoWifiReconnect()
             } else {
+                self.syncContinuityBridgeState()
+                DiscoveryService.shared.setLowPowerPaused(mirrorActive && !self.showPairingSheet)
                 let lockCheckInterval: TimeInterval = mirrorActive ? 4.0 : 12.0
                 if let ready = list.first(where: { $0.state == .ready }),
                    Date().timeIntervalSince(self.lastLockStateCheck) >= lockCheckInterval {
@@ -522,6 +533,18 @@ public final class AppState: ObservableObject {
         }
     }
     
+    public func stopMirroringOnWindowClose() {
+        guard isMirroring || isRecording || MirrorService.shared.isMirroring || MirrorService.shared.isStarting else { return }
+        MirrorService.shared.stopMirroring()
+        MirrorService.shared.stopRecording()
+        KeyboardLanguageSyncService.shared.stopSync()
+        isMirroring = false
+        isRecording = false
+        syncScreenMemoryState()
+        DiscoveryService.shared.setLowPowerPaused(false)
+        statusMessage = "Mirroring stopped"
+    }
+
     public func toggleMirroring() {
         if isMirroring || MirrorService.shared.isStarting {
             MirrorService.shared.stopMirroring()
@@ -570,7 +593,8 @@ public final class AppState: ObservableObject {
     }
 
     public func syncContinuityBridgeState() {
-        if continuityBridgeEnabled {
+        let hasReadyDevice = devices.contains(where: { $0.state == .ready })
+        if continuityBridgeEnabled && hasReadyDevice {
             ContinuityBridge.shared.onSyncEvent = { [weak self] msg in
                 Task { @MainActor in
                     self?.photoTransferNotice = msg
@@ -682,6 +706,44 @@ public final class AppState: ObservableObject {
         MCPServerCore.shared.onAgentActivity = { [weak self] activity in
             Task { @MainActor in
                 self?.mcpAgentActivity = activity
+            }
+        }
+        MCPSelfHealingNotifier.shared.onHealed = { [weak self] toolName, expectedLabel, matchedText, x, y in
+            Task { @MainActor in
+                guard let self else { return }
+                let notice = L10n.tr(
+                    "Self-Healing (\(toolName)): ID не найден, нажато по OCR '\(matchedText)'",
+                    "Self-Healing (\(toolName)): ID missing, healed via OCR '\(matchedText)'",
+                    lang: self.lang
+                )
+                self.photoTransferNotice = notice
+                self.statusMessage = L10n.tr(
+                    "Vision OCR восстановил нажатие для '\(toolName)' (\(x), \(y))",
+                    "Vision OCR healed tap for '\(toolName)' at (\(x), \(y))",
+                    lang: self.lang
+                )
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    if self.photoTransferNotice == notice {
+                        self.photoTransferNotice = nil
+                    }
+                }
+
+                if Bundle.main.bundleURL.pathExtension == "app" {
+                    let content = UNMutableNotificationContent()
+                    content.title = "AndOnMac Self-Healing"
+                    content.body = L10n.tr(
+                        "Semantic ID для '\(toolName)' не найден (ожидался '\(expectedLabel)'). Выполнено нажатие по Vision OCR: '\(matchedText)'.",
+                        "Semantic ID failed for '\(toolName)' (expected '\(expectedLabel)'); healed via Vision OCR ('\(matchedText)').",
+                        lang: self.lang
+                    )
+                    content.sound = .default
+                    let req = UNNotificationRequest(
+                        identifier: "mcp-heal-\(UUID().uuidString)",
+                        content: content,
+                        trigger: nil
+                    )
+                    try? await UNUserNotificationCenter.current().add(req)
+                }
             }
         }
     }

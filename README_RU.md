@@ -65,7 +65,7 @@ AndOnMac включает встроенный **Model Context Protocol (MCP)** 
 ### Доступные MCP-инструменты
 - `android_list_devices` · `android_get_ui_tree` (компактный XML→JSON с `center_x`/`center_y`) · `android_screenshot` (сжатый PNG)
 - `android_tap_element` (по координатам или `text`/`resource_id`/`content_desc`) · `android_swipe` · `android_type_text` · `android_keyevent` · `android_launch_app` · `android_get_notifications`
-- **Visual-to-MCP Bridge (`Cmd+Shift+M` / строка меню → *Создать MCP Tool*):** заморозьте кадр, выделите любой элемент на экране Android для привязки к `resource-id`/`class`/`text` через `uiautomator dump`, задайте имя и параметры и сохраните в `~/.andonmac/mcp_tools/`. Управляйте, включайте/отключайте, экспортируйте и импортируйте JSON-схемы в **MCP Tool Hub** с мгновенным LiveReload (`notifications/tools/list_changed`).
+- **Visual-to-MCP Bridge и самовосстанавливающиеся макросы (`Cmd+Shift+M` / строка меню → *Создать MCP Tool*):** заморозьте кадр для захвата одного элемента (`resource-id`/`class`/`text`) или включите **Записать макрос** для объединения цепочки шагов с динамическими `{{parameter}}`-переменными (например, `{{message_body}}`) и настраиваемыми в **Общих настройках** и для каждого инструмента паузами и лимитами. Поддерживает **3-уровневый Self-Healing** (если `resource-id` изменился после обновления приложения, AndOnMac находит нужную надпись через Apple Vision OCR, пишет в лог `"Semantic ID failed, healed via Vision OCR"`, уведомляет пользователя и точно нажимает на кнопку). Управляйте инструментами, настраивайте лимиты, экспортируйте и импортируйте JSON-схемы в **MCP Tool Hub** с мгновенным LiveReload (`notifications/tools/list_changed`).
 
 ---
 

@@ -210,6 +210,59 @@ private struct SettingsView: View {
                     }
             }
 
+            Section(L10n.tr("MCP и макро-автоматизация", "MCP & Macro Automation", lang: lang)) {
+                Toggle(
+                    L10n.tr(
+                        "Self-Healing через Vision OCR при смене UI ID",
+                        "Self-Healing Vision OCR Fallback when UI ID changes",
+                        lang: lang
+                    ),
+                    isOn: $appState.mcpSelfHealingEnabled
+                )
+
+                Stepper(
+                    value: $appState.macroDefaultStepDelayMs,
+                    in: MCPExecutionDefaults.minStepDelayMs...MCPExecutionDefaults.maxStepDelayMs,
+                    step: 50
+                ) {
+                    HStack {
+                        Text(L10n.tr("Пауза между шагами макроса", "Default Macro Step Wait", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroDefaultStepDelayMs) ms")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Stepper(
+                    value: $appState.macroMaxSteps,
+                    in: MCPExecutionDefaults.minMaxSteps...MCPExecutionDefaults.maxMaxSteps,
+                    step: 1
+                ) {
+                    HStack {
+                        Text(L10n.tr("Макс. шагов в макросе", "Max Steps per Macro", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroMaxSteps)")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Stepper(
+                    value: $appState.macroMaxTotalWaitSeconds,
+                    in: MCPExecutionDefaults.minMaxDurationSeconds...MCPExecutionDefaults.maxMaxDurationSeconds,
+                    step: 1
+                ) {
+                    HStack {
+                        Text(L10n.tr("Лимит времени макроса", "Macro Duration Cap", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroMaxTotalWaitSeconds) s")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             if let device = appState.selectedDevice {
                 let currentProfile = appState.profile(for: device.id)
                 Section(L10n.tr("Профиль устройства: \(device.displayName)", "Device Profile: \(device.displayName)", lang: lang)) {
@@ -256,6 +309,6 @@ private struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 420)
+        .frame(width: 470, height: 540)
     }
 }

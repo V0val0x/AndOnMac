@@ -43,6 +43,10 @@ public struct ScrcpyVideoView: NSViewRepresentable {
         nsView.onHomeGestureTriggered = onHomeGestureTriggered
         nsView.bindFrameCallback()
     }
+
+    public static func dismantleNSView(_ nsView: ScrcpyDisplayNSView, coordinator: ()) {
+        nsView.teardown()
+    }
 }
 
 public final class ScrcpyDisplayNSView: NSView {
@@ -59,6 +63,7 @@ public final class ScrcpyDisplayNSView: NSView {
     private var latestImage: CGImage?
     private var metalRenderer: MetalVideoRenderer?
     private var displayLink: CADisplayLink?
+    private var occlusionObserver: NSObjectProtocol?
     public private(set) var hasRenderedFrame: Bool = false
     private var isTrackingTouch: Bool = false
     private var touchStartNormalized: CGPoint?
@@ -181,17 +186,50 @@ public final class ScrcpyDisplayNSView: NSView {
             let link = self.displayLink(target: self, selector: #selector(handleDisplayLink))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
+            link.isPaused = (window?.occlusionState.contains(.visible) == false)
             self.displayLink = link
         }
     }
 
+    public func teardown() {
+        displayLink?.invalidate()
+        displayLink = nil
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        ScrcpyClient.shared.onFrameDecoded = nil
+        ScrcpyClient.shared.onFrameImageDecoded = nil
+    }
+
     override public func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        if let win = window {
             ensureDisplayLink()
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: win,
+                queue: .main
+            ) { [weak self, weak win] _ in
+                Task { @MainActor [weak self, weak win] in
+                    let isVisible = win?.occlusionState.contains(.visible) ?? false
+                    self?.displayLink?.isPaused = !isVisible
+                }
+            }
         } else {
             displayLink?.invalidate()
             displayLink = nil
+        }
+    }
+
+    deinit {
+        displayLink?.invalidate()
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
         }
     }
 
