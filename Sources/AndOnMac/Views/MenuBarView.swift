@@ -274,7 +274,7 @@ public struct MenuBarView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 130)
+                        .frame(height: min(CGFloat(filteredApps.count) * 27.0 + 4.0, 135.0))
                     }
                 }
             }
