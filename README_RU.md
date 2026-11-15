@@ -65,6 +65,7 @@ AndOnMac включает встроенный **Model Context Protocol (MCP)** 
 ### Доступные MCP-инструменты
 - `android_list_devices` · `android_get_ui_tree` (компактный XML→JSON с `center_x`/`center_y`) · `android_screenshot` (сжатый PNG)
 - `android_tap_element` (по координатам или `text`/`resource_id`/`content_desc`) · `android_swipe` · `android_type_text` · `android_keyevent` · `android_launch_app` · `android_get_notifications`
+- **Visual-to-MCP Bridge (`Cmd+Shift+M` / строка меню → *Создать MCP Tool*):** заморозьте кадр, выделите любой элемент на экране Android для привязки к `resource-id`/`class`/`text` через `uiautomator dump`, задайте имя и параметры и сохраните в `~/.andonmac/mcp_tools/`. Управляйте, включайте/отключайте, экспортируйте и импортируйте JSON-схемы в **MCP Tool Hub** с мгновенным LiveReload (`notifications/tools/list_changed`).
 
 ---
 

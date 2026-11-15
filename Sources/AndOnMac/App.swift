@@ -77,6 +77,11 @@ struct AndOnMacApp: App {
                     appState.triggerRecallSearch()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
+
+                Button(L10n.tr("Создать MCP-инструмент", "Create MCP Tool", lang: appState.lang)) {
+                    appState.triggerVisualMCPCapture()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
                 
                 Divider()
                 
@@ -166,6 +171,11 @@ struct AndOnMacApp: App {
         Settings {
             SettingsView(appState: appState)
         }
+
+        Window("MCP Tool Hub", id: "tool-hub") {
+            ToolHubView(appState: appState)
+        }
+        .defaultSize(width: 620, height: 480)
     }
 }
 

@@ -1221,4 +1221,128 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: dumpsys), "com.whatsapp")
         XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: "nothing here"), "unknown")
     }
+
+    func testVisualNodeMatcherMapsUIAutomatorNodeAndFallback() {
+        let xml = """
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.LinearLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="$4,250.00" resource-id="com.bank.app:id/balance_amount" class="android.widget.TextView" content-desc="Account balance" clickable="false" scrollable="false" bounds="[100,400][540,520]" />
+            <node index="2" text="Transfer" resource-id="com.bank.app:id/btn_transfer" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[600,400][980,520]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        // Drag box over the balance TextView (~x: 0.1..0.5, y: 0.16..0.22 on 1080x2400)
+        let normRect = CGRect(x: 0.09, y: 0.165, width: 0.41, height: 0.055)
+        let matched = VisualNodeMatcher.matchBestNode(
+            normalizedRect: normRect,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertEqual(matched.node?.resource_id, "com.bank.app:id/balance_amount")
+        XCTAssertEqual(matched.node?.text, "$4,250.00")
+        XCTAssertEqual(matched.node?.class, "TextView")
+        XCTAssertGreaterThan(matched.iouScore, 0.7)
+
+        // Out-of-bounds drag should fall back to pixel center without matching a node
+        let emptyArea = CGRect(x: 0.1, y: 0.85, width: 0.2, height: 0.05)
+        let fallback = VisualNodeMatcher.matchBestNode(
+            normalizedRect: emptyArea,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertNil(fallback.node)
+        XCTAssertEqual(fallback.fallbackCenterX, 216)
+        XCTAssertEqual(fallback.fallbackCenterY, 2100)
+    }
+
+    func testCustomMCPToolSchemaValidationAndJSONRPCDefinition() throws {
+        XCTAssertTrue(CustomMCPToolSchema.isValidToolName("get_bank_balance"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("android_tap_element"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("Bad Name!"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidParameterName("serial"))
+        XCTAssertTrue(CustomMCPToolSchema.isValidParameterName("account_id"))
+
+        let schema = CustomMCPToolSchema(
+            name: "tap_transfer",
+            description: "Tap the Transfer button",
+            isEnabled: true,
+            action: .tapElement,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/btn_transfer",
+                className: "Button",
+                text: "Transfer",
+                contentDesc: nil,
+                fallbackX: 790,
+                fallbackY: 460,
+                normalizedRect: [0.55, 0.16, 0.35, 0.05]
+            ),
+            parameters: [
+                CustomMCPParameter(name: "amount", type: "integer", description: "Transfer amount", required: true)
+            ]
+        )
+        try schema.validate()
+        let def = schema.toMCPToolDefinition()
+        XCTAssertEqual(def.name, "tap_transfer")
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["serial"])
+        XCTAssertNotNil(props?["amount"])
+        if case .array(let reqValues) = def.inputSchema.objectValue?["required"] {
+            XCTAssertEqual(reqValues.compactMap(\.stringValue), ["amount"])
+        } else {
+            XCTFail("Expected required array in inputSchema")
+        }
+    }
+
+    func testCustomMCPToolRegistryPersistenceAndImportExport() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-mcptools-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let registry = CustomMCPToolRegistry(directoryURL: tmpDir)
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let schema = CustomMCPToolSchema(
+            name: "get_bank_balance",
+            description: "Read current balance",
+            isEnabled: true,
+            action: .readTextUIAutomator,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/balance_amount",
+                className: "TextView",
+                text: "$4,250.00",
+                contentDesc: nil,
+                fallbackX: 320,
+                fallbackY: 460,
+                normalizedRect: [0.09, 0.16, 0.41, 0.05]
+            )
+        )
+        try registry.saveTool(schema)
+        XCTAssertEqual(registry.enabledMCPDefinitions().map(\.name), ["get_bank_balance"])
+
+        let exported = try registry.exportJSON(name: "get_bank_balance")
+        try registry.setEnabled(name: "get_bank_balance", enabled: false)
+        XCTAssertTrue(registry.enabledMCPDefinitions().isEmpty)
+
+        try registry.deleteTool(name: "get_bank_balance")
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let imported = try registry.importFromJSON(exported)
+        XCTAssertEqual(imported.name, "get_bank_balance")
+        XCTAssertTrue(imported.isEnabled)
+    }
+
+    func testMCPServerCoreAdvertisesListChangedAndLoadsTools() async throws {
+        let initReq = Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}".utf8)
+        let initResp = await MCPServerCore.shared.handleRawRequestData(initReq)
+        let initText = try XCTUnwrap(initResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(initText.contains("\"listChanged\":true"))
+
+        let listReq = Data("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}".utf8)
+        let listResp = await MCPServerCore.shared.handleRawRequestData(listReq)
+        let listText = try XCTUnwrap(listResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(listText.contains("android_tap_element"))
+    }
 }

@@ -4,6 +4,7 @@ import AppKit
 /// Native macOS Control Center-style Menu Bar popover for AndOnMac.
 public struct MenuBarView: View {
     @ObservedObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject private var discovery = DiscoveryService.shared
     @ObservedObject private var qrPairing = QRPairingService.shared
     @ObservedObject private var routerBypass = RouterlessBypassService.shared
@@ -346,6 +347,27 @@ public struct MenuBarView: View {
                             systemImage: appState.isMCPAgentPaused ? "play.fill" : "hand.raised.fill"
                         )
                         .foregroundColor(appState.isMCPAgentPaused ? .green : .orange)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                HStack(spacing: 6) {
+                    Button {
+                        appState.triggerVisualMCPCapture()
+                    } label: {
+                        Label(L10n.tr("Создать MCP Tool", "Create MCP Tool", lang: lang), systemImage: "plus.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!appState.isMirroring)
+
+                    Button {
+                        openWindow(id: "tool-hub")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
+                        Label("Tool Hub", systemImage: "wrench.and.screwdriver")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

@@ -166,7 +166,7 @@ public enum AndroidMCPTools {
 
     // MARK: - Tool Implementations
 
-    private static func resolveSerial(_ requested: String?) async throws -> String {
+    public static func resolveSerial(_ requested: String?) async throws -> String {
         if let requested, !requested.isEmpty {
             guard ADBService.validateSerial(requested) else {
                 throw NSError(domain: "AndroidMCPTools", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid serial: \(requested)"])
@@ -201,7 +201,7 @@ public enum AndroidMCPTools {
         return .text(String(decoding: data, as: UTF8.self))
     }
 
-    private static func fetchUITree(serial: String) async throws -> [AndroidUINode] {
+    public static func fetchUITree(serial: String) async throws -> [AndroidUINode] {
         var xml = (try? await ADBService.shared.execute(arguments: ["-s", serial, "exec-out", "uiautomator", "dump", "/dev/tty"], timeoutSeconds: 8.0)) ?? ""
         if !xml.contains("<hierarchy") {
             let remoteDump = "/sdcard/window_dump.xml"

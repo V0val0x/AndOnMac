@@ -73,6 +73,7 @@ You can also toggle **AI Agent Bridge (MCP)** in the Menu Bar to run the embedde
 ### Exposed MCP Tools
 - `android_list_devices` · `android_get_ui_tree` (compact XML-to-JSON with `center_x`/`center_y`) · `android_screenshot` (auto-downscaled PNG)
 - `android_tap_element` (coordinates or semantic `text`/`resource_id`/`content_desc`) · `android_swipe` · `android_type_text` · `android_keyevent` · `android_launch_app` · `android_get_notifications`
+- **Visual-to-MCP Bridge (`Cmd+Shift+M` / Menu Bar → *Create MCP Tool*):** Freeze the mirrored frame, draw a box over any Android UI element to map its `resource-id`/`class`/`text` via `uiautomator dump`, name & parameterize it, and save to `~/.andonmac/mcp_tools/`. Manage, enable/disable, export, and import community JSON schemas in **MCP Tool Hub** with automatic LiveReload (`notifications/tools/list_changed`).
 
 **Example Prompts:**
 - *"Check my Android notifications for the latest 2FA code and paste it here."*

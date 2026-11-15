@@ -207,6 +207,12 @@ public struct PhoneMirrorFrameView: View {
                     .transition(.opacity)
             }
 
+            // Visual-to-MCP Bridge Capture Overlay
+            if appState.isVisualMCPCaptureActive {
+                VisualMCPCaptureOverlayView(appState: appState)
+                    .transition(.opacity)
+            }
+
             // Live AI Agent Activity HUD + Instant Kill-Switch
             if let activity = appState.mcpAgentActivity {
                 VStack {

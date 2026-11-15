@@ -194,6 +194,20 @@ public final class MCPHTTPServer: @unchecked Sendable {
         return sseConnections[sessionId]
     }
 
+    /// Broadcasts `notifications/tools/list_changed` to all active SSE sessions for LiveReload.
+    public func broadcastToolsListChanged() {
+        lock.lock()
+        let connections = Array(sseConnections.values)
+        lock.unlock()
+        guard !connections.isEmpty else { return }
+
+        let payload = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"
+        let data = Data(payload.utf8)
+        for conn in connections {
+            conn.send(content: data, completion: .contentProcessed { _ in })
+        }
+    }
+
     private func sendHTTPResponse(connection: NWConnection, status: String, contentType: String, body: Data) {
         let header = "HTTP/1.1 \(status)\r\n" +
             "Content-Type: \(contentType)\r\n" +

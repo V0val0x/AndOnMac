@@ -78,6 +78,7 @@ public final class AppState: ObservableObject {
     @Published public var isMCPRunning: Bool = false
     @Published public var isMCPAgentPaused: Bool = false
     @Published public var mcpAgentActivity: String? = nil
+    @Published public var isVisualMCPCaptureActive: Bool = false
     @Published public var dependencyStatus: DependencyStatus?
     @Published public var isInstallingDependencies: Bool = false
     @Published public var installerLogs: String = ""
@@ -719,6 +720,20 @@ public final class AppState: ObservableObject {
 
     public func triggerRecallSearch() {
         RecallPanelController.shared.toggle(appState: self)
+    }
+
+    // MARK: - Visual-to-MCP Bridge
+
+    public func triggerVisualMCPCapture() {
+        guard isMirroring, selectedDevice != nil else {
+            photoTransferNotice = L10n.tr("Сначала запустите трансляцию экрана", "Start screen mirroring first", lang: lang)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                self.photoTransferNotice = nil
+            }
+            return
+        }
+        isOCROverlayActive = false
+        isVisualMCPCaptureActive.toggle()
     }
 
     public func copyMCPConfigToClipboard() {

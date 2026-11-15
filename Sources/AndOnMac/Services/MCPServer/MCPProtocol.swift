@@ -167,6 +167,13 @@ public final class MCPServerCore: @unchecked Sendable {
     private var inFlightTasks: [UUID: Task<MCPToolResult, Never>] = [:]
     public var onAgentActivity: (@Sendable (String?) -> Void)?
 
+    private init() {
+        _ = CustomMCPToolRegistry.shared.loadAllTools()
+        CustomMCPToolRegistry.shared.onToolsChanged = {
+            MCPHTTPServer.shared.broadcastToolsListChanged()
+        }
+    }
+
     public var isAgentPaused: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _isAgentPaused }
         set {
@@ -186,8 +193,6 @@ public final class MCPServerCore: @unchecked Sendable {
             }
         }
     }
-
-    private init() {}
 
     /// Processes a raw JSON-RPC 2.0 request line and returns encoded JSON response bytes (or `nil` for notifications).
     public func handleRawRequestData(_ data: Data) async -> Data? {
@@ -221,7 +226,7 @@ public final class MCPServerCore: @unchecked Sendable {
             let result: MCPJSONValue = .object([
                 "protocolVersion": .string(Self.protocolVersion),
                 "capabilities": .object([
-                    "tools": .object(["listChanged": .bool(false)])
+                    "tools": .object(["listChanged": .bool(true)])
                 ]),
                 "serverInfo": .object([
                     "name": .string("AndOnMac"),
@@ -234,7 +239,9 @@ public final class MCPServerCore: @unchecked Sendable {
             return MCPJSONRPCResponse(id: id, result: .object([:]))
 
         case "tools/list":
-            let tools = AndroidMCPTools.allDefinitions.map { $0.toJSONValue() }
+            let builtIn = AndroidMCPTools.allDefinitions
+            let custom = CustomMCPToolRegistry.shared.enabledMCPDefinitions(reload: true)
+            let tools = (builtIn + custom).map { $0.toJSONValue() }
             return MCPJSONRPCResponse(id: id, result: .object(["tools": .array(tools)]))
 
         case "tools/call":
@@ -257,7 +264,10 @@ public final class MCPServerCore: @unchecked Sendable {
             onAgentActivity?(Self.activityLabel(for: toolName, args: args))
             let taskId = UUID()
             let execTask = Task<MCPToolResult, Never> {
-                await AndroidMCPTools.execute(name: toolName, arguments: args)
+                if let customSchema = CustomMCPToolRegistry.shared.enabledTool(named: toolName) {
+                    return await CustomMCPToolExecutor.execute(schema: customSchema, arguments: args)
+                }
+                return await AndroidMCPTools.execute(name: toolName, arguments: args)
             }
             let registered = lock.withLock { () -> Bool in
                 if _isAgentPaused {
