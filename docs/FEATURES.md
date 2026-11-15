@@ -26,7 +26,7 @@
 - **On-Device Apple Vision Screen OCR (`Cmd+Shift+X`):** Press `Cmd+Shift+X` or click *"Grab Text from Screen"*, drag over any unselectable text on the mirrored phone display, and extract it straight into your Mac clipboard.
 - **Background Apple Continuity Bridge:** Syncs copied Mac text and **copied images/screenshots** (`NSPasteboard` PNG/TIFF → `/sdcard/Pictures/AndOnMac/`) directly to Android even when the mirror window is closed.
 - **Media Gallery (`Cmd+4`) & Android File Manager (`Cmd+5`):** Drag-and-drop recent photos/screenshots from `/sdcard/DCIM` and `/sdcard/Pictures` onto macOS or drop files/APKs into `/sdcard/Download/`; browse, upload, download, and manage device directories via `Cmd+5`.
-- **Audio, Notifications & Input:** Forwards internal Android audio to Mac speakers via a headless background helper (`SDL_MAC_BACKGROUND_APP=1`), mirrors companion notifications on TCP `:58241` to macOS Notification Center, and supports Cyrillic/Unicode input with **Send on Enter** (`Shift+Return` for newline).
+- **Audio, Notifications & Input:** Forwards internal Android audio to Mac speakers via a race-free headless background helper (`SDL_MAC_BACKGROUND_APP=1`) with live `forwardAudio` toggling, mirrors companion notifications on TCP `:58241` to macOS Notification Center, and supports Cyrillic/Unicode input with **Send on Enter** (`Shift+Return` for newline).
 
 ---
 
@@ -58,7 +58,7 @@ You can also toggle **AI Agent Bridge (MCP)** in the Menu Bar to run the local H
 ### Persistent A* Symbolic UI Router & 120Hz Agentic HUD ([DroidPath](https://github.com/V0val0x/DroidPath))
 - **Layer 1 — Headless Shadow DOM Daemon (`android-daemon.jar`):** Zero-APK Kotlin single-DEX accessibility/window daemon launched via `app_process` over ADB TCP (`:27189`), idempotently synced via SHA-256 and automatically restarted with exponential backoff if killed by Android.
 - **Layer 2 — Live Shadow DOM & Persistent Spatial Graph:** `ScreenLayoutHasher` strips dynamic clocks/dates to fingerprint stable UI states, `SpatialGraphEngine` persists learned transition edges in `~/Library/Application Support/AndOnMac/shadow_graph.json` with Jaccard `>= 0.90` screen compaction, and every manual tap/swipe inside `ScrcpyVideoView` passively trains new graph edges.
-- **Layer 3 — `AStarPathfinder` & `MacroExecutionEngine`:** Computes lowest-cost multi-hop action plans (`tap` / `swipe`), executes steps locally in sub-second hops, and visualizes every target on the 120Hz Metal stream with `AgenticHUDLayer` (red crosshair reticle, dashed swipe trajectory, and non-flickering dark-mode step toast).
+- **Layer 3 — `AStarPathfinder` & `MacroExecutionEngine`:** Computes lowest-cost multi-hop action plans (`tap` / `swipe`), enforces post-swipe `RecyclerView` fling quiescence before resolving downstream bounds, and visualizes every target on the 120Hz Metal stream with `AgenticHUDLayer` (red crosshair reticle for taps, luminous sky-cyan directional arrow vectors for swipes, and smart top/bottom step toast docking).
 - **Visual-to-MCP Studio & Self-Healing Macros (`Cmd+Shift+M`):** Capture UI elements and build parameterized `{{variable}}` macros with 3-tier Vision OCR self-healing and live reload in the **MCP Tool Hub**.
 
 ![AndOnMac Layer 3 Agentic HUD Demo](../assets/demo-layer3-agentic-hud.gif)

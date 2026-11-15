@@ -26,7 +26,7 @@
 - **Локальный Apple Vision OCR (`Cmd+Shift+X`):** нажмите `Cmd+Shift+X` или *«Распознать текст с экрана»*, выделите любую область на экране смартфона и скопируйте текст прямо в буфер обмена Mac.
 - **Фоновый Continuity Bridge:** синхронизирует скопированный на Mac текст и **изображения/скриншоты** (`NSPasteboard` PNG/TIFF → `/sdcard/Pictures/AndOnMac/`) даже при закрытом окне зеркалирования.
 - **Медиатека (`Cmd+4`) и файловый менеджер (`Cmd+5`):** перетаскивание фото и скриншотов из `/sdcard/DCIM` и `/sdcard/Pictures` на рабочий стол Mac и загрузка файлов/APK в `/sdcard/Download/`, а также полноценный просмотр и управление папками Android (`Cmd+5`).
-- **Звук, уведомления и ввод:** передача системного звука Android на динамики Mac через фоновый аудио-помощник (`SDL_MAC_BACKGROUND_APP=1`), нативные уведомления macOS через TCP `:58241`, ввод кириллицы/Unicode и отправка по `Enter` (`Shift+Return` для новой строки).
+- **Звук, уведомления и ввод:** передача системного звука Android на динамики Mac через синхронизированный фоновый аудио-помощник (`SDL_MAC_BACKGROUND_APP=1`) с мгновенным переключением `forwardAudio` на лету, нативные уведомления macOS через TCP `:58241`, ввод кириллицы/Unicode и отправка по `Enter` (`Shift+Return` для новой строки).
 
 ---
 
@@ -58,7 +58,7 @@ AndOnMac включает встроенный **Model Context Protocol (MCP)** 
 ### Персистентный A* UI-роутер и 120Hz Agentic HUD ([DroidPath](https://github.com/V0val0x/DroidPath))
 - **Layer 1 — Headless Shadow DOM демон (`android-daemon.jar`):** single-DEX Kotlin-демон без установки APK (`app_process` через ADB TCP `:27189`), с идемпотентным SHA-256 деплоем и автоперезапуском при обрыве связи.
 - **Layer 2 — Live Shadow DOM и персистентный Spatial Graph:** `ScreenLayoutHasher` канонизирует динамические часы и даты для стабильного хеширования экранов, `SpatialGraphEngine` сохраняет граф переходов в `~/Library/Application Support/AndOnMac/shadow_graph.json` (Jaccard `>= 0.90` дедупликация), а каждый ваш ручной клик и свайп в `ScrcpyVideoView` пассивно обучает новые рёбра графа.
-- **Layer 3 — `AStarPathfinder` и `MacroExecutionEngine`:** вычисляет оптимальный маршрут (`tap` / `swipe`), исполняет шаги локально за доли секунды и отображает каждый шаг поверх 120Hz Metal-потока через `AgenticHUDLayer` (прицел, пунктирная траектория свайпа и чёткий пошаговый toast).
+- **Layer 3 — `AStarPathfinder` и `MacroExecutionEngine`:** вычисляет оптимальный маршрут (`tap` / `swipe`), ожидает завершения инерционного скролла `RecyclerView` после свайпов перед резолвом следующих координат и отображает каждый шаг поверх 120Hz Metal-потока через `AgenticHUDLayer` (красный прицел для тапов, неоновый вектор направления для свайпов и умная стыковка статус-плашки сверху или снизу).
 - **Visual-to-MCP Studio и самовосстанавливающиеся макросы (`Cmd+Shift+M`):** захват элементов с экрана, параметризованные макросы `{{variable}}`, 3-уровневый Vision OCR Self-Healing и LiveReload в **MCP Tool Hub**.
 
 ![Демо AndOnMac Layer 3 Agentic HUD](../assets/demo-layer3-agentic-hud.gif)

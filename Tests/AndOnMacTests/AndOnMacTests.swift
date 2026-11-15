@@ -1895,7 +1895,9 @@ final class AndOnMacTests: XCTestCase {
             matchedByExactHash: true
         )
         vm.handle(event: .stepSettled(stepIndex: 0, totalSteps: 2, report: settledReport))
-        try? await Task.sleep(for: .milliseconds(150))
+        for _ in 0..<40 where vm.activeReticle != nil {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
         XCTAssertNil(vm.activeReticle)
 
         vm.clear()
