@@ -49,7 +49,7 @@ public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
         }
     }
     
-    /// Outer chassis corner radius in points
+    /// Outer chassis corner radius in points (calibrated to real hardware proportions at 320pt width)
     public var cornerRadius: CGFloat {
         switch self {
         case .pixel11Pro: return 45
@@ -81,7 +81,7 @@ public enum PhoneFrameStyle: String, CaseIterable, Identifiable, Sendable {
         max(2, innerCornerRadius - 2)
     }
     
-    /// Base phone width multiplier (Galaxy Ultra is slightly wider in hand)
+    /// Base screen width multiplier (1.0 preserves exact deviceWidth:deviceHeight without distortion)
     public var baseWidthMultiplier: CGFloat {
         DeviceHardwareSpec.spec(for: self).baseWidthMultiplier
     }

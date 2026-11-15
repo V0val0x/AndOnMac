@@ -31,12 +31,17 @@ public final class ADBService: @unchecked Sendable {
     private var fingerprintCache: [String: DeviceFingerprint] = [:]
     
     public var adbPath: String {
-        // 1. Check embedded bundle resource
+        // 1. Check embedded bundle Resources/bin/adb, then Resources/adb
+        if let binAdb = Bundle.main.resourceURL?.appendingPathComponent("bin/adb").path,
+           FileManager.default.isExecutableFile(atPath: binAdb) {
+            return binAdb
+        }
         if let bundledAdb = Bundle.main.path(forResource: "adb", ofType: nil) {
             return bundledAdb
         }
         // 2. Common Homebrew and system locations
         let candidates = [
+            FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/bin/adb",
             FileManager.default.currentDirectoryPath + "/dist/AndOnMac.app/Contents/Resources/adb",
             "/opt/homebrew/bin/adb",
             "/usr/local/bin/adb",
@@ -52,101 +57,225 @@ public final class ADBService: @unchecked Sendable {
     }
     
     private init() {}
+
+    /// Validates an ADB device serial or `host:port` target to prevent flag injection or malformed endpoints.
+    public static func validateSerial(_ serial: String) -> Bool {
+        let trimmed = serial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 128, !trimmed.hasPrefix("-") else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-[]")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// Validates an Android application package name (e.g. `com.whatsapp`) to prevent shell injection.
+    public static func validatePackageName(_ packageName: String) -> Bool {
+        let trimmed = packageName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 255, !trimmed.hasPrefix("-"), !trimmed.hasPrefix("."), !trimmed.hasSuffix(".") else {
+            return false
+        }
+        guard trimmed.contains(".") else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// Safely single-quotes an arbitrary string for POSIX `/system/bin/sh` (Android `adb shell`),
+    /// stripping NUL bytes so no metacharacter (`;`, `|`, `&`, `$()`, backticks, redirects) can execute.
+    public static func shellQuote(_ value: String) -> String {
+        let sanitized = value.replacingOccurrences(of: "\0", with: "")
+        return "'" + sanitized.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Validates a `host:port` TCP/TLS endpoint for `adb connect` / `adb pair`.
+    public static func validateTargetEndpoint(_ endpoint: String) -> Bool {
+        guard validateSerial(endpoint) else { return false }
+        let parts = endpoint.split(separator: ":")
+        guard parts.count == 2, let port = Int(parts[1]), (1...65535).contains(port) else { return false }
+        return !parts[0].isEmpty
+    }
     
     /// Executes an ADB command asynchronously with a strict timeout to prevent indefinite hangs
     @discardableResult
     public func execute(arguments: [String], timeoutSeconds: Double = 6.0) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: self.adbPath)
-                process.arguments = arguments
-                
-                var env = ProcessInfo.processInfo.environment
-                let existingPath = env["PATH"] ?? ""
-                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
-                env["ADB_MDNS_OPENSCREEN"] = "1"
-                process.environment = env
-                
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-                
-                let lock = NSLock()
-                var hasResumed = false
-                
-                // Watchdog timer
-                let timer = DispatchSource.makeTimerSource(queue: .global())
-                timer.schedule(deadline: .now() + timeoutSeconds)
-                timer.setEventHandler {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    if !hasResumed {
-                        hasResumed = true
-                        if process.isRunning {
-                            process.terminate()
-                        }
-                        continuation.resume(throwing: NSError(
-                            domain: "ADBService",
-                            code: -1,
-                            userInfo: [NSLocalizedDescriptionKey: Self.timeoutErrorMessage(for: arguments, timeoutSeconds: timeoutSeconds)]
-                        ))
-                    }
+        let data = try await executeData(arguments: arguments, timeoutSeconds: timeoutSeconds)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Executes an ADB command and returns raw stdout `Data` (safe for binary `exec-out screencap -p`).
+    public func executeData(arguments: [String], timeoutSeconds: Double = 10.0) async throws -> Data {
+        if let sIdx = arguments.firstIndex(of: "-s"), sIdx + 1 < arguments.count {
+            guard Self.validateSerial(arguments[sIdx + 1]) else {
+                throw NSError(domain: "ADBService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid ADB device serial."])
+            }
+        }
+        let binaryPath = self.adbPath
+        guard FileManager.default.isExecutableFile(atPath: binaryPath) else {
+            throw NSError(
+                domain: "ADBService",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "ADB binary not found or not executable at '\(binaryPath)'. Please install android-platform-tools."]
+            )
+        }
+        try Task.checkCancellation()
+
+        final class CancellationState: @unchecked Sendable {
+            let lock = NSLock()
+            var hasResumed = false
+            var isCancelled = false
+            var process: Process?
+            var trackedId: UUID?
+            var timer: DispatchSourceTimer?
+            var continuation: CheckedContinuation<Data, Error>?
+
+            func cancel() {
+                lock.lock()
+                isCancelled = true
+                let proc = process
+                let tid = trackedId
+                let tmr = timer
+                let cont = (!hasResumed) ? continuation : nil
+                if cont != nil {
+                    hasResumed = true
+                    continuation = nil
                 }
-                timer.resume()
-                
-                do {
-                    try process.run()
-                    
-                    var stdoutData = Data()
-                    var stderrData = Data()
-                    let readGroup = DispatchGroup()
-                    
-                    readGroup.enter()
-                    DispatchQueue.global().async {
-                        stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                        readGroup.leave()
-                    }
-                    
-                    readGroup.enter()
-                    DispatchQueue.global().async {
-                        stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                        readGroup.leave()
-                    }
-                    
-                    process.waitUntilExit()
-                    readGroup.wait()
-                    
-                    lock.lock()
-                    defer { lock.unlock() }
-                    timer.cancel()
-                    
-                    if !hasResumed {
-                        hasResumed = true
-                        let output = String(decoding: stdoutData, as: UTF8.self)
-                        
-                        if process.terminationStatus == 0 {
-                            continuation.resume(returning: output)
-                        } else {
-                            let errStr = String(decoding: stderrData, as: UTF8.self)
-                            continuation.resume(throwing: NSError(
+                lock.unlock()
+
+                tmr?.cancel()
+                if let tid {
+                    ProcessLifecycleManager.shared.unregister(tid)
+                }
+                if let proc {
+                    ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 250)
+                }
+                cont?.resume(throwing: CancellationError())
+            }
+        }
+
+        let state = CancellationState()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                state.lock.lock()
+                if state.isCancelled {
+                    state.hasResumed = true
+                    state.lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                state.continuation = continuation
+                state.lock.unlock()
+
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: binaryPath)
+                    process.arguments = arguments
+
+                    var env = ProcessInfo.processInfo.environment
+                    let existingPath = env["PATH"] ?? ""
+                    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + existingPath
+                    env["ADB_MDNS_OPENSCREEN"] = "1"
+                    process.environment = env
+
+                    let stdoutPipe = Pipe()
+                    let stderrPipe = Pipe()
+                    process.standardOutput = stdoutPipe
+                    process.standardError = stderrPipe
+
+                    let trackedId = ProcessLifecycleManager.shared.register(process, tag: "adb")
+
+                    // Watchdog timer
+                    let timer = DispatchSource.makeTimerSource(queue: .global())
+                    timer.schedule(deadline: .now() + timeoutSeconds)
+                    timer.setEventHandler {
+                        state.lock.lock()
+                        let cont = (!state.hasResumed) ? state.continuation : nil
+                        if cont != nil {
+                            state.hasResumed = true
+                            state.continuation = nil
+                        }
+                        state.lock.unlock()
+                        if let cont {
+                            ProcessLifecycleManager.shared.unregister(trackedId)
+                            ProcessLifecycleManager.shared.terminateProcess(process, gracePeriodMs: 250)
+                            cont.resume(throwing: NSError(
                                 domain: "ADBService",
-                                code: Int(process.terminationStatus),
-                                userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? output : errStr]
+                                code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: Self.timeoutErrorMessage(for: arguments, timeoutSeconds: timeoutSeconds)]
                             ))
                         }
                     }
-                } catch {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    timer.cancel()
-                    if !hasResumed {
-                        hasResumed = true
-                        continuation.resume(throwing: error)
+
+                    state.lock.lock()
+                    if state.isCancelled || state.hasResumed {
+                        state.lock.unlock()
+                        ProcessLifecycleManager.shared.unregister(trackedId)
+                        return
+                    }
+                    state.process = process
+                    state.trackedId = trackedId
+                    state.timer = timer
+                    state.lock.unlock()
+
+                    timer.resume()
+
+                    do {
+                        try process.run()
+
+                        var stdoutData = Data()
+                        var stderrData = Data()
+                        let readGroup = DispatchGroup()
+
+                        readGroup.enter()
+                        DispatchQueue.global().async {
+                            stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                            readGroup.leave()
+                        }
+
+                        readGroup.enter()
+                        DispatchQueue.global().async {
+                            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                            readGroup.leave()
+                        }
+
+                        process.waitUntilExit()
+                        readGroup.wait()
+                        ProcessLifecycleManager.shared.unregister(trackedId)
+
+                        state.lock.lock()
+                        timer.cancel()
+                        let cont = (!state.hasResumed) ? state.continuation : nil
+                        if cont != nil {
+                            state.hasResumed = true
+                            state.continuation = nil
+                        }
+                        state.lock.unlock()
+
+                        if let cont {
+                            if process.terminationStatus == 0 {
+                                cont.resume(returning: stdoutData)
+                            } else {
+                                let errStr = String(decoding: stderrData, as: UTF8.self)
+                                let outStr = String(decoding: stdoutData, as: UTF8.self)
+                                cont.resume(throwing: NSError(
+                                    domain: "ADBService",
+                                    code: Int(process.terminationStatus),
+                                    userInfo: [NSLocalizedDescriptionKey: errStr.isEmpty ? outStr : errStr]
+                                ))
+                            }
+                        }
+                    } catch {
+                        ProcessLifecycleManager.shared.unregister(trackedId)
+                        state.lock.lock()
+                        timer.cancel()
+                        let cont = (!state.hasResumed) ? state.continuation : nil
+                        if cont != nil {
+                            state.hasResumed = true
+                            state.continuation = nil
+                        }
+                        state.lock.unlock()
+                        cont?.resume(throwing: error)
                     }
                 }
             }
+        } onCancel: {
+            state.cancel()
         }
     }
     
@@ -320,8 +449,26 @@ public final class ADBService: @unchecked Sendable {
         fingerprintCache[serial] = fp
     }
     
-    /// Fetches hardware fingerprint, battery, OS version, network IP, and Wireless Debugging `tls_port` details
+    private struct CachedDeviceDetails {
+        let fingerprint: DeviceFingerprint
+        var batteryLevel: Int?
+        var isCharging: Bool?
+        var ipAddress: String?
+        var tlsPort: Int?
+        var lastDynamicRefresh: Date
+    }
+
+    private let detailsCacheLock = NSLock()
+    private var detailsCache: [String: CachedDeviceDetails] = [:]
+
+    /// Fetches hardware fingerprint, battery, OS version, network IP, and Wireless Debugging `tls_port` details.
+    /// Caches static device properties and throttles dynamic queries to keep idle CPU usage near zero.
     private func fetchDeviceDetails(serial: String) async throws -> (DeviceFingerprint, Int?, Bool?, String?, Int?) {
+        let cached: CachedDeviceDetails? = detailsCacheLock.withLock { detailsCache[serial] }
+        if let cached, Date().timeIntervalSince(cached.lastDynamicRefresh) < 12.0 {
+            return (cached.fingerprint, cached.batteryLevel, cached.isCharging, cached.ipAddress, cached.tlsPort)
+        }
+
         let existingFingerprint = cachedFingerprint(for: serial)
         async let fpTask: String? = existingFingerprint == nil ? (try? await execute(
             arguments: [
@@ -344,7 +491,7 @@ public final class ADBService: @unchecked Sendable {
             }
             fingerprint = parsed
         } else {
-            fingerprint = DeviceFingerprint()
+            fingerprint = cached?.fingerprint ?? DeviceFingerprint()
         }
         let battRaw = (try? await battTask) ?? ""
         let ipRaw = (try? await ipTask) ?? ""
@@ -382,6 +529,17 @@ public final class ADBService: @unchecked Sendable {
         let tlsPort = Self.parseWirelessTlsPort(from: adbDumpRaw)
         if let ip = ipAddress, let port = tlsPort {
             DiscoveryService.shared.registerConnectPort(for: ip, port: port)
+        }
+
+        detailsCacheLock.withLock {
+            detailsCache[serial] = CachedDeviceDetails(
+                fingerprint: fingerprint,
+                batteryLevel: level,
+                isCharging: isCharging,
+                ipAddress: ipAddress,
+                tlsPort: tlsPort,
+                lastDynamicRefresh: Date()
+            )
         }
         
         return (fingerprint, level, isCharging, ipAddress, tlsPort)
@@ -603,6 +761,9 @@ public final class ADBService: @unchecked Sendable {
     
     /// Launch an application by package name (e.g. when user clicks a notification)
     public func launchApp(serial: String, packageName: String) async throws {
+        guard Self.validatePackageName(packageName) else {
+            throw NSError(domain: "ADBService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Android package name."])
+        }
         _ = try await execute(arguments: ["-s", serial, "shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1"])
     }
     
@@ -628,7 +789,7 @@ public final class ADBService: @unchecked Sendable {
         _ = try? await execute(
             arguments: [
                 "-s", serial, "shell",
-                "size=$(wm size | tail -n 1 | awk '{print $NF}'); w=${size%x*}; h=${size#*x}; x=$((w/2)); y0=$((h-4)); y1=$((h*74/100)); ym=$((h*86/100)); input motionevent DOWN $x $y0; input motionevent MOVE $x $ym; input motionevent MOVE $x $y1; sleep 0.34; input motionevent UP $x $y1"
+                "size=$(wm size | tail -n 1 | awk '{print $NF}'); w=${size%x*}; h=${size#*x}; x=$((w/2)); y0=$((h-8)); ym=$((h*86/100)); y1=$((h*74/100)); input motionevent DOWN $x $y0; input motionevent MOVE $x $ym; input motionevent MOVE $x $y1; sleep 0.45; input motionevent MOVE $x $((y1-1)); sleep 0.12; input motionevent UP $x $((y1-1))"
             ],
             timeoutSeconds: 4.0
         )

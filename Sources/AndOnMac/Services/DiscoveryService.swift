@@ -119,14 +119,28 @@ public final class DiscoveryService: NSObject, ObservableObject, @unchecked Send
         }
     }
     
+    public func setLowPowerPaused(_ paused: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if paused {
+                self.pollTimer?.invalidate()
+                self.pollTimer = nil
+            } else if self.isBrowsing && self.pollTimer == nil {
+                self.startPeriodicAdbMdnsPoll()
+            }
+        }
+    }
+
     // MARK: - ADB mDNS Fallback / Sync
     private func startPeriodicAdbMdnsPoll() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task {
                 await self?.pollAdbMdns()
             }
         }
+        timer.tolerance = 3.0
+        pollTimer = timer
         Task {
             await pollAdbMdns()
         }

@@ -2,7 +2,30 @@ import SwiftUI
 import AppKit
 
 @main
+enum AndOnMacEntryPoint {
+    static func main() {
+        if CommandLine.arguments.contains("--mcp-stdio") {
+            MCPStdioTransport.runBlocking()
+            return
+        }
+        AndOnMacApp.main()
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        MirrorService.shared.stopMirroring()
+        MirrorService.shared.stopRecording()
+        AndroidAppLauncherService.shared.stopAllAppWindows()
+        ContinuityBridge.shared.stop()
+        ScreenMemorySnapshotter.shared.stop()
+        MCPHTTPServer.shared.stop()
+        ProcessLifecycleManager.shared.terminateAllProcesses(synchronousWait: true, gracePeriodMs: 250)
+    }
+}
+
 struct AndOnMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
     
     init() {
@@ -44,6 +67,21 @@ struct AndOnMacApp: App {
                     appState.openDrawer(mode: .files)
                 }
                 .keyboardShortcut("5", modifiers: .command)
+
+                Button(L10n.tr("Распознать текст с экрана", "Grab Text from Screen", lang: appState.lang)) {
+                    appState.triggerScreenOCR()
+                }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
+
+                Button(L10n.tr("Поиск по истории экрана (Recall)", "Recall Screen Memory", lang: appState.lang)) {
+                    appState.triggerRecallSearch()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+
+                Button(L10n.tr("Создать MCP-инструмент", "Create MCP Tool", lang: appState.lang)) {
+                    appState.triggerVisualMCPCapture()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
                 
                 Divider()
                 
@@ -135,298 +173,18 @@ struct AndOnMacApp: App {
         
         // Menu Bar Extra for fast quick-access like Control Center
         MenuBarExtra("AndOnMac", systemImage: "iphone.gen3") {
-            MenuBarPopoverView(appState: appState)
+            MenuBarView(appState: appState)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(appState: appState)
         }
-    }
-}
 
-private struct MenuBarPopoverView: View {
-    @ObservedObject var appState: AppState
-    @State private var isHoveringLanguage: Bool = false
-
-    var body: some View {
-        let lang = appState.lang
-        VStack(alignment: .leading, spacing: 10) {
-            if let device = appState.selectedDevice {
-                HStack(spacing: 10) {
-                    ZStack(alignment: .bottomTrailing) {
-                        Image(systemName: device.isPixel ? "g.circle.fill" : "smartphone")
-                            .font(.system(size: 19, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .frame(width: 32, height: 32)
-                            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                        Circle()
-                            .fill(appState.isMirroring ? Color.green : Color.blue)
-                            .frame(width: 8, height: 8)
-                            .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                            .offset(x: 2, y: 2)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.displayName)
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("\(device.connectionType.rawValue)\(device.batteryLevel.map { " • \($0)%" } ?? "") • \(appState.effectiveHardwareSpec.displayName)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                Button {
-                    appState.toggleMirroring()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: appState.isMirroring ? "stop.circle.fill" : "play.circle.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(
-                            appState.isMirroring
-                                ? L10n.tr("Остановить экран", "Stop Mirroring", lang: lang)
-                                : L10n.tr("Открыть экран", "Open Screen", lang: lang)
-                        )
-                        .font(.system(size: 12.5, weight: .semibold))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .bold))
-                            .opacity(0.75)
-                    }
-                }
-                .buttonStyle(MenuBarPrimaryButtonStyle(isActive: appState.isMirroring))
-            } else {
-                HStack(spacing: 8) {
-                    Image(systemName: "iphone.slash")
-                        .foregroundStyle(.secondary)
-                    Text(L10n.tr("Нет подключенных устройств", "No connected devices", lang: lang))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
-
-            Divider()
-                .opacity(0.5)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    appState.refreshDevices()
-                } label: {
-                    MenuBarRowContent(
-                        icon: "arrow.clockwise",
-                        tint: .blue,
-                        title: L10n.tr("Поиск устройств", "Scan Devices", lang: lang)
-                    )
-                }
-                .buttonStyle(MenuBarActionButtonStyle())
-
-                Button {
-                    if appState.isMirroring {
-                        appState.toggleMirroring()
-                    }
-                    appState.showPairingSheet = true
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    MenuBarRowContent(
-                        icon: "wifi",
-                        tint: .cyan,
-                        title: L10n.tr("Подключить по Wi-Fi...", "Connect via Wi-Fi...", lang: lang),
-                        showsChevron: true
-                    )
-                }
-                .buttonStyle(MenuBarActionButtonStyle())
-
-                Button {
-                    Task {
-                        await appState.resetUSBAndADB()
-                    }
-                } label: {
-                    MenuBarRowContent(
-                        icon: "cable.connector",
-                        tint: .orange,
-                        title: L10n.tr("Сбросить ADB и восстановить USB", "Restart ADB & Reset USB", lang: lang)
-                    )
-                }
-                .buttonStyle(MenuBarActionButtonStyle())
-
-                SettingsLink {
-                    MenuBarRowContent(
-                        icon: "slider.horizontal.3",
-                        tint: .purple,
-                        title: L10n.tr("Настройки и внешний вид...", "Settings & Appearance...", lang: lang),
-                        shortcut: "⌘,",
-                        showsChevron: true
-                    )
-                }
-                .buttonStyle(MenuBarActionButtonStyle())
-            }
-
-            Divider()
-                .opacity(0.5)
-
-            HStack {
-                Menu {
-                    ForEach(AppLanguage.allCases) { language in
-                        Button {
-                            appState.appLanguage = language
-                        } label: {
-                            if appState.appLanguage == language {
-                                Label(language.displayName(in: lang), systemImage: "checkmark")
-                            } else {
-                                Text(language.displayName(in: lang))
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "globe")
-                        Text(lang == .russian ? "Русский" : "English")
-                    }
-                    .font(.system(size: 11.5, weight: .medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.primary.opacity(isHoveringLanguage ? 0.12 : 0.06))
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                .onHover { isHoveringLanguage = $0 }
-
-                Spacer()
-
-                Button {
-                    NSApplication.shared.terminate(nil)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(L10n.tr("Выход", "Quit", lang: lang))
-                        Text("⌘Q")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .buttonStyle(MenuBarFooterButtonStyle())
-            }
+        Window("MCP Tool Hub", id: "tool-hub") {
+            ToolHubView(appState: appState)
         }
-        .padding(12)
-        .frame(width: 280)
-        .background(VibrancyBackdrop(material: .popover, blendingMode: .behindWindow))
-    }
-}
-
-private struct MenuBarRowContent: View {
-    let icon: String
-    let tint: Color
-    let title: String
-    var shortcut: String? = nil
-    var showsChevron: Bool = false
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(tint.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-            Text(title)
-                .font(.system(size: 12.5, weight: .medium))
-                .lineLimit(1)
-
-            Spacer(minLength: 6)
-
-            if let shortcut {
-                Text(shortcut)
-                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-            }
-
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-}
-
-private struct MenuBarActionButtonStyle: ButtonStyle {
-    @State private var isHovered: Bool = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 7)
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(
-                        configuration.isPressed
-                            ? Color.accentColor.opacity(0.24)
-                            : (isHovered ? Color.primary.opacity(0.10) : Color.primary.opacity(0.03))
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(isHovered ? 0.14 : 0.05), lineWidth: 0.6)
-            )
-            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: isHovered)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
-            .onHover { isHovered = $0 }
-    }
-}
-
-private struct MenuBarPrimaryButtonStyle: ButtonStyle {
-    let isActive: Bool
-    @State private var isHovered: Bool = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        let baseColor = isActive ? Color.red : Color.accentColor
-        configuration.label
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(baseColor.opacity(configuration.isPressed ? 0.72 : (isHovered ? 0.96 : 0.86)))
-            )
-            .shadow(color: baseColor.opacity(isHovered ? 0.28 : 0.14), radius: 6, y: 2)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: isHovered)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
-            .onHover { isHovered = $0 }
-    }
-}
-
-private struct MenuBarFooterButtonStyle: ButtonStyle {
-    @State private var isHovered: Bool = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11.5, weight: .medium))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(configuration.isPressed ? Color.red.opacity(0.20) : (isHovered ? Color.primary.opacity(0.11) : Color.primary.opacity(0.05)))
-            )
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: isHovered)
-            .onHover { isHovered = $0 }
+        .defaultSize(width: 620, height: 480)
     }
 }
 
@@ -446,7 +204,7 @@ private struct SettingsView: View {
                     Label(L10n.tr("Оформление", "Appearance", lang: lang), systemImage: "paintbrush")
                 }
         }
-        .frame(width: 470, height: 390)
+        .frame(width: 490, height: 560)
     }
 
     private func generalTab(lang: AppLanguage) -> some View {
@@ -465,6 +223,112 @@ private struct SettingsView: View {
                 Toggle(L10n.tr("Передавать звук на Mac", "Forward audio to Mac", lang: lang), isOn: $appState.forwardAudio)
                 Toggle(L10n.tr("Не давать телефону засыпать", "Keep phone awake", lang: lang), isOn: $appState.stayAwake)
                 Toggle(L10n.tr("Отправка по Enter (Shift+Enter — новая строка)", "Send on Enter (Shift+Enter for newline)", lang: lang), isOn: $appState.sendOnEnter)
+                Toggle(L10n.tr("Фоновый Continuity Bridge (текст и фото)", "Background Continuity Bridge (Text & Images)", lang: lang), isOn: $appState.continuityBridgeEnabled)
+                    .onChange(of: appState.continuityBridgeEnabled) { _, _ in
+                        appState.syncContinuityBridgeState()
+                    }
+                Toggle(L10n.tr("Скрыть иконку из Dock", "Hide Dock Icon", lang: lang), isOn: $appState.hideDockIcon)
+                    .onChange(of: appState.hideDockIcon) { _, _ in
+                        appState.applyDockVisibility()
+                    }
+            }
+
+            Section(L10n.tr("MCP и макро-автоматизация", "MCP & Macro Automation", lang: lang)) {
+                Toggle(
+                    L10n.tr(
+                        "Self-Healing через Vision OCR при смене UI ID",
+                        "Self-Healing Vision OCR Fallback when UI ID changes",
+                        lang: lang
+                    ),
+                    isOn: $appState.mcpSelfHealingEnabled
+                )
+
+                Stepper(
+                    value: $appState.macroDefaultStepDelayMs,
+                    in: MCPExecutionDefaults.minStepDelayMs...MCPExecutionDefaults.maxStepDelayMs,
+                    step: 50
+                ) {
+                    HStack {
+                        Text(L10n.tr("Пауза между шагами макроса", "Default Macro Step Wait", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroDefaultStepDelayMs) ms")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Stepper(
+                    value: $appState.macroMaxSteps,
+                    in: MCPExecutionDefaults.minMaxSteps...MCPExecutionDefaults.maxMaxSteps,
+                    step: 1
+                ) {
+                    HStack {
+                        Text(L10n.tr("Макс. шагов в макросе", "Max Steps per Macro", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroMaxSteps)")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Stepper(
+                    value: $appState.macroMaxTotalWaitSeconds,
+                    in: MCPExecutionDefaults.minMaxDurationSeconds...MCPExecutionDefaults.maxMaxDurationSeconds,
+                    step: 1
+                ) {
+                    HStack {
+                        Text(L10n.tr("Лимит времени макроса", "Macro Duration Cap", lang: lang))
+                        Spacer()
+                        Text("\(appState.macroMaxTotalWaitSeconds) s")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if let device = appState.selectedDevice {
+                let currentProfile = appState.profile(for: device.id)
+                Section(L10n.tr("Профиль устройства: \(device.displayName)", "Device Profile: \(device.displayName)", lang: lang)) {
+                    Picker(L10n.tr("Макс. FPS", "Max FPS", lang: lang), selection: Binding(
+                        get: { currentProfile.maxFps },
+                        set: { newFps in
+                            var updated = currentProfile
+                            updated.maxFps = newFps
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("30 FPS").tag(30)
+                        Text("60 FPS").tag(60)
+                        Text("90 FPS").tag(90)
+                        Text("120 FPS").tag(120)
+                    }
+
+                    Picker(L10n.tr("Битрейт", "Bitrate", lang: lang), selection: Binding(
+                        get: { currentProfile.bitRate },
+                        set: { newBitrate in
+                            var updated = currentProfile
+                            updated.bitRate = newBitrate
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("4 Mbps").tag(4_000_000)
+                        Text("8 Mbps").tag(8_000_000)
+                        Text("16 Mbps").tag(16_000_000)
+                    }
+
+                    Picker(L10n.tr("Разрешение", "Resolution", lang: lang), selection: Binding(
+                        get: { currentProfile.maxSize },
+                        set: { newSize in
+                            var updated = currentProfile
+                            updated.maxSize = newSize
+                            appState.updateProfile(updated, for: device.id)
+                        }
+                    )) {
+                        Text("1080p").tag(1080)
+                        Text("1440p").tag(1440)
+                        Text("Native").tag(0)
+                    }
+                }
             }
         }
         .formStyle(.grouped)

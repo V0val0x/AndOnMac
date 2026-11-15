@@ -100,6 +100,50 @@ public final class FileBrowserService: @unchecked Sendable {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Validates a remote Android path against traversal, null-byte injection, and destructive root deletions.
+    public static func validateRemotePath(_ path: String, forDeletion: Bool = false) throws -> String {
+        guard !path.isEmpty,
+              path.hasPrefix("/"),
+              !path.contains("\0"),
+              !path.contains("\n"),
+              !path.contains("\r") else {
+            throw NSError(
+                domain: "FileBrowserService",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid remote path."]
+            )
+        }
+
+        let rawComponents = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !rawComponents.contains("."), !rawComponents.contains("..") else {
+            throw NSError(
+                domain: "FileBrowserService",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Path traversal segments are not allowed."]
+            )
+        }
+
+        let normalized = "/" + rawComponents.joined(separator: "/")
+
+        if forDeletion {
+            let protectedRoots: Set<String> = [
+                "/", "/sdcard", "/sdcard/DCIM", "/sdcard/Download", "/sdcard/Downloads",
+                "/sdcard/Pictures", "/sdcard/Movies", "/sdcard/Music", "/sdcard/Documents",
+                "/storage", "/storage/emulated", "/storage/emulated/0",
+                "/system", "/data", "/vendor", "/etc", "/proc", "/dev", "/mnt"
+            ]
+            if protectedRoots.contains(normalized) || rawComponents.count < 2 {
+                throw NSError(
+                    domain: "FileBrowserService",
+                    code: 403,
+                    userInfo: [NSLocalizedDescriptionKey: "Refusing to delete protected system or root directory: \(normalized)"]
+                )
+            }
+        }
+
+        return normalized
+    }
+
     /// Parses `stat -c "%F|%s|%Y|%n"` lines into sorted `AndroidFileItem` values.
     public static func parseStatListing(
         _ output: String,
@@ -180,46 +224,56 @@ public final class FileBrowserService: @unchecked Sendable {
         includeHidden: Bool = false,
         sortOrder: FileSortOrder = .name
     ) async throws -> [AndroidFileItem] {
-        let escaped = Self.shellEscape(path)
+        let safePath = try Self.validateRemotePath(path)
+        let escaped = Self.shellEscape(safePath)
         let cmd = "find \(escaped) -maxdepth 1 -mindepth 1 -exec stat -c '%F|%s|%Y|%n' {} + 2>/dev/null"
         let output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", cmd], timeoutSeconds: 10.0)
         return Self.parseStatListing(output, includeHidden: includeHidden, sortOrder: sortOrder)
     }
 
     public func createDirectory(serial: String, path: String) async throws {
-        let escaped = Self.shellEscape(path)
+        let safePath = try Self.validateRemotePath(path)
+        let escaped = Self.shellEscape(safePath)
         _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "mkdir -p \(escaped)"], timeoutSeconds: 5.0)
     }
 
     public func renameItem(serial: String, from oldPath: String, to newPath: String) async throws {
-        let cmd = "mv \(Self.shellEscape(oldPath)) \(Self.shellEscape(newPath))"
+        let safeOld = try Self.validateRemotePath(oldPath, forDeletion: true)
+        let safeNew = try Self.validateRemotePath(newPath)
+        let cmd = "mv \(Self.shellEscape(safeOld)) \(Self.shellEscape(safeNew))"
         _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", cmd], timeoutSeconds: 5.0)
     }
 
     public func deleteItem(serial: String, path: String) async throws {
-        let cmd = "rm -rf \(Self.shellEscape(path))"
+        let safePath = try Self.validateRemotePath(path, forDeletion: true)
+        let cmd = "rm -rf \(Self.shellEscape(safePath))"
         _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", cmd], timeoutSeconds: 8.0)
     }
 
     public func pullItem(serial: String, remotePath: String, to localURL: URL) async throws {
+        let safePath = try Self.validateRemotePath(remotePath)
         _ = try await ADBService.shared.execute(
-            arguments: ["-s", serial, "pull", remotePath, localURL.path],
+            arguments: ["-s", serial, "pull", safePath, localURL.path],
             timeoutSeconds: 120.0
         )
     }
 
     public func pullToCache(serial: String, item: AndroidFileItem) async throws -> URL {
-        let localURL = tempCacheDir.appendingPathComponent(item.name)
+        let safeName = PhotoTransferService.sanitizedCacheFilename(item.name)
+        let localURL = tempCacheDir.appendingPathComponent(safeName)
         try? fileManager.removeItem(at: localURL)
         try await pullItem(serial: serial, remotePath: item.path, to: localURL)
         return localURL
     }
 
     public func pushItems(serial: String, localURLs: [URL], to remoteDirectory: String) async -> (succeeded: Int, failed: Int) {
+        guard let safeRemoteDir = try? Self.validateRemotePath(remoteDirectory) else {
+            return (0, localURLs.count)
+        }
         var succeeded = 0
         var failed = 0
         for url in localURLs {
-            let dest = (remoteDirectory as NSString).appendingPathComponent(url.lastPathComponent)
+            let dest = (safeRemoteDir as NSString).appendingPathComponent(url.lastPathComponent)
             do {
                 _ = try await ADBService.shared.execute(
                     arguments: ["-s", serial, "push", url.path, dest],
@@ -229,7 +283,7 @@ public final class FileBrowserService: @unchecked Sendable {
                 _ = try? await ADBService.shared.execute(arguments: [
                     "-s", serial, "shell",
                     "content", "call", "--method", "scan_file", "--uri", "content://media",
-                    "--extra", "file:--string=\(dest)"
+                    "--extra", ADBService.shellQuote("file:--string=\(dest)")
                 ], timeoutSeconds: 3.0)
                 succeeded += 1
             } catch {

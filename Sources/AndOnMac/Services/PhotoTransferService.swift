@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import ImageIO
 import AVFoundation
+import UserNotifications
 
 public enum MediaFolderFilter: String, CaseIterable, Identifiable, Sendable {
     case all
@@ -44,10 +45,41 @@ public struct PhotoItem: Identifiable, Hashable, Sendable {
     }
 }
 
+private actor AsyncSemaphore {
+    private let limit: Int
+    private var current = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func wait() async {
+        if current < limit {
+            current += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            current = max(0, current - 1)
+        }
+    }
+}
+
 public final class PhotoTransferService: @unchecked Sendable {
     public static let shared = PhotoTransferService()
-    
+    public static let maxCacheBytes: Int64 = 200 * 1024 * 1024
+
     private let fileManager = FileManager.default
+    private let downloadSemaphore = AsyncSemaphore(limit: 4)
     private var cacheDir: URL {
         let urls = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
         let dir = urls[0].appendingPathComponent("com.andonmac.cache/photos", isDirectory: true)
@@ -160,22 +192,72 @@ public final class PhotoTransferService: @unchecked Sendable {
         return NSImage(contentsOf: url)
     }
     
+    /// Sanitizes a remote filename so it cannot escape the local cache directory.
+    public static func sanitizedCacheFilename(_ name: String) -> String {
+        let base = (name as NSString).lastPathComponent
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\0", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty || base == "." || base == ".." {
+            return "file_\(UUID().uuidString)"
+        }
+        return base
+    }
+
     /// Pulls a photo from Android to local Mac cache for drag-and-drop or preview
     public func downloadPhoto(item: PhotoItem, serial: String) async -> URL? {
-        let localDest = cacheDir.appendingPathComponent(item.name)
+        let safeName = Self.sanitizedCacheFilename(item.name)
+        let localDest = cacheDir.appendingPathComponent(safeName)
         if fileManager.fileExists(atPath: localDest.path) {
             return localDest
         }
-        
+
+        await downloadSemaphore.wait()
+        defer { Task { await downloadSemaphore.signal() } }
+
+        if fileManager.fileExists(atPath: localDest.path) {
+            return localDest
+        }
+
         do {
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "pull", item.remotePath, localDest.path])
             if fileManager.fileExists(atPath: localDest.path) {
+                pruneCacheIfNeeded(maxBytes: Self.maxCacheBytes)
                 return localDest
             }
         } catch {
             print("Failed to pull photo: \(error)")
         }
         return nil
+    }
+
+    /// Evicts oldest cached media files when total cache size exceeds `maxBytes`.
+    public func pruneCacheIfNeeded(maxBytes: Int64 = maxCacheBytes) {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: cacheDir,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var entries: [(url: URL, size: Int64, date: Date)] = []
+        var totalSize: Int64 = 0
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true else { continue }
+            let size = Int64(values.fileSize ?? 0)
+            let date = values.contentModificationDate ?? .distantPast
+            totalSize += size
+            entries.append((url, size, date))
+        }
+
+        guard totalSize > maxBytes else { return }
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            guard totalSize > maxBytes else { break }
+            if (try? fileManager.removeItem(at: entry.url)) != nil {
+                totalSize -= entry.size
+            }
+        }
     }
     
     /// Pushes files from Mac into Android Gallery / Downloads and invokes MediaScanner
@@ -186,36 +268,44 @@ public final class PhotoTransferService: @unchecked Sendable {
         let remoteFolder = "/sdcard/Pictures/AndOnMac"
         _ = try? await ADBService.shared.execute(arguments: ["-s", serial, "shell", "mkdir", "-p", remoteFolder])
         
+        let mediaExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp", "gif", "mp4", "mov"]
         var pushedCount = 0
+        var apkInstalledCount = 0
         for url in urls {
             let filename = url.lastPathComponent
-            let isAPK = filename.lowercased().hasSuffix(".apk")
+            let ext = url.pathExtension.lowercased()
+            let isAPK = ext == "apk"
             
             if isAPK {
-                // Install APK directly
+                // Install APK directly with native macOS progress/completion notification
+                postAPKNotification(title: L10n.tr("Установка APK...", "Installing APK..."), body: filename)
                 do {
-                    _ = try await ADBService.shared.execute(arguments: ["-s", serial, "install", "-r", url.path])
+                    _ = try await ADBService.shared.execute(arguments: ["-s", serial, "install", "-r", url.path], timeoutSeconds: 60.0)
                     pushedCount += 1
+                    apkInstalledCount += 1
+                    postAPKNotification(title: L10n.tr("APK установлен", "APK Installed"), body: filename)
                 } catch {
                     print("Failed to install APK \(filename): \(error)")
+                    postAPKNotification(title: L10n.tr("Ошибка установки APK", "APK Install Failed"), body: filename)
                 }
             } else {
-                let dest = "\(remoteFolder)/\(filename)"
+                let targetFolder = mediaExtensions.contains(ext) ? remoteFolder : "/sdcard/Download"
+                let dest = "\(targetFolder)/\(filename)"
                 do {
                     _ = try await ADBService.shared.execute(arguments: ["-s", serial, "push", url.path, dest])
-                    // Scan file so it shows in Gallery / Google Photos immediately
+                    // Scan file so it shows in Gallery / Files immediately
                     // 1. Modern Android (11-15) via MediaProvider content provider
                     _ = try? await ADBService.shared.execute(arguments: [
                         "-s", serial, "shell",
                         "content", "call", "--method", "scan_file", "--uri", "content://media",
-                        "--extra", "file:--string=\(dest)"
+                        "--extra", ADBService.shellQuote("file:--string=\(dest)")
                     ])
                     // 2. Package-explicit broadcast fallback for Android 7-10
                     let uriString = URL(fileURLWithPath: dest).absoluteString
                     _ = try? await ADBService.shared.execute(arguments: [
                         "-s", serial, "shell",
                         "am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                        "-d", uriString,
+                        "-d", ADBService.shellQuote(uriString),
                         "-p", "com.android.providers.media"
                     ])
                     pushedCount += 1
@@ -226,9 +316,22 @@ public final class PhotoTransferService: @unchecked Sendable {
         }
         
         if pushedCount > 0 {
-            return (true, L10n.tr("Передано в Галерею: \(pushedCount)", "Sent to Gallery: \(pushedCount)"))
+            if apkInstalledCount > 0 && apkInstalledCount == pushedCount {
+                return (true, L10n.tr("Установлено APK: \(apkInstalledCount)", "Installed APK: \(apkInstalledCount)"))
+            }
+            return (true, L10n.tr("Передано на устройство: \(pushedCount)", "Sent to device: \(pushedCount)"))
         } else {
             return (false, L10n.tr("Ошибка при передаче файлов", "Failed to transfer files"))
         }
+    }
+
+    private func postAPKNotification(title: String, body: String) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 }

@@ -10,6 +10,7 @@ public struct PhoneMirrorFrameView: View {
     @State private var isDraggingHomeBar: Bool = false
     @State private var dragOffset: CGFloat = 0
     @State private var pulseAnimation: Bool = false
+    @State private var homeBarPulse: Bool = false
 
     private var showTopHUD: Bool { isHoveringTop || isHoveringTopBar }
     private var showHomeBar: Bool { isHoveringHome || isHoveringHomePill || isDraggingHomeBar }
@@ -58,8 +59,13 @@ public struct PhoneMirrorFrameView: View {
                     liveScreenView
                 } else if appState.showPairingSheet {
                     WirelessPairingView(appState: appState)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .move(edge: .bottom).combined(with: .opacity)
+                        ))
                 } else {
                     standbyScreenView
+                        .transition(.opacity)
                 }
             }
         }
@@ -71,6 +77,7 @@ public struct PhoneMirrorFrameView: View {
             // Live Video Stream decoded via VideoToolbox
             ScrcpyVideoView(
                 serial: appState.selectedDevice?.id,
+                screenClipRadius: appState.effectiveFrameStyle.screenClipRadius * appState.windowScale.multiplier,
                 onFileDrop: { urls in
                     Task {
                         if let serial = appState.selectedDevice?.id {
@@ -86,25 +93,29 @@ public struct PhoneMirrorFrameView: View {
                 },
                 onHoverZonesChanged: { isTop, isBottom in
                     if self.isHoveringTop != isTop || self.isHoveringHome != isBottom {
-                        withAnimation(.easeInOut(duration: 0.15)) {
+                        withAnimation(AndMotion.hudSpring) {
                             self.isHoveringTop = isTop
                             self.isHoveringHome = isBottom
                         }
                     }
+                },
+                onHomeGestureTriggered: {
+                    triggerHomeBarPulse()
                 }
             )
             
-            // Sequoia Top Hover HUD & Home Bar (Fades in smoothly only when hovering near top/bottom)
+            // Sequoia Top Hover HUD & Home Bar (overlay prevents expanding ZStack/NSWindow width)
             VStack {
                 topHoverHUDView
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 8)
                     .padding(.top, 6)
                     .onHover { hovering in
                         isHoveringTopBar = hovering
                     }
                     .opacity(showTopHUD ? 1.0 : 0.0)
+                    .offset(y: showTopHUD ? 0 : -4)
                     .allowsHitTesting(showTopHUD)
-                    .animation(.easeInOut(duration: 0.15), value: showTopHUD)
+                    .animation(AndMotion.hudSpring, value: showTopHUD)
                 
                 Spacer()
                 
@@ -112,9 +123,59 @@ public struct PhoneMirrorFrameView: View {
                     .padding(.bottom, 6)
                     .opacity(showHomeBar ? 1.0 : 0.0)
                     .allowsHitTesting(showHomeBar)
-                    .animation(.easeInOut(duration: 0.15), value: showHomeBar)
+                    .animation(AndMotion.hudSpring, value: showHomeBar)
             }
-            
+
+            // On-Device Apple Vision OCR Drag Selection Overlay
+            if appState.isOCROverlayActive {
+                ScreenOCROverlayView(appState: appState)
+                    .transition(.opacity)
+            }
+
+            // Visual-to-MCP Bridge Capture Overlay
+            if appState.isVisualMCPCaptureActive {
+                VisualMCPCaptureOverlayView(appState: appState)
+                    .transition(.opacity)
+            }
+
+            // Live AI Agent Activity HUD + Instant Kill-Switch
+            if let activity = appState.mcpAgentActivity {
+                VStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform")
+                            .symbolRenderingMode(.hierarchical)
+                            .symbolEffect(.variableColor.iterative, isActive: true)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.cyan)
+                        Text(activity)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+
+                        Button {
+                            appState.toggleMCPAgentPause()
+                        } label: {
+                            Text(L10n.tr("Пауза", "Pause", lang: appState.lang))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.orange.opacity(0.18))
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.45, shadowRadius: 10)
+                    .padding(.top, 44)
+                    .transition(.move(edge: .top).combined(with: .scale(scale: 0.94)).combined(with: .opacity))
+
+                    Spacer()
+                }
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: appState.mcpAgentActivity)
+            }
+
             // Photo Transfer Toast Alert
             if let notice = appState.photoTransferNotice {
                 VStack {
@@ -127,14 +188,23 @@ public struct PhoneMirrorFrameView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(20)
-                    .shadow(radius: 8)
+                    .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.25, shadowRadius: 10)
                     .padding(.top, 44)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.move(edge: .top).combined(with: .scale(scale: 0.94)).combined(with: .opacity))
                     
                     Spacer()
                 }
+                .animation(AndMotion.hudSpring, value: appState.photoTransferNotice)
+            }
+
+            // Toggleable Metal-style 120Hz Performance HUD
+            if appState.showPerformanceHUD && appState.isMirroring {
+                PerformanceHUDView()
+                    .padding(.bottom, 22)
+                    .padding(.leading, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
             }
             
             // Phone Screen Off / Locked Overlay (1-in-1 with macOS Sequoia iPhone Mirroring)
@@ -199,7 +269,7 @@ public struct PhoneMirrorFrameView: View {
     
     // MARK: - Top Hover HUD (macOS Sequoia style)
     private var topHoverHUDView: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             // Red Close / Stop button
             Button {
                 appState.toggleMirroring()
@@ -217,11 +287,11 @@ public struct PhoneMirrorFrameView: View {
             .buttonStyle(.plain)
             .help(L10n.tr("Завершить трансляцию (Cmd+W)", "Stop mirroring (Cmd+W)", lang: appState.lang))
             
-            Spacer()
+            Spacer(minLength: 2)
             
             // Glass action capsule
             if isHoveringTop {
-                HStack(spacing: 12) {
+                HStack(spacing: 2) {
                     Button {
                         appState.triggerAppSwitch()
                     } label: {
@@ -229,17 +299,18 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Недавние приложения (Cmd+2)", "Recent Apps (Cmd+2)", lang: appState.lang))
                     
                     Button {
                         appState.triggerHome()
+                        triggerHomeBarPulse()
                     } label: {
                         Image(systemName: "circle")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Домой (Cmd+1)", "Home (Cmd+1)", lang: appState.lang))
                     
                     Button {
@@ -249,11 +320,11 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Уведомления (Cmd+3)", "Notifications (Cmd+3)", lang: appState.lang))
                     
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(AndMotion.drawerSpring) {
                             appState.openDrawer(mode: .gallery)
                         }
                     } label: {
@@ -261,11 +332,11 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .gallery ? .cyan : .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Медиатека и перенос фото (Cmd+4)", "Gallery & Photo Transfer (Cmd+4)", lang: appState.lang))
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(AndMotion.drawerSpring) {
                             appState.openDrawer(mode: .files)
                         }
                     } label: {
@@ -273,9 +344,29 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(appState.showPhotoDrawer && appState.drawerMode == .files ? .cyan : .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Файловый менеджер (Cmd+5)", "File Manager (Cmd+5)", lang: appState.lang))
                     
+                    Button {
+                        appState.triggerScreenOCR()
+                    } label: {
+                        Image(systemName: "text.viewfinder")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(appState.isOCROverlayActive ? .cyan : .white)
+                    }
+                    .buttonStyle(AndonHUDIconButtonStyle())
+                    .help(L10n.tr("Текст с экрана (Cmd+Shift+X)", "Grab Text from Screen (Cmd+Shift+X)", lang: appState.lang))
+
+                    Button {
+                        appState.triggerVisualMCPCapture()
+                    } label: {
+                        Image(systemName: "plus.viewfinder")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(appState.isVisualMCPCaptureActive ? .cyan : .white)
+                    }
+                    .buttonStyle(AndonHUDIconButtonStyle())
+                    .help(L10n.tr("Создать MCP-инструмент (Cmd+Shift+M)", "Create MCP Tool (Cmd+Shift+M)", lang: appState.lang))
+
                     Button {
                         appState.triggerPower()
                     } label: {
@@ -283,21 +374,19 @@ public struct PhoneMirrorFrameView: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AndonHUDIconButtonStyle())
                     .help(L10n.tr("Блокировка / Экран (Cmd+P)", "Lock / Screen (Cmd+P)", lang: appState.lang))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
-                .shadow(color: Color.black.opacity(0.28), radius: 8, y: 3)
-                .transition(.scale.combined(with: .opacity))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .andonGlassCapsule(cornerRadius: AndRadius.pill, tintOpacity: 0.28, shadowRadius: 10)
+                .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
             
-            Spacer()
+            Spacer(minLength: 2)
             
             // Status: Language / Battery / Wifi
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 if !appState.currentLanguageBadge.isEmpty {
                     Text(appState.currentLanguageBadge)
                         .font(.system(size: 9, weight: .black, design: .rounded))
@@ -677,6 +766,17 @@ public struct PhoneMirrorFrameView: View {
         }
     }
     
+    private func triggerHomeBarPulse() {
+        withAnimation(AndMotion.homePulseSpring) {
+            homeBarPulse = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            withAnimation(AndMotion.homePulseSpring) {
+                homeBarPulse = false
+            }
+        }
+    }
+
     public enum HomeBarGestureAction: Equatable, Sendable {
         case none
         case home
@@ -693,21 +793,33 @@ public struct PhoneMirrorFrameView: View {
         return .none
     }
 
-    // MARK: - Bottom Home Bar (Interactive AppKit Control)
+    // MARK: - Bottom Home Bar (Interactive AppKit Control + Trackpad Scroll Support)
     private func bottomHomeBarView(interactive: Bool) -> some View {
         ZStack {
+            if interactive {
+                BottomBarScrollCatcher(
+                    onScrollUpHome: {
+                        appState.triggerHome()
+                        triggerHomeBarPulse()
+                    },
+                    onScrollUpAppSwitcher: {
+                        appState.triggerAppSwitch()
+                    }
+                )
+            }
             Capsule()
-                .fill(Color.white.opacity(showHomeBar ? 0.95 : 0.6))
+                .fill(Color.white.opacity(homeBarPulse ? 1.0 : (showHomeBar ? 0.95 : 0.6)))
                 .frame(width: 130, height: 5)
-                .shadow(color: .black.opacity(0.5), radius: 2)
-                .offset(y: dragOffset)
+                .shadow(color: homeBarPulse ? Color.white.opacity(0.65) : .black.opacity(0.5), radius: homeBarPulse ? 6 : 2)
+                .scaleEffect(x: homeBarPulse ? 1.08 : 1.0, y: homeBarPulse ? 1.2 : 1.0)
+                .offset(y: homeBarPulse ? -9 : dragOffset)
                 .allowsHitTesting(false)
 
             if interactive {
                 HomeBarInteractiveRepresentable(
                     onHoverChanged: { hovering in
                         if isHoveringHomePill != hovering {
-                            withAnimation(.easeInOut(duration: 0.15)) {
+                            withAnimation(AndMotion.hudSpring) {
                                 isHoveringHomePill = hovering
                             }
                         }
@@ -728,6 +840,7 @@ public struct PhoneMirrorFrameView: View {
                             appState.triggerAppSwitch()
                         case .home:
                             appState.triggerHome()
+                            triggerHomeBarPulse()
                         case .none:
                             break
                         }
@@ -831,5 +944,129 @@ public final class HomeBarInteractiveNSView: NSView {
                 break
             }
         }
+    }
+}
+
+/// Captures click-free trackpad upward scroll swipes directly over the bottom Home bar capsule.
+private struct BottomBarScrollCatcher: NSViewRepresentable {
+    let onScrollUpHome: () -> Void
+    let onScrollUpAppSwitcher: () -> Void
+
+    func makeNSView(context: Context) -> ScrollCatcherNSView {
+        let view = ScrollCatcherNSView()
+        view.onScrollUpHome = onScrollUpHome
+        view.onScrollUpAppSwitcher = onScrollUpAppSwitcher
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollCatcherNSView, context: Context) {
+        nsView.onScrollUpHome = onScrollUpHome
+        nsView.onScrollUpAppSwitcher = onScrollUpAppSwitcher
+    }
+
+    final class ScrollCatcherNSView: NSView {
+        var onScrollUpHome: (() -> Void)?
+        var onScrollUpAppSwitcher: (() -> Void)?
+        private var accumulatedUp: CGFloat = 0
+        private var accumulatedX: CGFloat = 0
+        private var triggeredHome: Bool = false
+        private var triggeredAppSwitcher: Bool = false
+
+        override func scrollWheel(with event: NSEvent) {
+            guard event.hasPreciseScrollingDeltas else {
+                super.scrollWheel(with: event)
+                return
+            }
+            guard event.momentumPhase == [] else {
+                accumulatedUp = 0
+                accumulatedX = 0
+                triggeredHome = false
+                triggeredAppSwitcher = false
+                return
+            }
+
+            let upwardDelta = event.isDirectionInvertedFromDevice ? -event.scrollingDeltaY : event.scrollingDeltaY
+            switch event.phase {
+            case .began:
+                accumulatedUp = upwardDelta
+                accumulatedX = event.scrollingDeltaX
+                triggeredHome = false
+                triggeredAppSwitcher = false
+            case .changed, []:
+                accumulatedUp += upwardDelta
+                accumulatedX += event.scrollingDeltaX
+                if !triggeredHome && ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                    startNormalizedY: 0.96,
+                    accumulatedUpwardDelta: accumulatedUp,
+                    horizontalDelta: accumulatedX
+                ) {
+                    triggeredHome = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onScrollUpHome?()
+                    }
+                }
+                if !triggeredAppSwitcher && ScrcpyDisplayNSView.shouldTriggerScrollAppSwitcher(
+                    startNormalizedY: 0.96,
+                    accumulatedUpwardDelta: accumulatedUp,
+                    horizontalDelta: accumulatedX
+                ) {
+                    triggeredAppSwitcher = true
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onScrollUpAppSwitcher?()
+                    }
+                }
+            case .ended, .cancelled:
+                accumulatedUp = 0
+                accumulatedX = 0
+                triggeredHome = false
+                triggeredAppSwitcher = false
+            default:
+                break
+            }
+        }
+    }
+}
+
+private struct PerformanceHUDView: View {
+    @ObservedObject private var perf = PerformanceEngine.shared
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(perf.liveFPS >= 90 ? Color.green : (perf.liveFPS >= 45 ? Color.cyan : Color.orange))
+                .frame(width: 6, height: 6)
+            Text("\(perf.liveFPS) FPS")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text("\(perf.rttMs) ms")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(perf.rttMs > 120 ? .orange : .cyan)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text(perf.activeCodec.rawValue)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(.green)
+            Text("•")
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.4))
+            Text(perf.isABRReduced ? "\(perf.transportLabel) ABR" : perf.transportLabel)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(perf.isABRReduced ? .orange : .white.opacity(0.85))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial)
+        .background(Color.black.opacity(0.55))
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.75)
+        )
     }
 }

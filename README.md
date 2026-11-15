@@ -42,6 +42,48 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 ## Features Implemented in This Codebase
 
+### Signature Standout Features (Beyond Raw `scrcpy` & Competing Wrappers)
+- **120Hz ProMotion Apple Silicon Optimization:** Hardware-accelerated `HEVC` (`--max-fps=120`, 16 Mbps) with automatic `H.264` fallback, zero-copy `CAMetalLayer` + `CVMetalTextureCache` + `120Hz CADisplayLink` rendering, macOS `latencyCritical` activity locking, 500ms wireless RTT/jitter probing with Adaptive Bitrate (ABR), and a toggleable **Metal Performance HUD**.
+- **QR-Code Wireless Pairing & Silent USB-to-Wi-Fi Handoff:** Native Android 11+ QR code pairing (`NWListener` + `_adb-tls-pairing._tcp` Bonjour + `CoreImage`), silent `adb tcpip 5555` promotion on USB plug-in, and automatic wake-from-sleep reconnection.
+- **Router-Isolation Bypass (Direct Hotspot & Bluetooth PAN):** Automatically detects AP/Client Isolation on public/university/corporate Wi-Fi and offers a 1-click switch to **Direct Hotspot** or **Bluetooth PAN** (`192.168.44.1:5555`).
+- **Standalone Android App Windows (Virtual Displays):** Search and launch any launchable Android app (both user-installed and pre-installed/system apps like YouTube, Chrome, and Settings) directly from the Menu Bar (`Launch Android App`) into its own native-style macOS window (`scrcpy --new-display --start-app=...`) while the physical phone screen stays off.
+- **Background Apple Continuity Bridge (Text + Image Sync):** Lightweight background `ContinuityBridge` runs even when the mirror window is closed — syncing copied Mac text and **copied images/screenshots** (`NSPasteboard` PNG/TIFF → `/sdcard/Pictures/AndOnMac/` + MediaScanner) straight to Android.
+- **On-Device Apple Vision Screen OCR (`Cmd+Shift+X`):** Press `Cmd+Shift+X` or click *"Grab Text from Screen"*, drag over any unselectable text on the mirrored phone display, and extract it locally on Apple Silicon Neural Engine via `VNRecognizeTextRequest` straight into your Mac clipboard.
+- **Semantic Screen Memory ("Recall", `Cmd+Shift+F`):** Opt-in, 100% local screen history indexer that hashes frames every 10s, runs Apple Silicon Vision OCR inside `autoreleasepool` only when content changes, stores text + compressed thumbnails in SQLite **FTS5** with 7-day / 250 MB retention, and provides a floating Spotlight-style search bar (`Cmd+Shift+F`).
+- **Persistent macOS Menu Bar Utility:** Control Center-style Menu Bar popover with live battery & Wi-Fi/USB badge, 1-click toggles (*Screen Off*, *Stay Awake*, *Audio Forwarding*, *Record Screen*), mDNS auto-discovered Wi-Fi devices, per-device quality profiles, and *Hide Dock Icon* mode.
+
+---
+
+## 🤖 AI Agent Control (Built-in MCP Server)
+
+AndOnMac ships with a zero-dependency **Model Context Protocol (MCP)** server (`protocolVersion: "2024-11-05"`) so Claude Desktop, Cursor, Windsurf, and local AI agents can inspect and control your Android device with a live visual HUD and an instant Menu Bar **Pause / Revoke Agent** kill-switch.
+
+### Claude Desktop / Cursor Configuration (`stdio`)
+Click **Copy MCP Config** in the AndOnMac Menu Bar, or add this to your `claude_desktop_config.json` / Cursor MCP config:
+
+```json
+{
+  "mcpServers": {
+    "andonmac": {
+      "command": "/Applications/AndOnMac.app/Contents/MacOS/AndOnMac",
+      "args": ["--mcp-stdio"]
+    }
+  }
+}
+```
+
+You can also toggle **AI Agent Bridge (MCP)** in the Menu Bar to run the embedded local HTTP/SSE server on `http://127.0.0.1:8765/sse`.
+
+### Exposed MCP Tools
+- `android_list_devices` · `android_get_ui_tree` (compact XML-to-JSON with `center_x`/`center_y`) · `android_screenshot` (auto-downscaled PNG)
+- `android_tap_element` (coordinates or semantic `text`/`resource_id`/`content_desc`) · `android_swipe` · `android_type_text` · `android_keyevent` · `android_launch_app` · `android_get_notifications`
+- **Visual-to-MCP Bridge & Self-Healing Multi-Step Macros (`Cmd+Shift+M` / Menu Bar → *Create MCP Tool*):** Freeze the mirrored frame to capture a single UI element (`resource-id`/`class`/`text`) or toggle **Record Macro** to stitch multi-step workflows with dynamic `{{parameter}}` placeholders (e.g. `{{message_body}}`) and configurable per-tool / General Settings waits & step caps. Includes **3-tier Self-Healing Selectors** (if `resource-id` disappears after an app update, AndOnMac scans the live frame with Apple Vision OCR, logs `"Semantic ID failed, healed via Vision OCR"`, notifies you, and taps accurately). Manage, configure, toggle, export, and import schemas in **MCP Tool Hub** with automatic LiveReload (`notifications/tools/list_changed`).
+
+**Example Prompts:**
+- *"Check my Android notifications for the latest 2FA code and paste it here."*
+- *"Open WhatsApp on my phone and reply 'On my way!' to Alex."*
+- *"Take a screenshot of my Pixel and explain what's blocking the checkout screen."*
+
 - **Hardware-Accelerated 60 FPS Mirroring (`ScrcpyClient` + VideoToolbox):** Streams raw H.264 Annex-B frames from `scrcpy-server` over local ADB-forwarded TCP sockets and decodes them directly via `VTDecompressionSession` inside a frameless `NSView` (`ScrcpyDisplayNSView`) — no separate SDL video window in your Dock.
 - **Programmatic Vector Device Frames & Ambilight (`DeviceFrameRenderer` + `AmbilightEngine`):** Fingerprints connected Android hardware (`ro.product.model` / `ro.product.vendor`) and renders resolution-independent vector bezels, calibrated camera cutouts, and Metal/CoreImage (`CIAreaAverage`) adaptive edge lighting for **Google Pixel 11 Pro / 11 / 10a / 8 / 9 / 10**, **Samsung Galaxy S24/S25 & Ultra**, **Xiaomi**, **Nothing Phone (2)**, and **OnePlus 12** — with a **Pro Display** rounded fallback for unknown models and customizable toggles in **Settings → Appearance**.
 - **Native macOS Vibrancy & Fluid Spring Transitions:** Floating HUD capsules, overlays, pairing views, and the Menu Bar popover use adaptive `NSVisualEffectView` / `.ultraThinMaterial` surfaces, while window scale presets (`75% / 100% / 125%`) and portrait/landscape rotations animate with spring physics.
@@ -71,17 +113,28 @@ A native SwiftUI & VideoToolbox macOS application for mirroring, controlling, an
 
 ## Installation & Quick Start
 
-### Option 1: GitHub Releases (Recommended)
-1. Download the latest `AndOnMac.dmg` from [**GitHub Releases**](https://github.com/V0val0x/AndOnMac/releases).
-2. Open `AndOnMac.dmg` and drag **AndOnMac.app** to `/Applications`.
-3. Connect your Android phone via USB-C (with **USB Debugging** enabled) or pair wirelessly via **Settings → Developer Options → Wireless Debugging**.
-
-### Option 2: Homebrew Cask Formula
-A ready-to-use Homebrew Cask definition is included at [`packaging/Casks/andonmac.rb`](./packaging/Casks/andonmac.rb):
+### Option 1: Homebrew Tap (Recommended — Zero Gatekeeper Hassle)
+Because **AndOnMac** is completely free and open-source, it is distributed without a \$99/year Apple Developer ID certificate. Installing via the official Homebrew Tap automatically clears macOS Gatekeeper quarantine so the app launches right away:
 
 ```bash
-brew install --cask ./packaging/Casks/andonmac.rb
+brew install --cask V0val0x/andonmac/andonmac
 ```
+
+To update later:
+```bash
+brew upgrade --cask andonmac
+```
+
+### Option 2: GitHub Releases (`.dmg`)
+1. Download the latest `AndOnMac.dmg` from [**GitHub Releases**](https://github.com/V0val0x/AndOnMac/releases).
+2. Open `AndOnMac.dmg` and drag **AndOnMac.app** into `/Applications`.
+3. **Bypass macOS Gatekeeper** (required once for apps without a paid Apple Developer signature):
+   * **Via Terminal (fastest):**
+     ```bash
+     xattr -cr /Applications/AndOnMac.app
+     ```
+   * **Via System Settings (macOS Sequoia / Sonoma):** Try opening `AndOnMac`, click **Done**/**Cancel** on the warning, then open **System Settings → Privacy & Security → Open Anyway**.
+4. Connect your Android phone via USB-C (with **USB Debugging** enabled) or pair wirelessly via **Settings → Developer Options → Wireless Debugging**.
 
 ### Option 3: Build from Source (macOS 14+, Swift 5.9+ / 6.x)
 ```bash
@@ -95,6 +148,17 @@ swift test
 chmod +x scripts/*.sh
 ./scripts/create_dmg.sh
 ```
+
+---
+
+## Security & ADB Privacy Model
+
+AndOnMac communicates **100% locally** between your Mac and your Android device — zero cloud servers, zero analytics, zero telemetry:
+
+* **Explicit Phone Authorization (RSA / TLS):** Both USB Debugging and Android 11+ Wireless Debugging (`_adb-tls-pairing._tcp` / `_adb-tls-connect._tcp`) require you to physically unlock your phone and approve your Mac's RSA fingerprint.
+* **No Shell / Flag Injection:** Device serials and `host:port` endpoints are strictly validated before invoking `adb`, and subprocesses use argument arrays (`Process.arguments`) rather than shell interpolation.
+* **Accidental Data-Loss & Traversal Protection:** Remote file operations reject `..` traversal, null bytes, and destructive deletions (`rm -rf`) on protected Android system and media roots (`/`, `/sdcard`, `/sdcard/DCIM`, `/sdcard/Download`, `/system`).
+* **Bounded Memory & Local Listeners:** The local notification listener (`:58241`) rejects payloads over 64 KB and truncates untrusted text; the H.264 stream parser caps buffers at 16 MB; and the photo cache auto-prunes at 200 MB.
 
 ---
 

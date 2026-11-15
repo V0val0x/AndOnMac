@@ -19,6 +19,9 @@ public enum PairingTab: String, CaseIterable, Identifiable {
 public struct WirelessPairingView: View {
     @ObservedObject var appState: AppState
     @ObservedObject var discovery = DiscoveryService.shared
+    @ObservedObject private var routerBypass = RouterlessBypassService.shared
+    @ObservedObject private var qrPairing = QRPairingService.shared
+    @Environment(\.dismiss) private var dismiss
     
     @State private var selectedTab: PairingTab = .wifiPin
     
@@ -42,6 +45,7 @@ public struct WirelessPairingView: View {
     // Status feedback
     @State private var resultMessage: String?
     @State private var isSuccess: Bool = false
+    @Namespace private var pairingTabNamespace
     
     public init(appState: AppState) {
         self.appState = appState
@@ -49,7 +53,10 @@ public struct WirelessPairingView: View {
     
     private func closePairing() {
         focusedField = nil
-        appState.showPairingSheet = false
+        withAnimation(AndMotion.drawerSpring) {
+            appState.showPairingSheet = false
+        }
+        dismiss()
     }
     
     public var body: some View {
@@ -171,7 +178,7 @@ public struct WirelessPairingView: View {
                 HStack(spacing: 4) {
                     ForEach(PairingTab.allCases) { tab in
                         Button {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            withAnimation(AndMotion.pillSlide) {
                                 selectedTab = tab
                             }
                         } label: {
@@ -195,26 +202,29 @@ public struct WirelessPairingView: View {
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity)
                             .background(
-                                selectedTab == tab
-                                    ? Color.white.opacity(0.18)
-                                    : Color.white.opacity(0.04)
+                                ZStack {
+                                    if selectedTab == tab {
+                                        RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                            .fill(Color.white.opacity(0.18))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.75)
+                                            )
+                                            .matchedGeometryEffect(id: "pairingTabPill", in: pairingTabNamespace)
+                                    } else {
+                                        RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous)
+                                            .fill(Color.white.opacity(0.04))
+                                    }
+                                }
                             )
                             .foregroundColor(selectedTab == tab ? .white : .white.opacity(0.6))
-                            .cornerRadius(16)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(
-                                        selectedTab == tab ? Color.white.opacity(0.25) : Color.clear,
-                                        lineWidth: 1
-                                    )
-                            )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(AndonTactileScaleButtonStyle(pressedScale: 0.96))
                     }
                 }
                 .padding(3)
                 .background(Color.white.opacity(0.04))
-                .cornerRadius(18)
+                .clipShape(RoundedRectangle(cornerRadius: AndRadius.pill, style: .continuous))
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
                 
@@ -312,10 +322,123 @@ public struct WirelessPairingView: View {
     // MARK: - Tab 1: Wi-Fi PIN Code & Direct Connect
     private var wifiPinTab: some View {
         VStack(spacing: 14) {
+            routerIsolationBanner
             autoDetectedBanner
+            qrPairingCard
             alreadyPairedCard
             firstTimePairingDisclosure
         }
+    }
+
+    @ViewBuilder
+    private var routerIsolationBanner: some View {
+        if routerBypass.isRouterIsolationDetected {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .foregroundColor(.orange)
+                    Text(L10n.tr("Изоляция роутера — переключитесь на прямой канал", "Router Isolation Detected — Switch to Direct Link", lang: appState.lang))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        Task {
+                            let (ok, msg) = await routerBypass.connectDirectHotspot()
+                            isSuccess = ok
+                            resultMessage = ok ? "Direct Hotspot: \(msg)" : msg
+                            if ok { appState.refreshDevices() }
+                        }
+                    } label: {
+                        Text(L10n.tr("Режим Hotspot", "Direct Hotspot", lang: appState.lang))
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.orange)
+                            .foregroundColor(.black)
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        Task {
+                            isProcessing = true
+                            let names = appState.knownDevices.map(\.name)
+                            let (ok, msg) = await routerBypass.setupAndConnectBluetoothPAN(
+                                preferredDeviceNames: names,
+                                openSettingsIfUnavailable: true
+                            )
+                            isProcessing = false
+                            isSuccess = ok
+                            resultMessage = ok ? "Bluetooth PAN: \(msg)" : msg
+                            if ok { appState.refreshDevices() }
+                        }
+                    } label: {
+                        Text("Bluetooth PAN")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.14))
+                            .foregroundColor(.white)
+                            .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.14))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+            )
+        }
+    }
+
+    private var qrPairingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(L10n.tr("Быстрое сопряжение по QR-коду", "QR Code Wireless Pairing", lang: appState.lang), systemImage: "qrcode")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Button(qrPairing.status == .idle ? L10n.tr("Показать QR", "Show QR", lang: appState.lang) : L10n.tr("Скрыть", "Hide", lang: appState.lang)) {
+                    if qrPairing.status == .idle {
+                        qrPairing.onPairedSuccessfully = { _ in
+                            Task { @MainActor in
+                                appState.refreshDevices()
+                            }
+                        }
+                        qrPairing.startSession()
+                    } else {
+                        qrPairing.stopSession()
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.cyan)
+            }
+            if qrPairing.status != .idle, !qrPairing.qrPayload.isEmpty {
+                HStack(spacing: 10) {
+                    QRCodeView(payload: qrPairing.qrPayload, size: 96)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.tr("На телефоне: Отладка по Wi-Fi → Подключить по QR-коду", "On Android: Wireless Debugging → Pair with QR code", lang: appState.lang))
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.75))
+                        Text(qrPairing.serviceName)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.cyan)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
     }
     
     @ViewBuilder
@@ -694,16 +817,17 @@ public struct WirelessPairingView: View {
     // MARK: - Tab 3: Saved Devices
     private var savedDevicesTab: some View {
         VStack(spacing: 10) {
+            routerIsolationBanner
             if appState.knownDevices.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "tray")
                         .font(.system(size: 28))
                         .foregroundColor(.white.opacity(0.3))
                         .padding(.top, 20)
-                    Text("Нет сохранённых устройств")
+                    Text(L10n.tr("Нет сохранённых устройств", "No saved devices", lang: appState.lang))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
-                    Text("Подключите телефон по Wi-Fi или кабелю, и он сохранится здесь.")
+                    Text(L10n.tr("Подключите телефон по Wi-Fi или кабелю, и он сохранится здесь.", "Connect a phone via Wi-Fi or USB cable and it will appear here.", lang: appState.lang))
                         .font(.system(size: 10))
                         .foregroundColor(.white.opacity(0.5))
                         .multilineTextAlignment(.center)
@@ -714,49 +838,67 @@ public struct WirelessPairingView: View {
                     ForEach(appState.knownDevices) { known in
                         let dynamicPort = DiscoveryService.shared.getConnectPort(for: known.ipAddress)
                         let effectivePort = dynamicPort ?? known.port
-                        HStack {
+                        HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(known.name)
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(.white)
-                                HStack(spacing: 4) {
-                                    Text("\(known.ipAddress):\(String(effectivePort))")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundColor(.white.opacity(0.5))
+                                HStack(spacing: 5) {
+                                    Text(known.name)
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
                                     if dynamicPort != nil {
-                                        Text("• активен")
+                                        Text(L10n.tr("• активен", "• active", lang: appState.lang))
                                             .font(.system(size: 9, weight: .semibold))
                                             .foregroundColor(.green)
+                                            .fixedSize()
                                     }
                                 }
+                                Text("\(known.ipAddress):\(String(effectivePort))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.55))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                             }
                             
-                            Spacer()
+                            Spacer(minLength: 4)
                             
                             Button {
                                 Task {
                                     isProcessing = true
+                                    await DiscoveryService.shared.pollAdbMdns()
                                     let portToUse = DiscoveryService.shared.getConnectPort(for: known.ipAddress) ?? known.port
-                                    let success = await appState.connectWireless(host: known.ipAddress, port: portToUse)
+                                    var connectedEndpoint = "\(known.ipAddress):\(portToUse)"
+                                    var success = await appState.connectWireless(host: known.ipAddress, port: portToUse)
+                                    if !success && portToUse != 5555 {
+                                        if await appState.connectWireless(host: known.ipAddress, port: 5555) {
+                                            success = true
+                                            connectedEndpoint = "\(known.ipAddress):5555"
+                                        }
+                                    }
+                                    if !success {
+                                        await routerBypass.checkReachabilityIfNeeded(host: known.ipAddress, port: portToUse)
+                                    }
                                     isProcessing = false
                                     if success {
                                         isSuccess = true
-                                        resultMessage = "Подключено к \(known.name)!"
+                                        resultMessage = L10n.tr("Подключено к \(known.name) (\(connectedEndpoint))!", "Connected to \(known.name) (\(connectedEndpoint))!", lang: appState.lang)
                                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                                         closePairing()
                                     } else {
                                         isSuccess = false
-                                        resultMessage = "Не удалось подключиться к \(known.ipAddress):\(portToUse)"
+                                        resultMessage = routerBypass.isRouterIsolationDetected
+                                            ? L10n.tr("Сеть блокирует прямое подключение (\(known.ipAddress):\(portToUse)). Используйте Hotspot или Bluetooth PAN выше.", "Network blocks peer-to-peer traffic (\(known.ipAddress):\(portToUse)). Use Direct Hotspot or Bluetooth PAN above.", lang: appState.lang)
+                                            : L10n.tr("Не удалось подключиться к \(known.ipAddress):\(portToUse)", "Could not connect to \(known.ipAddress):\(portToUse)", lang: appState.lang)
                                     }
                                 }
                             } label: {
-                                Text("Подключить")
+                                Text(L10n.tr("Подключить", "Connect", lang: appState.lang))
                                     .font(.system(size: 10, weight: .bold))
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 5)
                                     .background(Color.blue)
                                     .foregroundColor(.white)
                                     .cornerRadius(6)
+                                    .fixedSize()
                             }
                             .buttonStyle(.plain)
                             
@@ -768,7 +910,7 @@ public struct WirelessPairingView: View {
                                     .foregroundColor(.white.opacity(0.4))
                             }
                             .buttonStyle(.plain)
-                            .padding(.leading, 4)
+                            .padding(.leading, 2)
                         }
                         .padding(10)
                         .background(Color.white.opacity(0.04))

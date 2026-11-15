@@ -139,6 +139,13 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(map["en"], 1594443099)
         XCTAssertEqual(map["ru"], -1807566855)
         XCTAssertEqual(map["de"], 979167277)
+
+        let currentSubtypeOutput = "      mCurrentSubtype=android.view.inputmethod.InputMethodSubtype@9442b7f9"
+        XCTAssertEqual(KeyboardLanguageSyncService.parseCurrentSubtype(from: currentSubtypeOutput), -1807566855)
+        XCTAssertEqual(
+            KeyboardLanguageSyncService.parseSubtypes(from: "mSubtypeId=0 mSubtypeLocale=fr_FR mSubtypeHashCode=-123456")["fr"],
+            -123456
+        )
     }
     
     @MainActor
@@ -790,5 +797,869 @@ final class AndOnMacTests: XCTestCase {
         let palette = AmbilightEngine.extractPalette(from: composite, context: context)
         XCTAssertGreaterThan(palette.top.b, palette.top.r)
         XCTAssertGreaterThan(palette.bottom.r, palette.bottom.b)
+    }
+
+    func testScrollHomeTriggerAtBottomEdge() {
+        XCTAssertTrue(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.90,
+                accumulatedUpwardDelta: 26,
+                horizontalDelta: 4
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.50,
+                accumulatedUpwardDelta: 40,
+                horizontalDelta: 0
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.92,
+                accumulatedUpwardDelta: 12,
+                horizontalDelta: 0
+            )
+        )
+        XCTAssertFalse(
+            ScrcpyDisplayNSView.shouldTriggerScrollHome(
+                startNormalizedY: 0.92,
+                accumulatedUpwardDelta: 24,
+                horizontalDelta: 25
+            )
+        )
+    }
+
+    // MARK: - Security, Concurrency & Resource Safety Tests
+
+    func testFileBrowserPathSecurityAndDataLossPrevention() throws {
+        // Traversal & null-byte injection must be rejected
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("/sdcard/../../etc/passwd"))
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("/sdcard/test\0.txt"))
+        XCTAssertThrowsError(try FileBrowserService.validateRemotePath("relative/path"))
+
+        // Destructive deletion on protected roots must be blocked
+        let protectedRoots = [
+            "/",
+            "/sdcard",
+            "/sdcard/",
+            "/sdcard/DCIM",
+            "/sdcard/Download",
+            "/sdcard/Pictures",
+            "/storage/emulated/0",
+            "/system"
+        ]
+        for root in protectedRoots {
+            XCTAssertThrowsError(
+                try FileBrowserService.validateRemotePath(root, forDeletion: true),
+                "Expected deletion of protected root \(root) to throw"
+            )
+        }
+
+        // Valid user-level paths succeed
+        XCTAssertEqual(try FileBrowserService.validateRemotePath("/sdcard/Download/photo.jpg"), "/sdcard/Download/photo.jpg")
+        XCTAssertEqual(try FileBrowserService.validateRemotePath("/sdcard/Download/photo.jpg", forDeletion: true), "/sdcard/Download/photo.jpg")
+    }
+
+    func testADBSerialAndEndpointValidation() {
+        XCTAssertTrue(ADBService.validateSerial("61061JEA307110"))
+        XCTAssertTrue(ADBService.validateSerial("192.168.1.42:5555"))
+        XCTAssertTrue(ADBService.validateSerial("adb-61061JEA307110-abc._adb-tls-connect._tcp"))
+
+        XCTAssertFalse(ADBService.validateSerial(""))
+        XCTAssertFalse(ADBService.validateSerial("-H"))
+        XCTAssertFalse(ADBService.validateSerial("--help"))
+        XCTAssertFalse(ADBService.validateSerial("12345;rm -rf /"))
+
+        XCTAssertTrue(ADBService.validateTargetEndpoint("192.168.0.10:5555"))
+        XCTAssertTrue(ADBService.validateTargetEndpoint("pixel.local:37123"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("192.168.0.10"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("-s 192.168.0.10:5555"))
+        XCTAssertFalse(ADBService.validateTargetEndpoint("192.168.0.10:99999"))
+    }
+
+    func testADBTimeoutDoesNotHangAndCancelsCleanly() async {
+        // Executing a non-existent or hanging command with a short timeout must return promptly
+        let start = Date()
+        do {
+            _ = try await ADBService.shared.execute(arguments: ["wait-for-device"], timeoutSeconds: 0.25)
+        } catch {
+            // Expected timeout or adb-not-found error
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 2.5, "ADB watchdog timeout should not hang")
+    }
+
+    func testScrcpyVideoBufferCapPreventsOOM() {
+        var normalBuffer = Data(repeating: 0xAA, count: 1024)
+        XCTAssertFalse(ScrcpyClient.trimOversizedStreamBuffer(&normalBuffer, maxBytes: 4096))
+        XCTAssertEqual(normalBuffer.count, 1024)
+
+        var oversizedBuffer = Data(repeating: 0xBB, count: 8192)
+        XCTAssertTrue(ScrcpyClient.trimOversizedStreamBuffer(&oversizedBuffer, maxBytes: 4096))
+        XCTAssertEqual(oversizedBuffer.count, 0)
+    }
+
+    func testScrcpyConcurrentStartStopStressSafety() async {
+        let client = ScrcpyClient.shared
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<20 {
+                group.addTask {
+                    if i % 2 == 0 {
+                        client.sendControlMessage(Data([5]))
+                    } else {
+                        client.stop()
+                    }
+                    _ = client.isConnected
+                }
+            }
+        }
+        XCTAssertFalse(client.isConnected)
+    }
+
+    func testNotificationPayloadBoundsAndSanitization() throws {
+        // Oversized payload (> 64 KB) must be rejected before decoding
+        let oversized = Data(repeating: 0x20, count: NotificationService.maxIncomingPayloadBytes + 1)
+        XCTAssertNil(NotificationService.parseNotificationPayload(oversized))
+
+        // Long strings inside valid JSON must be truncated safely
+        let longTitle = String(repeating: "A", count: 500)
+        let longText = String(repeating: "B", count: 2500)
+        let item = NotificationItem(
+            packageName: "com.example.chat",
+            appName: String(repeating: "App", count: 100),
+            title: longTitle,
+            text: longText,
+            iconBase64: String(repeating: "X", count: 40_000)
+        )
+        let encoded = try JSONEncoder().encode(item)
+        let parsed = NotificationService.parseNotificationPayload(encoded)
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed?.appName.count, 200)
+        XCTAssertEqual(parsed?.title.count, 200)
+        XCTAssertEqual(parsed?.text.count, 1000)
+        XCTAssertNil(parsed?.iconBase64)
+    }
+
+    func testPhotoCacheFilenameSanitization() {
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("../../etc/passwd"), "passwd")
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("IMG_001\0.jpg"), "IMG_001.jpg")
+        XCTAssertTrue(PhotoTransferService.sanitizedCacheFilename("..").hasPrefix("file_"))
+        XCTAssertEqual(PhotoTransferService.sanitizedCacheFilename("vacation.heic"), "vacation.heic")
+    }
+
+    func testAndroidAppLauncherParsingAndFriendlyNames() {
+        let raw = """
+        package:com.whatsapp
+        package:org.telegram.messenger
+        package:com.example.my_custom_notes
+        package:com.whatsapp
+        """
+        let apps = AndroidAppLauncherService.parsePackageList(raw)
+        XCTAssertEqual(apps.count, 3)
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.whatsapp" && $0.displayName == "WhatsApp" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "org.telegram.messenger" && $0.displayName == "Telegram" }))
+        XCTAssertTrue(apps.contains(where: { $0.packageName == "com.example.my_custom_notes" && $0.displayName == "My Custom Notes" }))
+
+        let queryActivitiesOutput = """
+        priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false
+            com.google.android.youtube/.app.honeycomb.Shell$HomeActivity
+            com.google.android.apps.youtube.music/.activities.MusicActivity
+        """
+        let launchable = AndroidAppLauncherService.parsePackageList(queryActivitiesOutput)
+        XCTAssertEqual(launchable.count, 2)
+        XCTAssertTrue(launchable.contains(where: { $0.packageName == "com.google.android.youtube" && $0.displayName == "YouTube" }))
+    }
+
+    func testVisionOCRPixelCropRectAndContinuityImageEncoding() {
+        let crop = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: 0.25, y: 0.5, width: 0.5, height: 0.25),
+            imageWidth: 1080,
+            imageHeight: 2400
+        )
+        XCTAssertEqual(crop, CGRect(x: 270, y: 1200, width: 540, height: 600))
+
+        // Out-of-bounds crop must clamp safely
+        let clamped = VisionOCRService.pixelCropRect(
+            normalizedRect: CGRect(x: -0.5, y: 0.9, width: 2.0, height: 0.5),
+            imageWidth: 1000,
+            imageHeight: 2000
+        )
+        XCTAssertEqual(clamped.origin.x, 0)
+        XCTAssertLessThanOrEqual(clamped.maxX, 1000)
+        XCTAssertLessThanOrEqual(clamped.maxY, 2000)
+
+        // TIFF -> PNG conversion for ContinuityBridge
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4,
+            pixelsHigh: 4,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        )
+        let tiff = rep?.tiffRepresentation
+        let png = ContinuityBridge.encodePasteboardImageAsPNG(pngData: nil, tiffData: tiff)
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png?.count ?? 0, 8)
+    }
+
+    @MainActor
+    func testDeviceProfilePersistenceAndDefaults() {
+        let appState = AppState()
+        let serial = "test-serial-profile-\(UUID().uuidString)"
+        XCTAssertEqual(appState.profile(for: serial), .default)
+
+        let custom = DeviceProfile(bitRate: 16_000_000, maxFps: 120, maxSize: 1080)
+        appState.updateProfile(custom, for: serial)
+        XCTAssertEqual(appState.profile(for: serial), custom)
+    }
+
+    // MARK: - Built-in MCP Server & Android UI Tree Tests
+
+    func testMCPServerInitializeToolsListAndKillSwitch() async throws {
+        let core = MCPServerCore.shared
+        core.isAgentPaused = false
+
+        let initReq = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#
+        let initRespData = await core.handleRawRequestData(Data(initReq.utf8))
+        XCTAssertNotNil(initRespData)
+        let initJSON = try JSONSerialization.jsonObject(with: initRespData!) as? [String: Any]
+        let initResult = initJSON?["result"] as? [String: Any]
+        XCTAssertEqual(initResult?["protocolVersion"] as? String, "2024-11-05")
+
+        let listReq = #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#
+        let listRespData = await core.handleRawRequestData(Data(listReq.utf8))
+        XCTAssertNotNil(listRespData)
+        let listJSON = try JSONSerialization.jsonObject(with: listRespData!) as? [String: Any]
+        let listResult = listJSON?["result"] as? [String: Any]
+        let tools = listResult?["tools"] as? [[String: Any]]
+        XCTAssertEqual(tools?.count, 9)
+
+        // Kill-switch must block tool calls while paused
+        core.isAgentPaused = true
+        defer { core.isAgentPaused = false }
+        let callReq = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"android_list_devices","arguments":{}}}"#
+        let callRespData = await core.handleRawRequestData(Data(callReq.utf8))
+        let callJSON = try JSONSerialization.jsonObject(with: callRespData!) as? [String: Any]
+        let callResult = callJSON?["result"] as? [String: Any]
+        XCTAssertEqual(callResult?["isError"] as? Bool, true)
+    }
+
+    func testAndroidUITreeParserStripsContainersAndComputesCenters() {
+        let xml = """
+        UI hierchary dumped to: /dev/tty
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="Confirm" resource-id="com.app:id/btn_confirm" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[100,200][500,300]" />
+            <node index="2" text="" resource-id="" class="android.view.ViewGroup" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,200]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        XCTAssertEqual(nodes.count, 1)
+        XCTAssertEqual(nodes[0].text, "Confirm")
+        XCTAssertEqual(nodes[0].resource_id, "com.app:id/btn_confirm")
+        XCTAssertEqual(nodes[0].class, "Button")
+        XCTAssertEqual(nodes[0].center_x, 300)
+        XCTAssertEqual(nodes[0].center_y, 250)
+    }
+
+    func testMCPNotificationsParser() {
+        let dumpsys = """
+        NotificationRecord(0x1234: pkg=org.telegram.messenger user=UserHandle{0} id=42)
+          when=1731624000000
+          android.title=String (Alice)
+          android.text=String (Your code is 482910)
+        NotificationRecord(0x5678: pkg=com.android.systemui user=UserHandle{0} id=1)
+        """
+        let parsed = AndroidMCPTools.parseNotifications(from: dumpsys)
+        XCTAssertEqual(parsed.count, 1)
+        XCTAssertEqual(parsed[0].package, "org.telegram.messenger")
+        XCTAssertEqual(parsed[0].title, "Alice")
+        XCTAssertEqual(parsed[0].text, "Your code is 482910")
+    }
+
+    func testQRPairingPayloadFormat() {
+        let samplePin = String(repeating: "0", count: 8)
+        let payload = QRPairingService.buildQRPayload(serviceName: "ADB_WIFI_A1B2C3D4", password: samplePin)
+        XCTAssertEqual(payload, "WIFI:T:ADB;S:ADB_WIFI_A1B2C3D4;P:\(samplePin);;")
+    }
+
+    func testRouterlessBypassGatewayAndBluetoothPAN() {
+        let netstat = """
+        Routing tables
+        Internet:
+        Destination        Gateway            Flags               Netif Expire
+        default            192.168.43.1       UGScg                 en0
+        127.0.0.1          127.0.0.1          UH                    lo0
+        """
+        XCTAssertEqual(RouterlessBypassService.parseDefaultGateway(fromNetstatOutput: netstat), "192.168.43.1")
+        XCTAssertTrue(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["10.0.0.5", "192.168.44.128"]))
+        XCTAssertFalse(RouterlessBypassService.hasBluetoothPANSubnet(inAddresses: ["192.168.1.50"]))
+    }
+
+    func testHEVCNALTypeDetection() {
+        // HEVC NAL header byte: (nalType << 1)
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([32 << 1, 0x01])), 32) // VPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([33 << 1, 0x01])), 33) // SPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([34 << 1, 0x01])), 34) // PPS
+        XCTAssertEqual(ScrcpyClient.hevcNALType(for: Data([19 << 1, 0x01])), 19) // IDR
+    }
+
+    @MainActor
+    func testPerformanceEngineABRStepDownAndRecovery() {
+        let engine = PerformanceEngine.shared
+        engine.endMirroringSession()
+
+        // 3 high-RTT samples should not trigger ABR yet
+        for _ in 0..<3 {
+            let res = engine.ingestProbeSample(rttMs: 145)
+            XCTAssertFalse(res.changed)
+            XCTAssertFalse(engine.isABRReduced)
+        }
+        // 4th consecutive sample >120ms (>2s) triggers step-down to 6M / 1280
+        let stepDown = engine.ingestProbeSample(rttMs: 150)
+        XCTAssertTrue(stepDown.changed)
+        XCTAssertEqual(stepDown.bitRate, 6_000_000)
+        XCTAssertEqual(stepDown.maxSize, 1280)
+        XCTAssertTrue(engine.isABRReduced)
+
+        // 7 low-RTT samples should not restore yet
+        for _ in 0..<7 {
+            let res = engine.ingestProbeSample(rttMs: 25)
+            XCTAssertFalse(res.changed)
+            XCTAssertTrue(engine.isABRReduced)
+        }
+        // 8th consecutive sample <60ms (4s) restores 16M / 1440
+        let restore = engine.ingestProbeSample(rttMs: 22)
+        XCTAssertTrue(restore.changed)
+        XCTAssertEqual(restore.bitRate, 16_000_000)
+        XCTAssertEqual(restore.maxSize, 1440)
+        XCTAssertFalse(engine.isABRReduced)
+        engine.endMirroringSession()
+    }
+
+    func testCommandInjectionResistanceAndPackageValidation() {
+        // Package name validation
+        XCTAssertTrue(ADBService.validatePackageName("com.whatsapp"))
+        XCTAssertTrue(ADBService.validatePackageName("org.telegram.messenger"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp; id"))
+        XCTAssertFalse(ADBService.validatePackageName("com.whatsapp$(reboot)"))
+        XCTAssertFalse(ADBService.validatePackageName("-rf"))
+        XCTAssertFalse(ADBService.validatePackageName("nodot"))
+        XCTAssertFalse(ADBService.validatePackageName(""))
+
+        // POSIX shell quoting
+        let malicious = "hello'; rm -rf /; echo $(id) `uname` | cat > /tmp/x\0"
+        let quoted = ADBService.shellQuote(malicious)
+        XCTAssertTrue(quoted.hasPrefix("'"))
+        XCTAssertTrue(quoted.hasSuffix("'"))
+        XCTAssertFalse(quoted.contains("\0"))
+        XCTAssertEqual(quoted, "'hello'\\''; rm -rf /; echo $(id) `uname` | cat > /tmp/x'")
+
+        // android_type_text command builder
+        let asciiInject = AndroidMCPTools.buildSafeTypeTextCommand("hi; id > /sdcard/pwn")
+        XCTAssertFalse(asciiInject.useClipboard)
+        XCTAssertEqual(asciiInject.quotedArg, "'hi;%sid%s>%s/sdcard/pwn'")
+
+        let unicodeInject = AndroidMCPTools.buildSafeTypeTextCommand("Привет; $(reboot)\n")
+        XCTAssertTrue(unicodeInject.useClipboard)
+        XCTAssertEqual(unicodeInject.quotedArg, "'Привет; $(reboot)\n'")
+    }
+
+    func testMCPHTTPServerOriginHostAndBearerSecurity() async throws {
+        // Loopback Host & Origin allowed
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: [::1]:8765\r\n"))
+        XCTAssertTrue(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: localhost:8765\r\nOrigin: http://localhost:3000\r\n"))
+
+        // External Origin, prefix-spoofed Origin, or DNS-rebinding Host rejected
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: evil.com:8765\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: https://evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://localhost.evil.com\r\n"))
+        XCTAssertFalse(MCPHTTPServer.validateOriginAndHost(headers: "POST /message HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://127.0.0.1.evil.com\r\n"))
+
+        // Bearer token validation
+        let headersWithToken = "POST /message HTTP/1.1\r\nAuthorization: Bearer secret-session-token\r\n"
+        XCTAssertTrue(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "secret-session-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: headersWithToken, expectedToken: "wrong-token"))
+        XCTAssertFalse(MCPHTTPServer.validateBearerToken(headers: "POST /message HTTP/1.1\r\n", expectedToken: "secret-session-token"))
+
+        // Live NWListener socket integration test with Bearer token
+        let server = MCPHTTPServer.shared
+        let testPort: UInt16 = 18765
+        let testToken = "live-session-secret-\(UUID().uuidString)"
+        server.bearerToken = testToken
+
+        final class ResumeOnce: @unchecked Sendable {
+            private let lock = NSLock()
+            private var resumed = false
+            func tryResume() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                guard !resumed else { return false }
+                resumed = true
+                return true
+            }
+        }
+        let resumeOnce = ResumeOnce()
+        let started = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            server.start(port: testPort) { isRunning in
+                if resumeOnce.tryResume() {
+                    cont.resume(returning: isRunning)
+                }
+            }
+        }
+        defer {
+            server.bearerToken = nil
+            server.stop()
+        }
+        XCTAssertTrue(started, "MCPHTTPServer should bind to 127.0.0.1:\(testPort)")
+
+        let url = URL(string: "http://127.0.0.1:\(testPort)/")!
+
+        // 1. Missing Bearer token -> 401
+        var unauthReq = URLRequest(url: url)
+        unauthReq.httpMethod = "GET"
+        let (_, unauthResp) = try await URLSession.shared.data(for: unauthReq)
+        XCTAssertEqual((unauthResp as? HTTPURLResponse)?.statusCode, 401)
+
+        // 2. Spoofed Origin -> 403
+        var badOriginReq = URLRequest(url: url)
+        badOriginReq.httpMethod = "GET"
+        badOriginReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        badOriginReq.setValue("http://localhost.evil.com", forHTTPHeaderField: "Origin")
+        let (_, badOriginResp) = try await URLSession.shared.data(for: badOriginReq)
+        XCTAssertEqual((badOriginResp as? HTTPURLResponse)?.statusCode, 403)
+
+        // 3. Valid Bearer token + loopback -> 200
+        var okReq = URLRequest(url: url)
+        okReq.httpMethod = "GET"
+        okReq.setValue("Bearer \(testToken)", forHTTPHeaderField: "Authorization")
+        let (_, okResp) = try await URLSession.shared.data(for: okReq)
+        XCTAssertEqual((okResp as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testADBTaskCancellationAbortsImmediately() async {
+        let start = Date()
+        let task = Task {
+            try await ADBService.shared.execute(arguments: ["wait-for-device"], timeoutSeconds: 10.0)
+        }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        task.cancel()
+        _ = await task.result
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 1.5, "Cancelling Task must abort ADBService.execute immediately without waiting for 10s timeout")
+    }
+
+    func testProcessLifecycleManagerTerminatesChildCleanly() {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["30"]
+        try? proc.run()
+        XCTAssertTrue(proc.isRunning)
+
+        ProcessLifecycleManager.shared.register(proc, tag: "test-sleep")
+        ProcessLifecycleManager.shared.terminateProcesses(withTag: "test-sleep", gracePeriodMs: 100)
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(proc.isRunning)
+    }
+
+    func testFrameChangeDetectorDetectsStaticVsChangedFrames() throws {
+        let detector = FrameChangeDetector()
+
+        func makeSolidImage(gray: UInt8) throws -> CGImage {
+            var pixels = [UInt8](repeating: gray, count: 64 * 64)
+            let cs = CGColorSpaceCreateDeviceGray()
+            let ctx = try XCTUnwrap(CGContext(
+                data: &pixels,
+                width: 64,
+                height: 64,
+                bitsPerComponent: 8,
+                bytesPerRow: 64,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ))
+            return try XCTUnwrap(ctx.makeImage())
+        }
+
+        let dark = try makeSolidImage(gray: 20)
+        let darkAgain = try makeSolidImage(gray: 20)
+        let bright = try makeSolidImage(gray: 220)
+
+        XCTAssertTrue(detector.hasFrameChanged(dark))
+        XCTAssertFalse(detector.hasFrameChanged(darkAgain))
+        XCTAssertTrue(detector.hasFrameChanged(bright))
+
+        detector.reset()
+        XCTAssertTrue(detector.hasFrameChanged(bright))
+    }
+
+    func testScreenMemoryDatabaseFTS5SearchAndRetentionPruning() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-memory-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let db = ScreenMemoryDatabase(baseDirectoryURL: tmpDir)
+        let oldThumb = "old.jpg"
+        let recentThumb = "recent.jpg"
+        try Data("old".utf8).write(to: db.thumbnailsDirectoryURL.appendingPathComponent(oldThumb))
+        try Data("recent".utf8).write(to: db.thumbnailsDirectoryURL.appendingPathComponent(recentThumb))
+
+        let now = Date()
+        let tenDaysAgo = now.addingTimeInterval(-10 * 86_400)
+
+        XCTAssertNotNil(db.insertSnapshot(
+            timestamp: tenDaysAgo,
+            appPackageName: "com.old.app",
+            extractedText: "Archived invoice 9012",
+            thumbnailFilename: oldThumb,
+            frameHash: 111
+        ))
+        XCTAssertNotNil(db.insertSnapshot(
+            timestamp: now,
+            appPackageName: "com.bank.app",
+            extractedText: "Checking account balance is $4,250.00",
+            thumbnailFilename: recentThumb,
+            frameHash: 222
+        ))
+
+        let hits = db.search(query: "bal")
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits.first?.appPackageName, "com.bank.app")
+        XCTAssertTrue(hits.first?.highlightedSnippet.contains("«balance»") == true)
+
+        let pruned = db.pruneRetention(now: now, olderThanDays: 7)
+        XCTAssertEqual(pruned, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: db.thumbnailsDirectoryURL.appendingPathComponent(oldThumb).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: db.thumbnailsDirectoryURL.appendingPathComponent(recentThumb).path))
+        XCTAssertEqual(db.stats().count, 1)
+
+        db.clearAll()
+        XCTAssertEqual(db.stats().count, 0)
+    }
+
+    func testScreenMemoryForegroundPackageParser() {
+        let dumpsys = """
+        mCurrentFocus=Window{9a1b2c u0 com.whatsapp/com.whatsapp.HomeActivity}
+        mFocusedApp=ActivityRecord{12345 u0 com.whatsapp/.HomeActivity t19}
+        """
+        XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: dumpsys), "com.whatsapp")
+        XCTAssertEqual(ScreenMemorySnapshotter.parseForegroundPackage(from: "nothing here"), "unknown")
+    }
+
+    func testVisualNodeMatcherMapsUIAutomatorNodeAndFallback() {
+        let xml = """
+        <hierarchy rotation="0">
+          <node index="0" text="" resource-id="" class="android.widget.LinearLayout" content-desc="" clickable="false" scrollable="false" bounds="[0,0][1080,2400]">
+            <node index="1" text="$4,250.00" resource-id="com.bank.app:id/balance_amount" class="android.widget.TextView" content-desc="Account balance" clickable="false" scrollable="false" bounds="[100,400][540,520]" />
+            <node index="2" text="Transfer" resource-id="com.bank.app:id/btn_transfer" class="android.widget.Button" content-desc="" clickable="true" scrollable="false" bounds="[600,400][980,520]" />
+          </node>
+        </hierarchy>
+        """
+        let nodes = AndroidUITreeParser.parse(xmlString: xml)
+        // Drag box over the balance TextView (~x: 0.1..0.5, y: 0.16..0.22 on 1080x2400)
+        let normRect = CGRect(x: 0.09, y: 0.165, width: 0.41, height: 0.055)
+        let matched = VisualNodeMatcher.matchBestNode(
+            normalizedRect: normRect,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertEqual(matched.node?.resource_id, "com.bank.app:id/balance_amount")
+        XCTAssertEqual(matched.node?.text, "$4,250.00")
+        XCTAssertEqual(matched.node?.class, "TextView")
+        XCTAssertGreaterThan(matched.iouScore, 0.7)
+
+        // Out-of-bounds drag should fall back to pixel center without matching a node
+        let emptyArea = CGRect(x: 0.1, y: 0.85, width: 0.2, height: 0.05)
+        let fallback = VisualNodeMatcher.matchBestNode(
+            normalizedRect: emptyArea,
+            deviceWidth: 1080,
+            deviceHeight: 2400,
+            nodes: nodes
+        )
+        XCTAssertNil(fallback.node)
+        XCTAssertEqual(fallback.fallbackCenterX, 216)
+        XCTAssertEqual(fallback.fallbackCenterY, 2100)
+    }
+
+    func testCustomMCPToolSchemaValidationAndJSONRPCDefinition() throws {
+        XCTAssertTrue(CustomMCPToolSchema.isValidToolName("get_bank_balance"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("android_tap_element"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidToolName("Bad Name!"))
+        XCTAssertFalse(CustomMCPToolSchema.isValidParameterName("serial"))
+        XCTAssertTrue(CustomMCPToolSchema.isValidParameterName("account_id"))
+
+        let schema = CustomMCPToolSchema(
+            name: "tap_transfer",
+            description: "Tap the Transfer button",
+            isEnabled: true,
+            action: .tapElement,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/btn_transfer",
+                className: "Button",
+                text: "Transfer",
+                contentDesc: nil,
+                fallbackX: 790,
+                fallbackY: 460,
+                normalizedRect: [0.55, 0.16, 0.35, 0.05]
+            ),
+            parameters: [
+                CustomMCPParameter(name: "amount", type: "integer", description: "Transfer amount", required: true)
+            ]
+        )
+        try schema.validate()
+        let def = schema.toMCPToolDefinition()
+        XCTAssertEqual(def.name, "tap_transfer")
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["serial"])
+        XCTAssertNotNil(props?["amount"])
+        if case .array(let reqValues) = def.inputSchema.objectValue?["required"] {
+            XCTAssertEqual(reqValues.compactMap(\.stringValue), ["amount"])
+        } else {
+            XCTFail("Expected required array in inputSchema")
+        }
+    }
+
+    func testCustomMCPToolRegistryPersistenceAndImportExport() throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("andonmac-mcptools-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let registry = CustomMCPToolRegistry(directoryURL: tmpDir)
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let schema = CustomMCPToolSchema(
+            name: "get_bank_balance",
+            description: "Read current balance",
+            isEnabled: true,
+            action: .readTextUIAutomator,
+            target: VisualNodeTarget(
+                resourceId: "com.bank.app:id/balance_amount",
+                className: "TextView",
+                text: "$4,250.00",
+                contentDesc: nil,
+                fallbackX: 320,
+                fallbackY: 460,
+                normalizedRect: [0.09, 0.16, 0.41, 0.05]
+            )
+        )
+        try registry.saveTool(schema)
+        XCTAssertEqual(registry.enabledMCPDefinitions().map(\.name), ["get_bank_balance"])
+
+        let exported = try registry.exportJSON(name: "get_bank_balance")
+        try registry.setEnabled(name: "get_bank_balance", enabled: false)
+        XCTAssertTrue(registry.enabledMCPDefinitions().isEmpty)
+
+        try registry.deleteTool(name: "get_bank_balance")
+        XCTAssertTrue(registry.allToolsSnapshot().isEmpty)
+
+        let imported = try registry.importFromJSON(exported)
+        XCTAssertEqual(imported.name, "get_bank_balance")
+        XCTAssertTrue(imported.isEnabled)
+    }
+
+    func testMCPServerCoreAdvertisesListChangedAndLoadsTools() async throws {
+        let initReq = Data("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}".utf8)
+        let initResp = await MCPServerCore.shared.handleRawRequestData(initReq)
+        let initText = try XCTUnwrap(initResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(initText.contains("\"listChanged\":true"))
+
+        let listReq = Data("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}".utf8)
+        let listResp = await MCPServerCore.shared.handleRawRequestData(listReq)
+        let listText = try XCTUnwrap(listResp.flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(listText.contains("android_tap_element"))
+    }
+
+    func testMultiStepMacroSchemaAutoParametersAndOverrides() throws {
+        let searchTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/search_btn",
+            className: "ImageButton",
+            text: "Search",
+            contentDesc: "Search chats",
+            fallbackX: 900,
+            fallbackY: 160,
+            normalizedRect: [0.8, 0.05, 0.1, 0.05]
+        )
+        let inputTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/composer",
+            className: "EditText",
+            text: nil,
+            contentDesc: "Message",
+            fallbackX: 400,
+            fallbackY: 2200,
+            normalizedRect: [0.1, 0.88, 0.7, 0.06]
+        )
+        let sendTarget = VisualNodeTarget(
+            resourceId: "com.chat:id/send_btn",
+            className: "ImageButton",
+            text: "Send",
+            contentDesc: nil,
+            fallbackX: 980,
+            fallbackY: 2200,
+            normalizedRect: [0.85, 0.88, 0.1, 0.06]
+        )
+
+        let macro = CustomMCPToolSchema(
+            name: "send_chat_macro",
+            description: "Search contact and send a message",
+            isEnabled: true,
+            action: .macro,
+            target: searchTarget,
+            parameters: [],
+            steps: [
+                VisualMacroStep(action: .tapElement, target: searchTarget, delayAfterMs: 300),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{contact_name}}", delayAfterMs: 500),
+                VisualMacroStep(action: .typeText, target: inputTarget, textTemplate: "{{message_body}}", delayAfterMs: 350),
+                VisualMacroStep(action: .tapElement, target: sendTarget, delayAfterMs: 250)
+            ],
+            defaultStepDelayMs: 650,
+            maxSteps: 12,
+            maxDurationSeconds: 25,
+            selfHealingEnabled: true
+        )
+        try macro.validate()
+
+        // Verify {{contact_name}} and {{message_body}} auto-exposed in JSON-RPC MCP schema
+        let def = macro.toMCPToolDefinition()
+        let props = def.inputSchema.objectValue?["properties"]?.objectValue
+        XCTAssertNotNil(props?["contact_name"])
+        XCTAssertNotNil(props?["message_body"])
+
+        let interpolated = CustomMCPToolSchema.interpolateTemplate(
+            "Hello {{contact_name}}: {{message_body}}",
+            arguments: [
+                "contact_name": .string("Alex"),
+                "message_body": .string("See you at 5")
+            ]
+        )
+        XCTAssertEqual(interpolated, "Hello Alex: See you at 5")
+
+        // Verify per-tool overrides take precedence over global UserDefaults
+        XCTAssertEqual(macro.effectiveStepDelayMs(), 650)
+        XCTAssertEqual(macro.effectiveMaxSteps(), 12)
+        XCTAssertEqual(macro.effectiveMaxDurationSeconds(), 25)
+        XCTAssertTrue(macro.effectiveSelfHealingEnabled())
+
+        // Verify legacy single-action JSON decodes cleanly with nil macro/override fields
+        let legacyJSON = """
+        {
+          "name": "legacy_tap",
+          "description": "Legacy tool",
+          "isEnabled": true,
+          "action": "tap_element",
+          "target": {
+            "resourceId": "com.app:id/ok",
+            "fallbackX": 500,
+            "fallbackY": 1000,
+            "normalizedRect": [0.4, 0.4, 0.2, 0.1]
+          },
+          "parameters": [],
+          "createdAt": "2026-11-15T00:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decodedLegacy = try decoder.decode(CustomMCPToolSchema.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(decodedLegacy.steps)
+        XCTAssertNil(decodedLegacy.defaultStepDelayMs)
+    }
+
+    func testSelfHealingThreeTierTapResolution() async {
+        let target = VisualNodeTarget(
+            resourceId: "com.bank.app:id/old_transfer_btn",
+            className: "Button",
+            text: "Transfer",
+            contentDesc: nil,
+            fallbackX: 100,
+            fallbackY: 200,
+            normalizedRect: [0.1, 0.1, 0.2, 0.05]
+        )
+
+        // Tier 1: Exact resource-id found -> uses XML node coordinates, never calls Vision OCR
+        let matchingNode = AndroidUINode(
+            index: 0,
+            text: "Transfer",
+            resource_id: "com.bank.app:id/old_transfer_btn",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[250,580][450,660]",
+            center_x: 350,
+            center_y: 620
+        )
+        let tier1 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [matchingNode],
+            target: target,
+            selfHealingEnabled: true
+        ) { _ in
+            XCTFail("Vision OCR should not be called when resource-id matches")
+            return nil
+        }
+        XCTAssertEqual(tier1.strategy, .resourceId)
+        XCTAssertEqual(tier1.x, 350)
+        XCTAssertEqual(tier1.y, 620)
+
+        // Tier 2: App updated its resource-id, so XML lacks old ID -> Vision OCR heals it
+        let updatedNodeDifferentText = AndroidUINode(
+            index: 1,
+            text: "Home",
+            resource_id: "com.bank.app:id/nav_home",
+            content_desc: "",
+            class: "Button",
+            clickable: true,
+            scrollable: false,
+            bounds: "[60,2150][180,2250]",
+            center_x: 120,
+            center_y: 2200
+        )
+        let tier2 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: true
+        ) { query in
+            XCTAssertEqual(query, "Transfer")
+            return (x: 780, y: 1450, matchedText: "Transfer")
+        }
+        XCTAssertEqual(tier2.strategy, .visionOCRHealed)
+        XCTAssertEqual(tier2.x, 780)
+        XCTAssertEqual(tier2.y, 1450)
+        XCTAssertEqual(tier2.healedText, "Transfer")
+
+        // Tier 3: Self-Healing disabled -> falls back directly without Vision OCR
+        let tier3 = await CustomMCPToolExecutor.resolveTapStrategy(
+            nodes: [updatedNodeDifferentText],
+            target: target,
+            selfHealingEnabled: false
+        ) { _ in
+            XCTFail("Vision OCR must not run when selfHealingEnabled is false")
+            return nil
+        }
+        XCTAssertEqual(tier3.strategy, .coordinateFallback)
+        XCTAssertEqual(tier3.x, 100)
+        XCTAssertEqual(tier3.y, 200)
+    }
+
+    func testProcessLifecycleManagerRegistrationAndCleanup() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["5"]
+        try proc.run()
+        let trackedId = ProcessLifecycleManager.shared.register(proc, tag: "unit-test")
+        XCTAssertGreaterThanOrEqual(ProcessLifecycleManager.shared.activeCount, 1)
+        ProcessLifecycleManager.shared.terminateProcess(proc, gracePeriodMs: 100)
+        proc.waitUntilExit()
+        ProcessLifecycleManager.shared.unregister(trackedId)
+        XCTAssertFalse(proc.isRunning)
     }
 }

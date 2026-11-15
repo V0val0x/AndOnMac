@@ -8,6 +8,7 @@ public struct PhotoTransferDrawerView: View {
     @State private var currentLimit: Int = 500
     @State private var isLoading: Bool = false
     @State private var statusNote: String? = nil
+    @Namespace private var filterNamespace
 
     public init(appState: AppState) {
         self.appState = appState
@@ -47,7 +48,7 @@ public struct PhotoTransferDrawerView: View {
                 }
 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(AndMotion.drawerSpring) {
                         appState.showPhotoDrawer = false
                     }
                 } label: {
@@ -55,10 +56,10 @@ public struct PhotoTransferDrawerView: View {
                         .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AndonTactileScaleButtonStyle(pressedScale: 0.88))
                 .help(L10n.tr("Закрыть", "Close", lang: lang))
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, AndSpacing.md)
             .padding(.vertical, 10)
             .contentShape(Rectangle())
             .makeWindowDraggable()
@@ -66,6 +67,7 @@ public struct PhotoTransferDrawerView: View {
             if appState.drawerMode == .files {
                 Divider()
                 FileBrowserView(appState: appState)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
 
             // Category Filter Bar
@@ -73,22 +75,38 @@ public struct PhotoTransferDrawerView: View {
                 HStack(spacing: 6) {
                     ForEach(MediaFolderFilter.allCases) { filter in
                         Button {
-                            selectedFilter = filter
+                            withAnimation(AndMotion.pillSlide) {
+                                selectedFilter = filter
+                            }
                             loadPhotos(resetLimit: true)
                         } label: {
                             Text(filter.title(lang: lang))
                                 .font(.system(size: 11, weight: selectedFilter == filter ? .semibold : .regular))
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 4)
-                                .background(selectedFilter == filter ? Color.blue.opacity(0.22) : Color.primary.opacity(0.07))
-                                .foregroundColor(selectedFilter == filter ? .blue : .primary)
-                                .cornerRadius(8)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(
+                                    ZStack {
+                                        if selectedFilter == filter {
+                                            RoundedRectangle(cornerRadius: AndRadius.control, style: .continuous)
+                                                .fill(Color.accentColor.opacity(0.24))
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: AndRadius.control, style: .continuous)
+                                                        .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 0.75)
+                                                )
+                                                .matchedGeometryEffect(id: "galleryFilterPill", in: filterNamespace)
+                                        } else {
+                                            RoundedRectangle(cornerRadius: AndRadius.control, style: .continuous)
+                                                .fill(Color.primary.opacity(0.06))
+                                        }
+                                    }
+                                )
+                                .foregroundColor(selectedFilter == filter ? .accentColor : .primary)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(AndonTactileScaleButtonStyle(pressedScale: 0.95))
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, AndSpacing.md)
+                .padding(.bottom, AndSpacing.sm)
             }
 
             Divider()
@@ -253,6 +271,7 @@ private struct PhotoThumbnailCell: View {
     @State private var cachedURL: URL?
     @State private var thumbnailImage: NSImage?
     @State private var failedLoad: Bool = false
+    @State private var isHovered: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -261,22 +280,19 @@ private struct PhotoThumbnailCell: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 80, height: 80)
-                    .clipped()
-                    .cornerRadius(8)
+                    .clipShape(RoundedRectangle(cornerRadius: AndRadius.thumb, style: .continuous))
             } else if failedLoad {
-                Rectangle()
+                RoundedRectangle(cornerRadius: AndRadius.thumb, style: .continuous)
                     .fill(Color.primary.opacity(0.08))
                     .frame(width: 80, height: 80)
-                    .cornerRadius(8)
                     .overlay(
                         Image(systemName: item.isVideo ? "video.fill" : "photo")
                             .foregroundColor(.secondary)
                     )
             } else {
-                Rectangle()
+                RoundedRectangle(cornerRadius: AndRadius.thumb, style: .continuous)
                     .fill(Color.primary.opacity(0.1))
                     .frame(width: 80, height: 80)
-                    .cornerRadius(8)
                     .overlay(
                         ProgressView()
                             .scaleEffect(0.6)
@@ -295,11 +311,21 @@ private struct PhotoThumbnailCell: View {
                     .foregroundColor(.white)
                     .padding(3)
                     .background(Color.black.opacity(0.6))
-                    .cornerRadius(4)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                     .padding(4)
             }
         }
         .frame(width: 80, height: 80)
+        .overlay(
+            RoundedRectangle(cornerRadius: AndRadius.thumb, style: .continuous)
+                .strokeBorder(Color.white.opacity(isHovered ? 0.45 : 0.08), lineWidth: isHovered ? 1.2 : 0.5)
+        )
+        .scaleEffect(isHovered ? 1.04 : 1.0)
+        .shadow(color: Color.black.opacity(isHovered ? 0.25 : 0.0), radius: 6, x: 0, y: 3)
+        .animation(AndMotion.microSpring, value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .contentShape(Rectangle())
         .help(item.name)
         .onAppear {

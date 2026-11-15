@@ -3,31 +3,84 @@ import AppKit
 
 public struct MainWindowView: View {
     @ObservedObject var appState: AppState
+    @State private var drawerExpanded: Bool = false
+    @State private var windowWideForDrawer: Bool = false
+    @State private var shrinkTask: DispatchWorkItem?
     
     public init(appState: AppState) {
         self.appState = appState
+    }
+
+    private var phoneTotalSize: CGSize {
+        let bezel = appState.effectiveFrameStyle.bezelWidth * 2
+        let mult = appState.effectiveFrameStyle.baseWidthMultiplier
+        if appState.isLandscape {
+            let h = 320.0 * appState.windowScale.multiplier
+            return CGSize(width: h * appState.effectiveAspect * mult + bezel, height: h + bezel)
+        } else {
+            return CGSize(width: 320.0 * appState.windowScale.multiplier * mult + bezel,
+                          height: (320.0 * appState.effectiveAspect) * appState.windowScale.multiplier + bezel)
+        }
+    }
+
+    private var targetWindowWidth: CGFloat {
+        phoneTotalSize.width + (AndSpacing.xl * 2) + (windowWideForDrawer ? 290 + 16 : 0)
+    }
+
+    private var targetWindowHeight: CGFloat {
+        phoneTotalSize.height + (AndSpacing.xl * 2)
     }
     
     public var body: some View {
         HStack(alignment: .top, spacing: 16) {
             // Main Phone Chassis (Frameless Sequoia Floating Smartphone)
             PhoneMirrorFrameView(appState: appState)
+                .zIndex(1)
             
             // Photo & File Transfer Side Drawer
-            if appState.showPhotoDrawer {
+            if drawerExpanded {
                 PhotoTransferDrawerView(appState: appState)
+                    .zIndex(0)
                     .transition(
                         .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
+                            insertion: .scale(scale: 0.94, anchor: .leading).combined(with: .opacity),
+                            removal: .scale(scale: 0.94, anchor: .leading).combined(with: .opacity)
                         )
                     )
             }
         }
         .padding(28)
+        .onAppear {
+            windowWideForDrawer = appState.showPhotoDrawer
+            drawerExpanded = appState.showPhotoDrawer
+        }
+        .onChange(of: appState.showPhotoDrawer) { _, newValue in
+            shrinkTask?.cancel()
+            shrinkTask = nil
+
+            if newValue {
+                windowWideForDrawer = true
+                DispatchQueue.main.async {
+                    withAnimation(AndMotion.drawerSpring) {
+                        drawerExpanded = true
+                    }
+                }
+            } else {
+                withAnimation(AndMotion.drawerSpring) {
+                    drawerExpanded = false
+                }
+                let item = DispatchWorkItem {
+                    if !appState.showPhotoDrawer {
+                        windowWideForDrawer = false
+                    }
+                }
+                shrinkTask = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: item)
+            }
+        }
         .background(
             WindowConfigurator(
-                showDrawer: appState.showPhotoDrawer,
+                showDrawer: windowWideForDrawer,
                 scale: appState.windowScale,
                 spec: appState.effectiveHardwareSpec,
                 isLandscape: appState.isLandscape,
@@ -42,6 +95,8 @@ public struct MainWindowView: View {
                 window.standardWindowButton(.closeButton)?.isHidden = true
                 window.standardWindowButton(.miniaturizeButton)?.isHidden = true
                 window.standardWindowButton(.zoomButton)?.isHidden = true
+            } onWillClose: {
+                appState.stopMirroringOnWindowClose()
             }
         )
     }
@@ -55,6 +110,7 @@ private struct WindowConfigurator: NSViewRepresentable {
     let isLandscape: Bool
     let aspect: CGFloat
     let configure: (NSWindow) -> Void
+    var onWillClose: (() -> Void)? = nil
     
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -62,6 +118,14 @@ private struct WindowConfigurator: NSViewRepresentable {
     
     final class Coordinator {
         weak var configuredWindow: NSWindow?
+        var observedWindow: NSWindow?
+        var closeObserver: NSObjectProtocol?
+
+        deinit {
+            if let closeObserver {
+                NotificationCenter.default.removeObserver(closeObserver)
+            }
+        }
     }
     
     func makeNSView(context: Context) -> NSView {
@@ -72,6 +136,7 @@ private struct WindowConfigurator: NSViewRepresentable {
                     configure(window)
                     context.coordinator.configuredWindow = window
                 }
+                attachCloseObserver(to: window, coordinator: context.coordinator)
                 updateWindowSize(window: window, animated: false)
             }
         }
@@ -84,6 +149,7 @@ private struct WindowConfigurator: NSViewRepresentable {
                 configure(window)
                 context.coordinator.configuredWindow = window
             }
+            attachCloseObserver(to: window, coordinator: context.coordinator)
             updateWindowSize(window: window, animated: true)
         }
     }
@@ -120,6 +186,23 @@ private struct WindowConfigurator: NSViewRepresentable {
                 }
             } else {
                 window.setFrame(newFrame, display: true, animate: false)
+            }
+        }
+    }
+
+    private func attachCloseObserver(to window: NSWindow, coordinator: Coordinator) {
+        guard coordinator.observedWindow !== window else { return }
+        if let prev = coordinator.closeObserver {
+            NotificationCenter.default.removeObserver(prev)
+        }
+        coordinator.observedWindow = window
+        coordinator.closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                onWillClose?()
             }
         }
     }
