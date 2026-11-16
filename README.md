@@ -39,17 +39,6 @@ Existing solutions rely on stateless ADB bindings, adding 2–4 seconds of laten
 | **Appium / CursorTouch** | WebDriver sessions or vision/coordinate loops | 2–5 s | Heavy screenshot / selector polling | External / VNC |
 | **AndOnMac + DroidPath** | Persistent DAG + A* router + live Shadow DOM daemon | `<1s` / hop | `0` intermediate calls on known routes | 120Hz Metal + live HUD |
 
-## Why AndOnMac? (File & Mirroring Tools)
-
-| Feature | **AndOnMac** | Android File Transfer | OpenMTP | MacDroid | KDE Connect |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Native UI** | Swift 6 / AppKit | Legacy | Electron | Native (Paid) | Qt |
-| **120 FPS Mirroring & Audio** | Yes | No | No | No | No |
-| **Photo (`Cmd+4`) & File Manager (`Cmd+5`)** | Yes | Broken / Legacy | Browser only | Paid | File send |
-| **Built-in MCP, OCR & Recall** | Yes | No | No | No | No |
-| **USB, QR Wi-Fi & Hotspot Bypass** | Yes | USB only | USB only | USB / Wi-Fi | Wi-Fi only |
-| **License** | MIT (Free) | Proprietary | MIT | Proprietary | GPL |
-
 ## Installation
 
 ### Homebrew (Recommended)
