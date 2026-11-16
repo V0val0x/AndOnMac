@@ -1933,10 +1933,29 @@ final class AndOnMacTests: XCTestCase {
         let idxB = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.android.settings", activeWindowId: 1, nodes: [nodeB])
         let fpB = ScreenLayoutHasher().fingerprint(for: idxB)
 
-        struct LiveMockExecutor: MacroActionExecutor {
+        let vm = AgenticHUDViewModel()
+
+        final class ReticleCapture: @unchecked Sendable {
+            var x: Int?
+            var y: Int?
+        }
+        let captured = ReticleCapture()
+
+        struct ObservingMockExecutor: MacroActionExecutor {
             let domState: ShadowDOMState
             let nodeB: ShadowUINode
+            let vm: AgenticHUDViewModel
+            let captured: ReticleCapture
             func execute(action: AttributedUIAction, serial: String) async throws {
+                for _ in 0..<50 {
+                    let pos = await MainActor.run { (vm.activeReticle?.x, vm.activeReticle?.y) }
+                    if pos.0 != nil {
+                        captured.x = pos.0
+                        captured.y = pos.1
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
                 await domState.handleMessage(.snapshot(WireSnapshotPayload(
                     seq: 2, timestampMs: 200, reason: "step", activePackage: "com.android.settings",
                     activeWindowId: 1, nodeCount: 1, nodes: [nodeB]
@@ -1944,15 +1963,13 @@ final class AndOnMacTests: XCTestCase {
             }
         }
 
-        let engine = MacroExecutionEngine(
+        let observingEngine = MacroExecutionEngine(
             domState: domState,
             graphEngine: graphEngine,
-            executor: LiveMockExecutor(domState: domState, nodeB: nodeB),
+            executor: ObservingMockExecutor(domState: domState, nodeB: nodeB, vm: vm, captured: captured),
             configuration: MacroExecutionConfiguration(stepTimeoutMs: 1000, postSettleQuiescenceMs: 0)
         )
-
-        let vm = AgenticHUDViewModel()
-        vm.attach(to: engine)
+        vm.attach(to: observingEngine)
         try await Task.sleep(for: .milliseconds(20))
 
         let edge = ScreenTransitionEdge(
@@ -1961,14 +1978,16 @@ final class AndOnMacTests: XCTestCase {
             action: AttributedUIAction(kind: .tap, targetDescription: "Battery Share", x: 300, y: 1200),
             actionSignature: "tap:Battery Share"
         )
-        let report = try await engine.execute(path: [edge], serial: "61061JEA307110")
+        let report = try await observingEngine.execute(path: [edge], serial: "61061JEA307110")
         XCTAssertEqual(report.steps.count, 1)
 
-        // Allow MainActor stream task to drain the queued events
-        try await Task.sleep(for: .milliseconds(50))
+        // Allow MainActor stream task to drain the queued events without racing reticle auto-clear
+        for _ in 0..<50 where vm.toastPhase != .completed {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(vm.toastPhase, .completed)
-        XCTAssertEqual(vm.activeReticle?.x, 300)
-        XCTAssertEqual(vm.activeReticle?.y, 1200)
+        XCTAssertEqual(captured.x, 300)
+        XCTAssertEqual(captured.y, 1200)
         vm.stopListening()
     }
 
