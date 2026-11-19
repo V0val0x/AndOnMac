@@ -1,5 +1,8 @@
 package com.shadowgraph.daemon.transport
 
+import com.shadowgraph.daemon.input.InputInjector
+import kotlin.math.roundToInt
+
 /**
  * Pure Kotlin stdlib parser for inbound 1-line JSON control commands.
  * Supported commands:
@@ -7,8 +10,18 @@ package com.shadowgraph.daemon.transport
  * - {"cmd":"ping"}
  * - {"cmd":"set_debounce","ms":30}
  * - {"cmd":"shutdown"}
+ * - {"cmd":"tap","id":1,"x":540,"y":1200}
+ * - {"cmd":"swipe","id":2,"x1":540,"y1":1900,"x2":540,"y2":450,"duration_ms":145,"hold_ms":25}
+ * - {"cmd":"keyevent","id":3,"keycode":4}
  */
 object CommandParser {
+    private const val MAX_COORD = 16_384
+    private const val MIN_SWIPE_DURATION_MS = 10L
+    private const val MAX_SWIPE_DURATION_MS = 10_000L
+    private const val MAX_SWIPE_HOLD_MS = 1_000L
+    private const val MIN_KEYCODE = 1
+    private const val MAX_KEYCODE = 1024
+
     fun parseLine(line: String): InboundCommand {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) {
@@ -36,8 +49,83 @@ object CommandParser {
                 }
                 InboundCommand.SetDebounce(ms)
             }
+            "tap" -> parseTap(line, fields)
+            "swipe" -> parseSwipe(line, fields)
+            "keyevent" -> parseKeyevent(line, fields)
             else -> InboundCommand.Unknown(line, "unknown_cmd:$cmd")
         }
+    }
+
+    private fun parseOptionalId(fields: Map<String, Any?>): Long? {
+        if (!fields.containsKey("id") || fields["id"] == null) return 0L
+        val raw = fields["id"] as? Long ?: return null
+        return if (raw >= 0L) raw else null
+    }
+
+    private fun parseCoord(fields: Map<String, Any?>, key: String): Int? {
+        val v = when (val raw = fields[key]) {
+            is Long -> if (raw in 0L..MAX_COORD.toLong()) raw.toInt() else return null
+            is Double -> if (raw.isFinite() && raw >= 0.0 && raw <= MAX_COORD.toDouble()) raw.roundToInt() else return null
+            else -> return null
+        }
+        return if (v in 0..MAX_COORD) v else null
+    }
+
+    private fun parseTap(line: String, fields: Map<String, Any?>): InboundCommand {
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
+        val x = parseCoord(fields, "x") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x")
+        val y = parseCoord(fields, "y") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y")
+        return InboundCommand.Tap(id = id, x = x, y = y)
+    }
+
+    private fun parseSwipe(line: String, fields: Map<String, Any?>): InboundCommand {
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
+        val x1 = parseCoord(fields, "x1") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x1")
+        val y1 = parseCoord(fields, "y1") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y1")
+        val x2 = parseCoord(fields, "x2") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x2")
+        val y2 = parseCoord(fields, "y2") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y2")
+
+        val durationMs = if (!fields.containsKey("duration_ms") || fields["duration_ms"] == null) {
+            InputInjector.DEFAULT_SWIPE_DURATION_MS
+        } else {
+            val raw = fields["duration_ms"] as? Long
+                ?: return InboundCommand.Unknown(line, "invalid_duration_ms")
+            if (raw !in MIN_SWIPE_DURATION_MS..MAX_SWIPE_DURATION_MS) {
+                return InboundCommand.Unknown(line, "duration_ms_out_of_range")
+            }
+            raw
+        }
+
+        val holdMs = if (!fields.containsKey("hold_ms") || fields["hold_ms"] == null) {
+            InputInjector.DEFAULT_SWIPE_HOLD_MS
+        } else {
+            val raw = fields["hold_ms"] as? Long
+                ?: return InboundCommand.Unknown(line, "invalid_hold_ms")
+            if (raw !in 0L..MAX_SWIPE_HOLD_MS) {
+                return InboundCommand.Unknown(line, "hold_ms_out_of_range")
+            }
+            raw
+        }
+
+        return InboundCommand.Swipe(
+            id = id,
+            x1 = x1,
+            y1 = y1,
+            x2 = x2,
+            y2 = y2,
+            durationMs = durationMs,
+            holdMs = holdMs
+        )
+    }
+
+    private fun parseKeyevent(line: String, fields: Map<String, Any?>): InboundCommand {
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
+        val rawCode = fields["keycode"] as? Long
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_keycode")
+        if (rawCode !in MIN_KEYCODE.toLong()..MAX_KEYCODE.toLong()) {
+            return InboundCommand.Unknown(line, "keycode_out_of_range")
+        }
+        return InboundCommand.Keyevent(id = id, keycode = rawCode.toInt())
     }
 
     private fun parseFlatJsonObject(input: String): Map<String, Any?>? {

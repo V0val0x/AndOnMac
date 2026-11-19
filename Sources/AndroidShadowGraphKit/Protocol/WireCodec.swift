@@ -4,6 +4,7 @@ public enum WireCodecError: Error, Sendable, Equatable {
     case emptyFrame
     case unknownMessageType(String)
     case invalidDebounceMs(Int)
+    case invalidInputParameter(String)
 }
 
 /// Host-side twin of Layer 1's `WireEncoder`, allowing NDJSON today and a binary codec later.
@@ -35,6 +36,7 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
     private static let prefixHello = Array("{\"type\":\"hello\"".utf8)
     private static let prefixError = Array("{\"type\":\"error\"".utf8)
     private static let prefixSecureScreen = Array("{\"type\":\"secure_screen\"".utf8)
+    private static let prefixInputResult = Array("{\"type\":\"input_result\"".utf8)
 
     public init() {}
 
@@ -68,6 +70,28 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
                 throw WireCodecError.invalidDebounceMs(ms)
             }
             return Data("{\"cmd\":\"set_debounce\",\"ms\":\(ms)}\n".utf8)
+        case .tap(let id, let x, let y):
+            guard (0...16_384).contains(x), (0...16_384).contains(y) else {
+                throw WireCodecError.invalidInputParameter("tap coords (\(x),\(y)) out of range 0...16384")
+            }
+            return Data("{\"cmd\":\"tap\",\"id\":\(id),\"x\":\(x),\"y\":\(y)}\n".utf8)
+        case .swipe(let id, let x1, let y1, let x2, let y2, let durationMs, let holdMs):
+            guard (0...16_384).contains(x1), (0...16_384).contains(y1),
+                  (0...16_384).contains(x2), (0...16_384).contains(y2) else {
+                throw WireCodecError.invalidInputParameter("swipe coords (\(x1),\(y1))->(\(x2),\(y2)) out of range 0...16384")
+            }
+            guard (10...10_000).contains(durationMs) else {
+                throw WireCodecError.invalidInputParameter("swipe duration_ms \(durationMs) out of range 10...10000")
+            }
+            guard (0...1_000).contains(holdMs) else {
+                throw WireCodecError.invalidInputParameter("swipe hold_ms \(holdMs) out of range 0...1000")
+            }
+            return Data("{\"cmd\":\"swipe\",\"id\":\(id),\"x1\":\(x1),\"y1\":\(y1),\"x2\":\(x2),\"y2\":\(y2),\"duration_ms\":\(durationMs),\"hold_ms\":\(holdMs)}\n".utf8)
+        case .keyevent(let id, let keycode):
+            guard (1...1024).contains(keycode) else {
+                throw WireCodecError.invalidInputParameter("keycode \(keycode) out of range 1...1024")
+            }
+            return Data("{\"cmd\":\"keyevent\",\"id\":\(id),\"keycode\":\(keycode)}\n".utf8)
         }
     }
 
@@ -87,6 +111,8 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
             return .error(try decoder.decode(WireErrorPayload.self, from: data))
         case "secure_screen":
             return .secureScreen(try decoder.decode(WireSecureScreenPayload.self, from: data))
+        case "input_result":
+            return .inputResult(try decoder.decode(WireInputResultPayload.self, from: data))
         default:
             throw WireCodecError.unknownMessageType(type)
         }
@@ -104,6 +130,7 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixHello) { return "hello" }
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixError) { return "error" }
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixSecureScreen) { return "secure_screen" }
+            if Self.matchesPrefix(base, count: count, prefix: Self.prefixInputResult) { return "input_result" }
             return nil
         }
     }

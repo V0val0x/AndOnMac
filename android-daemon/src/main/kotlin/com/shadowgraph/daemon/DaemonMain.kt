@@ -11,15 +11,18 @@ import com.shadowgraph.daemon.graph.ShadowTreeCollector
 import com.shadowgraph.daemon.graph.ShadowTreeDiffer
 import com.shadowgraph.daemon.graph.ShadowTreeSnapshot
 import com.shadowgraph.daemon.graph.TreeDiffResult
+import com.shadowgraph.daemon.input.InputInjector
 import com.shadowgraph.daemon.transport.ClientSession
 import com.shadowgraph.daemon.transport.DaemonTcpServer
 import com.shadowgraph.daemon.transport.InboundCommand
 import com.shadowgraph.daemon.transport.NdjsonWireEncoder
 import com.shadowgraph.daemon.transport.WireError
 import com.shadowgraph.daemon.transport.WireHello
+import com.shadowgraph.daemon.transport.WireInputResult
 import com.shadowgraph.daemon.transport.WirePong
 import com.shadowgraph.daemon.transport.WireSecureScreen
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -56,6 +59,9 @@ object DaemonMain {
 
         val worker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "shadow-diff-worker").apply { isDaemon = true }
+        }
+        val inputWorker: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "shadow-input-worker").apply { isDaemon = true }
         }
 
         val host = UiAutomationHost(config)
@@ -101,6 +107,10 @@ object DaemonMain {
             } catch (_: Throwable) {
             }
             try {
+                inputWorker.shutdownNow()
+            } catch (_: Throwable) {
+            }
+            try {
                 worker.shutdownNow()
             } catch (_: Throwable) {
             }
@@ -112,6 +122,38 @@ object DaemonMain {
             try {
                 worker.execute(task)
             } catch (_: RejectedExecutionException) {
+            }
+        }
+
+        fun submitInput(session: ClientSession, id: Long, cmdName: String, task: () -> Unit) {
+            if (shuttingDown.get() || inputWorker.isShutdown) {
+                server.sendInputResult(
+                    session,
+                    WireInputResult(
+                        id = id,
+                        cmd = cmdName,
+                        ok = false,
+                        error = "daemon_shutting_down",
+                        elapsedMs = 0L,
+                        timestampMs = System.currentTimeMillis()
+                    )
+                )
+                return
+            }
+            try {
+                inputWorker.execute(task)
+            } catch (_: RejectedExecutionException) {
+                server.sendInputResult(
+                    session,
+                    WireInputResult(
+                        id = id,
+                        cmd = cmdName,
+                        ok = false,
+                        error = "input_executor_rejected",
+                        elapsedMs = 0L,
+                        timestampMs = System.currentTimeMillis()
+                    )
+                )
             }
         }
 
@@ -225,7 +267,8 @@ object DaemonMain {
                         format = encoder.formatName,
                         sdkInt = Build.VERSION.SDK_INT,
                         deviceModel = Build.MODEL ?: "Android",
-                        daemonPid = Process.myPid().toLong()
+                        daemonPid = Process.myPid().toLong(),
+                        capabilities = listOf("input")
                     )
                     server.sendHello(session, hello)
                     submitWorker {
@@ -284,6 +327,89 @@ object DaemonMain {
                         }
                         InboundCommand.Shutdown -> {
                             shutdown("client_command")
+                        }
+                        is InboundCommand.Tap -> {
+                            submitInput(session, command.id, "tap") {
+                                val uia = host.uiAutomation
+                                val res = if (uia != null) {
+                                    InputInjector.injectTap(uia, command.x, command.y)
+                                } else {
+                                    com.shadowgraph.daemon.input.InputExecutionResult(
+                                        ok = false,
+                                        error = "uiautomation_unavailable",
+                                        elapsedMs = 0L
+                                    )
+                                }
+                                server.sendInputResult(
+                                    session,
+                                    WireInputResult(
+                                        id = command.id,
+                                        cmd = "tap",
+                                        ok = res.ok,
+                                        error = res.error,
+                                        elapsedMs = res.elapsedMs,
+                                        timestampMs = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }
+                        is InboundCommand.Swipe -> {
+                            submitInput(session, command.id, "swipe") {
+                                val uia = host.uiAutomation
+                                val res = if (uia != null) {
+                                    InputInjector.injectSwipe(
+                                        uia = uia,
+                                        x1 = command.x1,
+                                        y1 = command.y1,
+                                        x2 = command.x2,
+                                        y2 = command.y2,
+                                        durationMs = command.durationMs,
+                                        holdMs = command.holdMs
+                                    )
+                                } else {
+                                    com.shadowgraph.daemon.input.InputExecutionResult(
+                                        ok = false,
+                                        error = "uiautomation_unavailable",
+                                        elapsedMs = 0L
+                                    )
+                                }
+                                server.sendInputResult(
+                                    session,
+                                    WireInputResult(
+                                        id = command.id,
+                                        cmd = "swipe",
+                                        ok = res.ok,
+                                        error = res.error,
+                                        elapsedMs = res.elapsedMs,
+                                        timestampMs = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }
+                        is InboundCommand.Keyevent -> {
+                            submitInput(session, command.id, "keyevent") {
+                                val uia = host.uiAutomation
+                                val res = if (uia != null) {
+                                    InputInjector.injectKeyevent(uia, command.keycode)
+                                } else {
+                                    com.shadowgraph.daemon.input.InputExecutionResult(
+                                        ok = false,
+                                        error = "uiautomation_unavailable",
+                                        elapsedMs = 0L
+                                    )
+                                }
+                                server.sendInputResult(
+                                    session,
+                                    WireInputResult(
+                                        id = command.id,
+                                        cmd = "keyevent",
+                                        ok = res.ok,
+                                        error = res.error,
+                                        elapsedMs = res.elapsedMs,
+                                        timestampMs = System.currentTimeMillis()
+                                    )
+                                )
+                            }
                         }
                         is InboundCommand.Unknown -> {
                             server.sendError(

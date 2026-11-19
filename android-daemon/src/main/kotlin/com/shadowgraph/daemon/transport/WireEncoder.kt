@@ -15,4 +15,5 @@ interface WireEncoder {
     fun encodeError(error: WireError, out: ByteArrayBuffer)
     fun encodePong(pong: WirePong, out: ByteArrayBuffer)
     fun encodeSecureScreen(secure: WireSecureScreen, out: ByteArrayBuffer)
+    fun encodeInputResult(result: WireInputResult, out: ByteArrayBuffer)
 }

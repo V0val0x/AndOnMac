@@ -690,4 +690,120 @@ final class PrivacyExploreResilienceTests: XCTestCase {
         XCTAssertEqual(route?.edges.count, 2)
         XCTAssertTrue(route?.edges.allSatisfy { $0.action != nil } ?? false)
     }
+
+    func testClippedScrollChildSkippedUntilScrolledAndCompactedNoopTapReportsUnchanged() async throws {
+        // 1. A RecyclerView child peeking behind Android's bottom gesture bar (`centerY = 2418`
+        //    when RecyclerView `maxY = 2361`) must be skipped so exploreAndClick scrolls once more
+        //    instead of tapping the gesture bar. Non-scroll-child bottom dock buttons stay tappable.
+        let ignored: Set<String> = ["com.android.systemui"]
+        let clippedNodes = [
+            mkNode(id: 1, idx: 0, pkg: "com.android.settings", cls: "RecyclerView", rid: "com.android.settings:id/recycler_view", bounds: "[0,299][1080,2361]", scrollable: true),
+            mkNode(id: 2, parentId: 1, idx: 1, pkg: "com.android.settings", cls: "LinearLayout", bounds: "[0,2370][1080,2466]", clickable: true),
+            mkNode(id: 3, parentId: 2, idx: 2, pkg: "com.android.settings", cls: "TextView", rid: "android:id/title", text: "Developer options", bounds: "[221,2390][593,2446]"),
+            mkNode(id: 4, idx: 3, pkg: "com.android.settings", cls: "Button", rid: "com.android.settings:id/dock_btn", text: "Bottom Dock", bounds: "[400,2365][680,2415]", clickable: true)
+        ]
+        let clippedIdx = ShadowTreeIndex(seq: 1, timestampMs: 1000, activePackage: "com.android.settings", activeWindowId: 1, nodes: clippedNodes)
+        XCTAssertTrue(
+            ShadowGraphBridge.scoreLiveCandidates(in: clippedIdx, query: "Developer options", ignoredPackages: ignored).isEmpty,
+            "Clipped RecyclerView child at centerY=2418 (> maxY=2361) must be skipped"
+        )
+        XCTAssertEqual(
+            ShadowGraphBridge.scoreLiveCandidates(in: clippedIdx, query: "Bottom Dock", ignoredPackages: ignored).count,
+            1,
+            "Non-scroll-child bottom dock button must remain tappable"
+        )
+
+        let bridge = ShadowGraphBridge()
+        _ = await seedScreenIntoGraph(bridge, seq: 1, pkg: "com.android.settings", nodes: clippedNodes)
+
+        let centeredNodes = [
+            mkNode(id: 1, idx: 0, pkg: "com.android.settings", cls: "RecyclerView", rid: "com.android.settings:id/recycler_view", bounds: "[0,299][1080,2361]", scrollable: true),
+            mkNode(id: 2, parentId: 1, idx: 1, pkg: "com.android.settings", cls: "LinearLayout", bounds: "[0,1660][1080,1800]", clickable: true),
+            mkNode(id: 3, parentId: 2, idx: 2, pkg: "com.android.settings", cls: "TextView", rid: "android:id/title", text: "Developer options", bounds: "[221,1702][593,1755]")
+        ]
+        let devOptsNodes = [
+            mkNode(id: 10, idx: 0, pkg: "com.android.settings", cls: "TextView", rid: "android:id/title", text: "Use developer options", bounds: "[80,300][700,420]", clickable: true)
+        ]
+
+        actor LocalSeq {
+            var v: UInt64 = 2
+            func next() -> UInt64 { defer { v += 1 }; return v }
+        }
+        let seqBox = LocalSeq()
+        let exec = ScriptedExecutor { [weak self] act in
+            guard let self else { return }
+            switch act.kind {
+            case .swipe:
+                try? await Task.sleep(for: .milliseconds(10))
+                let s = await seqBox.next()
+                _ = await self.seedScreenIntoGraph(bridge, seq: s, pkg: "com.android.settings", nodes: centeredNodes)
+            case .tap:
+                XCTAssertLessThan(act.y ?? 9999, 2300, "Tap must wait until Developer options scrolls into viewport")
+                try? await Task.sleep(for: .milliseconds(10))
+                let s = await seqBox.next()
+                _ = await self.seedScreenIntoGraph(bridge, seq: s, pkg: "com.android.settings", nodes: devOptsNodes)
+            default:
+                break
+            }
+        }
+
+        let outcome = try await bridge.exploreAndClick(
+            target: "Developer options",
+            serial: "SER1",
+            executor: exec,
+            maxScrolls: 2,
+            stepTimeoutMs: 400,
+            postSettleQuiescenceMs: 40,
+            preferGraphRoute: false
+        )
+        guard case .exploredAndClicked(let cand, let scrolls, _, _, _, let changed, let recorded, _) = outcome else {
+            XCTFail("Expected exploredAndClicked, got \(outcome)")
+            return
+        }
+        XCTAssertEqual(scrolls, 1)
+        XCTAssertEqual(cand.centerY, 1728)
+        XCTAssertTrue(changed)
+        XCTAssertTrue(recorded)
+
+        // 2. Compacted canonical vertex: a no-op tap must report screenChanged == false & edgeRecorded == false
+        let bridge2 = ShadowGraphBridge()
+        var baseNodes: [ShadowUINode] = (0..<12).map { i in
+            mkNode(
+                id: Int64(100 + i),
+                idx: i,
+                pkg: "com.example.app",
+                cls: "TextView",
+                rid: "com.example.app:id/item_\(i)",
+                text: "StableRow\(i)",
+                bounds: "[40,\(200 + i * 100)][800,\(280 + i * 100)]",
+                clickable: true
+            )
+        }
+        let hCanon = await seedScreenIntoGraph(bridge2, seq: 1, pkg: "com.example.app", nodes: baseNodes)
+        baseNodes.append(
+            mkNode(id: 200, idx: 12, pkg: "com.example.app", cls: "TextView", rid: "com.example.app:id/jitter", text: "TinyJitterBadge", bounds: "[820,200][1000,260]")
+        )
+        _ = await seedScreenIntoGraph(bridge2, seq: 2, pkg: "com.example.app", nodes: baseNodes)
+        let curHash = await bridge2.graphEngine.currentStateHash
+        XCTAssertEqual(curHash, hCanon, "Jittered frame must compact into canonical vertex")
+
+        let noopExec = ScriptedExecutor { _ in }
+        let noopOutcome = try await bridge2.exploreAndClick(
+            target: "StableRow0",
+            serial: "SER1",
+            executor: noopExec,
+            maxScrolls: 0,
+            stepTimeoutMs: 120,
+            postSettleQuiescenceMs: 0,
+            preferGraphRoute: false
+        )
+        guard case .exploredAndClicked(_, _, let sHash, let fHash, _, let noopChanged, let noopRecorded, _) = noopOutcome else {
+            XCTFail("Expected exploredAndClicked, got \(noopOutcome)")
+            return
+        }
+        XCTAssertEqual(sHash, hCanon)
+        XCTAssertEqual(fHash, hCanon)
+        XCTAssertFalse(noopChanged, "No-op tap on compacted vertex must report screenChanged=false")
+        XCTAssertFalse(noopRecorded, "No-op tap on compacted vertex must not record bogus edge")
+    }
 }

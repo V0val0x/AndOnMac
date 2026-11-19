@@ -288,10 +288,13 @@ public actor MacroExecutionEngine {
                 emit(.willExecuteAction(stepIndex: stepIndex, totalSteps: path.count, action: resolvedAction))
 
                 let stepStart = ContinuousClock.now
+                let isIntermediateScroll = (resolvedAction.kind == .swipe) && (stepIndex + 1 < path.count)
                 let settleOutcome: SettleOutcome
                 do {
                     settleOutcome = try await executeAndWaitForSettle(
                         stepIndex: stepIndex,
+                        fromHash: lastSettledHash,
+                        isIntermediateScroll: isIntermediateScroll,
                         action: resolvedAction,
                         serial: serial,
                         targets: suffixTargets,
@@ -379,12 +382,18 @@ public actor MacroExecutionEngine {
                 stepIndex = matchedIdx + 1
 
                 if stepIndex < path.count && configuration.postSettleQuiescenceMs > 0 {
-                    // Wait for 120Hz RecyclerView fling deceleration before a subsequent tap so Android
-                    // reaches SCROLL_STATE_IDLE instead of swallowing the tap as a fling-brake touch.
+                    // When native zero-fling daemon injection is active, ease-out + terminal hold
+                    // stops RecyclerView at SCROLL_STATE_IDLE immediately (~0px drift), so tight
+                    // quiescence (45-70ms) suffices. Keep conservative 280/480ms waits on ADB fallback.
                     let nextIsSwipe = path[stepIndex].action?.kind == .swipe
-                    let quiescenceMs = (resolvedAction.kind == .swipe)
-                        ? max(configuration.postSettleQuiescenceMs, nextIsSwipe ? 280 : 480)
-                        : configuration.postSettleQuiescenceMs
+                    let quiescenceMs: Int
+                    if resolvedAction.kind == .swipe {
+                        let zeroFling = await executor.supportsZeroFlingSwipes(serial: serial)
+                        let minWait = zeroFling ? (nextIsSwipe ? 60 : 85) : (nextIsSwipe ? 280 : 480)
+                        quiescenceMs = max(configuration.postSettleQuiescenceMs, minWait)
+                    } else {
+                        quiescenceMs = configuration.postSettleQuiescenceMs
+                    }
                     try await Task.sleep(for: .milliseconds(quiescenceMs))
                 }
             }
@@ -530,6 +539,8 @@ public actor MacroExecutionEngine {
 
     private func executeAndWaitForSettle(
         stepIndex: Int,
+        fromHash: UInt64,
+        isIntermediateScroll: Bool,
         action: AttributedUIAction,
         serial: String,
         targets: [SettleTarget],
@@ -570,11 +581,19 @@ public actor MacroExecutionEngine {
                     }
                     let fp = hasher.fingerprint(for: update.index)
                     for target in targets {
+                        // Intermediate scroll steps can shift by ±1 list row (~20px), dropping
+                        // Jaccard slightly under 0.80 (e.g. 0.785) while the next tap live-retargets.
+                        let effectiveThreshold: Double = (isIntermediateScroll
+                            && target.stepIndex == stepIndex
+                            && threshold < 1.0
+                            && fp.layoutHash != fromHash)
+                            ? min(threshold, 0.65)
+                            : threshold
                         let match = Self.matchesVertex(
                             fingerprint: fp,
                             expectedHash: target.targetHash,
                             expectedVertex: target.expectedVertex,
-                            threshold: threshold
+                            threshold: effectiveThreshold
                         )
                         if match.matched {
                             return .settled(
@@ -790,6 +809,40 @@ public actor MacroExecutionEngine {
         return unionRect
     }
 
+    /// Returns `true` if `node` is a vertically scrollable container suitable for list scrolling
+    /// (excluding ignored system overlays, horizontal pagers, and launcher home-screen workspaces).
+    private static func isVerticalScrollContainer(
+        _ node: ShadowUINode,
+        skipIgnored: Bool,
+        ignoredPackages: Set<String>
+    ) -> Bool {
+        guard node.visible, node.scrollable else { return false }
+        if skipIgnored {
+            if !node.packageName.isEmpty && ignoredPackages.contains(node.packageName) {
+                return false
+            }
+            if !node.resourceId.isEmpty && ignoredPackages.contains(where: { node.resourceId.hasPrefix("\($0):") }) {
+                return false
+            }
+        }
+        // Skip horizontal-only pagers and launcher home-screen workspaces where a vertical
+        // downward swipe pulls down the Android Notification Shade instead of scrolling a list.
+        let clsLower = node.className.lowercased()
+        if clsLower.contains("horizontalscrollview") || clsLower.contains("viewpager") {
+            return false
+        }
+        let ridLower = node.resourceId.lowercased()
+        if ridLower.hasSuffix(":id/workspace")
+            || ridLower.hasSuffix("/workspace")
+            || ridLower.hasSuffix(":id/hotseat")
+            || ridLower.hasSuffix("/hotseat")
+            || ridLower.hasSuffix(":id/smartspace_card_pager")
+            || ridLower.hasSuffix("/smartspace_card_pager") {
+            return false
+        }
+        return true
+    }
+
     /// Finds the largest visible non-system `scrollable` container bounds on screen.
     internal static func largestScrollableRect(
         in index: ShadowTreeIndex,
@@ -798,30 +851,7 @@ public actor MacroExecutionEngine {
         let skipIgnored = !ignoredPackages.contains(index.activePackage)
         var best: ShadowTreeIndex.BoundsRect?
 
-        for node in index.orderedNodes where node.visible && node.scrollable {
-            if skipIgnored {
-                if !node.packageName.isEmpty && ignoredPackages.contains(node.packageName) {
-                    continue
-                }
-                if !node.resourceId.isEmpty && ignoredPackages.contains(where: { node.resourceId.hasPrefix("\($0):") }) {
-                    continue
-                }
-            }
-            // Skip horizontal-only pagers and launcher home-screen workspaces where a vertical
-            // downward swipe pulls down the Android Notification Shade instead of scrolling a list.
-            let clsLower = node.className.lowercased()
-            if clsLower.contains("horizontalscrollview") || clsLower.contains("viewpager") {
-                continue
-            }
-            let ridLower = node.resourceId.lowercased()
-            if ridLower.hasSuffix(":id/workspace")
-                || ridLower.hasSuffix("/workspace")
-                || ridLower.hasSuffix(":id/hotseat")
-                || ridLower.hasSuffix("/hotseat")
-                || ridLower.hasSuffix(":id/smartspace_card_pager")
-                || ridLower.hasSuffix("/smartspace_card_pager") {
-                continue
-            }
+        for node in index.orderedNodes where isVerticalScrollContainer(node, skipIgnored: skipIgnored, ignoredPackages: ignoredPackages) {
             guard let rect = ShadowTreeIndex.parseBoundsRect(node.bounds) else { continue }
             let width = rect.maxX - rect.minX
             let height = rect.maxY - rect.minY
@@ -835,6 +865,42 @@ public actor MacroExecutionEngine {
             }
         }
         return best
+    }
+
+    /// Returns `true` if `node`'s tap center `(centerX, centerY)` is clipped outside (or within
+    /// the razor edge inset of) a vertically scrollable ancestor container — e.g. a `RecyclerView`
+    /// row peeking behind Android's bottom gesture navigation bar (`centerY > recycler.maxY`)
+    /// that Accessibility still reports `visible: true`.
+    internal static func isNodeClippedByScrollableAncestor(
+        in index: ShadowTreeIndex,
+        node: ShadowUINode,
+        ignoredPackages: Set<String>
+    ) -> Bool {
+        let skipIgnored = !ignoredPackages.contains(index.activePackage)
+        var cursor = node.parentId
+        var hops = 0
+        var visited: Set<Int64> = [node.nodeId]
+
+        while let pid = cursor, hops < 16 {
+            guard visited.insert(pid).inserted,
+                  let parent = index.nodesById[pid] else {
+                break
+            }
+            if isVerticalScrollContainer(parent, skipIgnored: skipIgnored, ignoredPackages: ignoredPackages),
+               let rect = ShadowTreeIndex.parseBoundsRect(parent.bounds) {
+                let width = rect.maxX - rect.minX
+                let height = rect.maxY - rect.minY
+                if width >= 120, height >= 120 {
+                    let margin = height >= 200 ? min(16, max(8, height / 100)) : 0
+                    if node.centerY > rect.maxY - margin || node.centerY < rect.minY + margin {
+                        return true
+                    }
+                }
+            }
+            cursor = parent.parentId
+            hops += 1
+        }
+        return false
     }
 
     internal struct ScrollItemSignature: Equatable, Sendable {
@@ -953,10 +1019,14 @@ public actor MacroExecutionEngine {
             ignoredPackages: hasher.ignoredPackages
         )
 
+        let zeroFling = await executor.supportsZeroFlingSwipes(serial: serial)
         let cx = max(1, (scrollRect.minX + scrollRect.maxX) / 2)
         let spanY = scrollRect.maxY - scrollRect.minY
-        let yHigh = scrollRect.minY + (spanY * 72) / 100
-        let yLow = scrollRect.minY + (spanY * 28) / 100
+        let highPct = zeroFling ? 80 : 72
+        let lowPct = zeroFling ? 18 : 28
+        let swipeDurMs = zeroFling ? 145 : 500
+        let yHigh = scrollRect.minY + (spanY * highPct) / 100
+        let yLow = scrollRect.minY + (spanY * lowPct) / 100
         let startY = scrollingDown ? yHigh : yLow
         let endY = scrollingDown ? yLow : yHigh
         let dirLabel = scrollingDown ? "down" : "up"
@@ -968,7 +1038,7 @@ public actor MacroExecutionEngine {
             y: startY,
             endX: cx,
             endY: endY,
-            durationMs: 500
+            durationMs: swipeDurMs
         )
 
         emit(.recoveryAction(
@@ -1007,8 +1077,32 @@ public actor MacroExecutionEngine {
         }
 
         if configuration.postSettleQuiescenceMs > 0 {
-            let qMs = max(configuration.postSettleQuiescenceMs, 400)
-            try await Task.sleep(for: .milliseconds(qMs))
+            if zeroFling {
+                let quietMs = max(configuration.postSettleQuiescenceMs, 115)
+                let maxDrainMs = max(quietMs, 380)
+                let drainStart = Date()
+                var lastSeq = await domState.currentIndex?.seq
+                var lastChange = drainStart
+                while true {
+                    try Task.checkCancellation()
+                    let now = Date()
+                    let sinceStartMs = Int(now.timeIntervalSince(drainStart) * 1000.0)
+                    let sinceChangeMs = Int(now.timeIntervalSince(lastChange) * 1000.0)
+                    if sinceChangeMs >= quietMs || sinceStartMs >= maxDrainMs {
+                        break
+                    }
+                    let remMs = min(quietMs - sinceChangeMs, maxDrainMs - sinceStartMs)
+                    try await Task.sleep(for: .milliseconds(max(10, min(20, remMs))))
+                    let currentSeq = await domState.currentIndex?.seq
+                    if currentSeq != lastSeq {
+                        lastSeq = currentSeq
+                        lastChange = Date()
+                    }
+                }
+            } else {
+                let qMs = max(configuration.postSettleQuiescenceMs, 400)
+                try await Task.sleep(for: .milliseconds(qMs))
+            }
         }
 
         let refreshed = await resolveLiveActionWithNode(rawAction)
@@ -1049,8 +1143,16 @@ public actor MacroExecutionEngine {
             return (action, nil)
         }
 
-        let visibleNodes = (await domState.currentIndex)?.orderedNodes.filter {
-            $0.visible && ($0.centerX > 0 || $0.centerY > 0)
+        let liveIndex = await domState.currentIndex
+        let visibleNodes = liveIndex?.orderedNodes.filter { node in
+            guard let liveIndex else { return false }
+            return node.visible
+                && (node.centerX > 0 || node.centerY > 0)
+                && !Self.isNodeClippedByScrollableAncestor(
+                    in: liveIndex,
+                    node: node,
+                    ignoredPackages: hasher.ignoredPackages
+                )
         } ?? []
 
         var matchedNode: ShadowUINode?

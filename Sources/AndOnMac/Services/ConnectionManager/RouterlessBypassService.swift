@@ -208,7 +208,9 @@ public final class RouterlessBypassService: ObservableObject {
 
         // Step 2: If 192.168.44.x isn't up yet, bring up paired Android Bluetooth device + PAN service on macOS
         if !Self.hasBluetoothPANSubnet(inAddresses: Self.localInterfaceIPv4Addresses()) {
-            Self.bringUpMacBluetoothPAN(preferredDeviceNames: preferredDeviceNames)
+            await Task.detached(priority: .utility) {
+                Self.bringUpMacBluetoothPAN(preferredDeviceNames: preferredDeviceNames)
+            }.value
             // Poll briefly (up to 2.5s) for macOS to assign 192.168.44.x
             for _ in 0..<5 {
                 try? await Task.sleep(nanoseconds: 500_000_000)

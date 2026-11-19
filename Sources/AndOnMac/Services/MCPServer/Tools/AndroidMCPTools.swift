@@ -305,7 +305,7 @@ public enum AndroidMCPTools {
             await ShadowGraphManager.shared.recordAction(
                 AttributedUIAction(kind: .tap, targetDescription: "(\(x),\(y))", x: x, y: y)
             )
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "tap", "\(x)", "\(y)"], timeoutSeconds: 5.0)
+            try await ShadowGraphManager.shared.actionExecutor().dispatchTap(serial: serial, x: x, y: y)
             return .text("Tapped at (\(x), \(y)).")
         }
 
@@ -368,15 +368,16 @@ public enum AndroidMCPTools {
             )
         )
 
-        _ = try await ADBService.shared.execute(
-            arguments: ["-s", serial, "shell", "input", "tap", "\(target.center_x)", "\(target.center_y)"],
-            timeoutSeconds: 5.0
+        try await ShadowGraphManager.shared.actionExecutor().dispatchTap(
+            serial: serial,
+            x: target.center_x,
+            y: target.center_y
         )
         return .text("Tapped '\(target.text.isEmpty ? target.content_desc : target.text)' at (\(target.center_x), \(target.center_y)).")
     }
 
     private static func swipe(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
-        let duration = max(50, min(3000, args["duration_ms"]?.intValue ?? 300))
+        let explicitDuration = args["duration_ms"]?.intValue.map { max(50, min(3000, $0)) }
         let x1, y1, x2, y2: Int
         if let dir = args["direction"]?.stringValue {
             switch dir {
@@ -394,6 +395,9 @@ public enum AndroidMCPTools {
         }
 
         await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        let executor = ShadowGraphManager.shared.actionExecutor()
+        let zeroFling = await executor.supportsZeroFlingSwipes(serial: serial)
+        let duration = explicitDuration ?? (zeroFling ? ADBMacroActionExecutor.defaultDaemonSwipeDurationMs : 300)
         await ShadowGraphManager.shared.recordAction(
             AttributedUIAction(
                 kind: .swipe,
@@ -405,9 +409,14 @@ public enum AndroidMCPTools {
                 durationMs: duration
             )
         )
-        _ = try await ADBService.shared.execute(
-            arguments: ["-s", serial, "shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"],
-            timeoutSeconds: 6.0
+        try await executor.dispatchSwipe(
+            serial: serial,
+            x1: x1,
+            y1: y1,
+            x2: x2,
+            y2: y2,
+            durationMs: duration,
+            holdMs: ADBMacroActionExecutor.defaultZeroFlingHoldMs
         )
         return .text("Swiped (\(x1),\(y1)) -> (\(x2),\(y2)) in \(duration)ms.")
     }
@@ -444,15 +453,16 @@ public enum AndroidMCPTools {
         )
         let cmd = buildSafeTypeTextCommand(text)
 
+        let executor = ShadowGraphManager.shared.actionExecutor()
         if !cmd.useClipboard {
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "text", cmd.quotedArg], timeoutSeconds: 6.0)
         } else {
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", cmd.quotedArg], timeoutSeconds: 4.0)
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "279"], timeoutSeconds: 4.0)
+            try await executor.dispatchKeyeventCode(serial: serial, keyCode: "279")
         }
 
         if pressEnter {
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", "66"], timeoutSeconds: 4.0)
+            try await executor.dispatchKeyeventCode(serial: serial, keyCode: "66")
         }
         return .text("Typed \(text.count) characters\(pressEnter ? " + ENTER" : "").")
     }
@@ -478,7 +488,7 @@ public enum AndroidMCPTools {
         await ShadowGraphManager.shared.recordAction(
             AttributedUIAction(kind: .keyevent, targetDescription: key.uppercased())
         )
-        _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "keyevent", code], timeoutSeconds: 4.0)
+        try await ShadowGraphManager.shared.actionExecutor().dispatchKeyeventCode(serial: serial, keyCode: code)
         return .text("Sent keyevent \(key.uppercased()) (\(code)).")
     }
 

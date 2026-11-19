@@ -359,6 +359,17 @@ public final class ShadowGraphManager: @unchecked Sendable {
         )
     }
 
+    public var currentActiveSerial: String? {
+        lock.withLock { activeSerial }
+    }
+
+    public func actionExecutor() -> ADBMacroActionExecutor {
+        ADBMacroActionExecutor(
+            daemonClient: bridge.client,
+            activeSerialProvider: { [weak self] in self?.currentActiveSerial }
+        )
+    }
+
     public func navigateToNode(
         serial: String,
         target: String?,
@@ -368,15 +379,16 @@ public final class ShadowGraphManager: @unchecked Sendable {
         confirmed: Bool = false,
         autoExplore: Bool = false,
         secureHandoffTimeoutSeconds: TimeInterval = 60.0,
-        executor: MacroActionExecutor = ADBMacroActionExecutor()
+        executor: MacroActionExecutor? = nil
     ) async throws -> ShadowNavigationOutcome {
         await loadPersistedGraphIfNeeded()
         await ensureStarted(serial: serial, forceReconnectIfWaiting: true)
+        let activeExecutor = executor ?? actionExecutor()
         let outcome = try await bridge.routeAndExecute(
             targetHint: target,
             targetHash: targetHash,
             serial: serial,
-            executor: executor,
+            executor: activeExecutor,
             maxSteps: maxSteps,
             stepTimeoutMs: stepTimeoutMs,
             confirmed: confirmed,
@@ -400,14 +412,15 @@ public final class ShadowGraphManager: @unchecked Sendable {
         confirmed: Bool = false,
         preferGraphRoute: Bool = true,
         secureHandoffTimeoutSeconds: TimeInterval = 60.0,
-        executor: MacroActionExecutor = ADBMacroActionExecutor()
+        executor: MacroActionExecutor? = nil
     ) async throws -> ExploreOutcome {
         await loadPersistedGraphIfNeeded()
         await ensureStarted(serial: serial, forceReconnectIfWaiting: true)
+        let activeExecutor = executor ?? actionExecutor()
         let outcome = try await bridge.exploreAndClick(
             target: target,
             serial: serial,
-            executor: executor,
+            executor: activeExecutor,
             maxScrolls: maxScrolls,
             stepTimeoutMs: stepTimeoutMs,
             confirmed: confirmed,
@@ -590,7 +603,85 @@ public final class ShadowGraphManager: @unchecked Sendable {
 }
 
 public struct ADBMacroActionExecutor: MacroActionExecutor {
-    public init() {}
+    public static let defaultDaemonSwipeDurationMs = 145
+    public static let defaultZeroFlingHoldMs = 25
+
+    private let daemonClient: DaemonTCPClient?
+    private let activeSerialProvider: (@Sendable () -> String?)?
+
+    public init(
+        daemonClient: DaemonTCPClient? = nil,
+        activeSerialProvider: (@Sendable () -> String?)? = nil
+    ) {
+        self.daemonClient = daemonClient
+        self.activeSerialProvider = activeSerialProvider
+    }
+
+    private func daemonClientForSerial(_ serial: String) async -> DaemonTCPClient? {
+        guard let daemonClient else { return nil }
+        if let boundSerial = activeSerialProvider?(), !boundSerial.isEmpty, boundSerial != serial {
+            return nil
+        }
+        return await daemonClient.supportsNativeInput ? daemonClient : nil
+    }
+
+    public func supportsZeroFlingSwipes(serial: String) async -> Bool {
+        await daemonClientForSerial(serial) != nil
+    }
+
+    public func dispatchTap(serial: String, x: Int, y: Int) async throws {
+        if let client = await daemonClientForSerial(serial) {
+            if (try? await client.injectTap(x: x, y: y)) != nil {
+                return
+            }
+        }
+        _ = try await ADBService.shared.execute(
+            arguments: ["-s", serial, "shell", "input", "tap", "\(x)", "\(y)"],
+            timeoutSeconds: 5.0
+        )
+    }
+
+    public func dispatchSwipe(
+        serial: String,
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Int?,
+        holdMs: Int = defaultZeroFlingHoldMs
+    ) async throws {
+        if let client = await daemonClientForSerial(serial) {
+            let daemonDur = max(20, min(5000, durationMs ?? Self.defaultDaemonSwipeDurationMs))
+            let clampedHold = max(0, min(1000, holdMs))
+            if (try? await client.injectSwipe(
+                x1: x1,
+                y1: y1,
+                x2: x2,
+                y2: y2,
+                durationMs: daemonDur,
+                holdMs: clampedHold
+            )) != nil {
+                return
+            }
+        }
+        let duration = max(50, min(3000, durationMs ?? 300))
+        _ = try await ADBService.shared.execute(
+            arguments: ["-s", serial, "shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"],
+            timeoutSeconds: 6.0
+        )
+    }
+
+    public func dispatchKeyeventCode(serial: String, keyCode: String) async throws {
+        if let kcNum = Int(keyCode), let client = await daemonClientForSerial(serial) {
+            if (try? await client.injectKeyevent(keycode: kcNum)) != nil {
+                return
+            }
+        }
+        _ = try await ADBService.shared.execute(
+            arguments: ["-s", serial, "shell", "input", "keyevent", keyCode],
+            timeoutSeconds: 4.0
+        )
+    }
 
     public func execute(action: AttributedUIAction, serial: String) async throws {
         switch action.kind {
@@ -602,10 +693,7 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
                     underlyingMessage: "Missing tap coordinates (x, y)."
                 )
             }
-            _ = try await ADBService.shared.execute(
-                arguments: ["-s", serial, "shell", "input", "tap", "\(x)", "\(y)"],
-                timeoutSeconds: 5.0
-            )
+            try await dispatchTap(serial: serial, x: x, y: y)
 
         case .swipe:
             guard let x1 = action.x, let y1 = action.y, let x2 = action.endX, let y2 = action.endY else {
@@ -615,10 +703,25 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
                     underlyingMessage: "Missing swipe coordinates (x, y, endX, endY)."
                 )
             }
-            let duration = max(50, min(3000, action.durationMs ?? 300))
-            _ = try await ADBService.shared.execute(
-                arguments: ["-s", serial, "shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"],
-                timeoutSeconds: 6.0
+            let isBannerDismiss = action.targetDescription.hasPrefix("Dismiss occluding notification")
+            let holdMs = isBannerDismiss ? 0 : Self.defaultZeroFlingHoldMs
+            let isRecordedScroll = action.targetDescription.hasPrefix("explore_scroll_")
+                || action.targetDescription.hasPrefix("Smart scroll ")
+            let daemonReady = await daemonClientForSerial(serial) != nil
+            let effectiveDuration: Int?
+            if daemonReady && isRecordedScroll {
+                effectiveDuration = max(50, min(155, action.durationMs ?? Self.defaultDaemonSwipeDurationMs))
+            } else {
+                effectiveDuration = action.durationMs
+            }
+            try await dispatchSwipe(
+                serial: serial,
+                x1: x1,
+                y1: y1,
+                x2: x2,
+                y2: y2,
+                durationMs: effectiveDuration,
+                holdMs: holdMs
             )
 
         case .keyevent:
@@ -629,10 +732,7 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
                     underlyingMessage: "Unsupported keyevent '\(action.targetDescription)'."
                 )
             }
-            _ = try await ADBService.shared.execute(
-                arguments: ["-s", serial, "shell", "input", "keyevent", keyCode],
-                timeoutSeconds: 4.0
-            )
+            try await dispatchKeyeventCode(serial: serial, keyCode: keyCode)
 
         case .typeText:
             let text = action.textInput ?? action.targetDescription
@@ -654,16 +754,10 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
                     arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", "text", cmd.quotedArg],
                     timeoutSeconds: 4.0
                 )
-                _ = try await ADBService.shared.execute(
-                    arguments: ["-s", serial, "shell", "input", "keyevent", "279"],
-                    timeoutSeconds: 4.0
-                )
+                try await dispatchKeyeventCode(serial: serial, keyCode: "279")
             }
             if action.pressEnter == true {
-                _ = try await ADBService.shared.execute(
-                    arguments: ["-s", serial, "shell", "input", "keyevent", "66"],
-                    timeoutSeconds: 4.0
-                )
+                try await dispatchKeyeventCode(serial: serial, keyCode: "66")
             }
 
         case .launchApp:

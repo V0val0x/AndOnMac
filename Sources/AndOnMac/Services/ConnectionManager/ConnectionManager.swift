@@ -49,7 +49,8 @@ public final class ConnectionManager: ObservableObject {
         promotedUSBSerials.insert(device.id)
         let serial = device.id
         let wifiIP = device.ipAddress
-        Task {
+        let deviceName = device.displayName
+        Task.detached(priority: .utility) {
             _ = try? await ADBService.shared.enableTcpIp(serial: serial, port: 5555)
             guard autoHotspotOnIsolation, let ip = wifiIP, !ip.isEmpty else { return }
 
@@ -59,7 +60,7 @@ public final class ConnectionManager: ObservableObject {
             if !reachable {
                 let (btOk, btMsg) = await RouterlessBypassService.shared.setupAndConnectBluetoothPAN(
                     serial: serial,
-                    preferredDeviceNames: [device.displayName]
+                    preferredDeviceNames: [deviceName]
                 )
                 if btOk {
                     await MainActor.run {

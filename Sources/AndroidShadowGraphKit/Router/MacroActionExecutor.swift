@@ -89,6 +89,13 @@ public enum PathDeviationError: Error, Sendable, Equatable, CustomStringConverti
 /// Host-agnostic UI action injector implemented by `StandaloneADBAutomationDriver`, `ADBService`, or unit test mocks.
 public protocol MacroActionExecutor: Sendable {
     func execute(action: AttributedUIAction, serial: String) async throws
+    func supportsZeroFlingSwipes(serial: String) async -> Bool
+}
+
+public extension MacroActionExecutor {
+    func supportsZeroFlingSwipes(serial: String) async -> Bool {
+        false
+    }
 }
 
 public struct MacroExecutionConfiguration: Sendable, Equatable {

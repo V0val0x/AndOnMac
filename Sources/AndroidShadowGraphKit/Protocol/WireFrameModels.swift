@@ -24,6 +24,11 @@ public struct WireHelloPayload: Decodable, Sendable, Equatable {
     public let sdkInt: Int
     public let deviceModel: String
     public let pid: Int64
+    public let capabilities: [String]
+
+    public var supportsNativeInput: Bool {
+        capabilities.contains("input")
+    }
 
     public enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
@@ -31,14 +36,33 @@ public struct WireHelloPayload: Decodable, Sendable, Equatable {
         case sdkInt = "sdk_int"
         case deviceModel = "device_model"
         case pid
+        case capabilities
     }
 
-    public init(protocolVersion: Int, format: String, sdkInt: Int, deviceModel: String, pid: Int64) {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.protocolVersion = try c.decode(Int.self, forKey: .protocolVersion)
+        self.format = try c.decode(String.self, forKey: .format)
+        self.sdkInt = try c.decode(Int.self, forKey: .sdkInt)
+        self.deviceModel = try c.decode(String.self, forKey: .deviceModel)
+        self.pid = try c.decode(Int64.self, forKey: .pid)
+        self.capabilities = try c.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+    }
+
+    public init(
+        protocolVersion: Int,
+        format: String,
+        sdkInt: Int,
+        deviceModel: String,
+        pid: Int64,
+        capabilities: [String] = []
+    ) {
         self.protocolVersion = protocolVersion
         self.format = format
         self.sdkInt = sdkInt
         self.deviceModel = deviceModel
         self.pid = pid
+        self.capabilities = capabilities
     }
 }
 
@@ -361,6 +385,40 @@ public struct WireSecureScreenPayload: Decodable, Sendable, Equatable {
     }
 }
 
+public struct WireInputResultPayload: Decodable, Sendable, Equatable {
+    public let id: UInt64
+    public let cmd: String
+    public let ok: Bool
+    public let error: String?
+    public let elapsedMs: Int64
+    public let timestampMs: Int64
+
+    public enum CodingKeys: String, CodingKey {
+        case id
+        case cmd
+        case ok
+        case error
+        case elapsedMs = "elapsed_ms"
+        case timestampMs = "ts_ms"
+    }
+
+    public init(
+        id: UInt64,
+        cmd: String,
+        ok: Bool,
+        error: String? = nil,
+        elapsedMs: Int64,
+        timestampMs: Int64
+    ) {
+        self.id = id
+        self.cmd = cmd
+        self.ok = ok
+        self.error = error
+        self.elapsedMs = elapsedMs
+        self.timestampMs = timestampMs
+    }
+}
+
 public enum WireMessage: Sendable, Equatable {
     case hello(WireHelloPayload)
     case snapshot(WireSnapshotPayload)
@@ -369,6 +427,7 @@ public enum WireMessage: Sendable, Equatable {
     case error(WireErrorPayload)
     case pong(WirePongPayload)
     case secureScreen(WireSecureScreenPayload)
+    case inputResult(WireInputResultPayload)
 }
 
 public enum DaemonCommand: Sendable, Equatable {
@@ -376,4 +435,7 @@ public enum DaemonCommand: Sendable, Equatable {
     case ping
     case setDebounce(ms: Int)
     case shutdown
+    case tap(id: UInt64, x: Int, y: Int)
+    case swipe(id: UInt64, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int, holdMs: Int)
+    case keyevent(id: UInt64, keycode: Int)
 }

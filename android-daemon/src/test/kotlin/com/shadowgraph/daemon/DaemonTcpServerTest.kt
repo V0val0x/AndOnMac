@@ -8,6 +8,7 @@ import com.shadowgraph.daemon.transport.DaemonTcpServer
 import com.shadowgraph.daemon.transport.InboundCommand
 import com.shadowgraph.daemon.transport.NdjsonWireEncoder
 import com.shadowgraph.daemon.transport.WireHello
+import com.shadowgraph.daemon.transport.WireInputResult
 import com.shadowgraph.daemon.transport.WirePong
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -79,8 +80,21 @@ class DaemonTcpServerTest {
                 }
 
                 override fun onCommand(session: ClientSession, command: InboundCommand) {
-                    if (command is InboundCommand.Ping) {
-                        server.sendPong(session, WirePong(123456L, 1L))
+                    when (command) {
+                        is InboundCommand.Ping -> server.sendPong(session, WirePong(123456L, 1L))
+                        is InboundCommand.Tap -> server.sendInputResult(
+                            session,
+                            WireInputResult(command.id, "tap", ok = true, elapsedMs = 4L, timestampMs = 123457L)
+                        )
+                        is InboundCommand.Swipe -> server.sendInputResult(
+                            session,
+                            WireInputResult(command.id, "swipe", ok = true, elapsedMs = 170L, timestampMs = 123458L)
+                        )
+                        is InboundCommand.Keyevent -> server.sendInputResult(
+                            session,
+                            WireInputResult(command.id, "keyevent", ok = true, elapsedMs = 3L, timestampMs = 123459L)
+                        )
+                        else -> {}
                     }
                 }
 
@@ -147,6 +161,24 @@ class DaemonTcpServerTest {
                 w1.flush()
                 val pongLine = r1.readLine()
                 assertEquals("{\"type\":\"pong\",\"ts_ms\":123456,\"seq\":1}", pongLine)
+
+                // Send tap, swipe, keyevent -> expect structured input_result acks
+                w1.write("{\"cmd\":\"tap\",\"id\":101,\"x\":540,\"y\":1200}\n")
+                w1.write("{\"cmd\":\"swipe\",\"id\":102,\"x1\":540,\"y1\":1900,\"x2\":540,\"y2\":450,\"duration_ms\":145,\"hold_ms\":25}\n")
+                w1.write("{\"cmd\":\"keyevent\",\"id\":103,\"keycode\":4}\n")
+                w1.flush()
+                assertEquals(
+                    "{\"type\":\"input_result\",\"id\":101,\"cmd\":\"tap\",\"ok\":true,\"elapsed_ms\":4,\"ts_ms\":123457}",
+                    r1.readLine()
+                )
+                assertEquals(
+                    "{\"type\":\"input_result\",\"id\":102,\"cmd\":\"swipe\",\"ok\":true,\"elapsed_ms\":170,\"ts_ms\":123458}",
+                    r1.readLine()
+                )
+                assertEquals(
+                    "{\"type\":\"input_result\",\"id\":103,\"cmd\":\"keyevent\",\"ok\":true,\"elapsed_ms\":3,\"ts_ms\":123459}",
+                    r1.readLine()
+                )
             } finally {
                 c1.close()
                 c2.close()

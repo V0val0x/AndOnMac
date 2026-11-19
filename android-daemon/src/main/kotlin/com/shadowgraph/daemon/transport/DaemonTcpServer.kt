@@ -115,6 +115,11 @@ class DaemonTcpServer(
         session.enqueue(OutboundFrame(bytes, isDiff = false))
     }
 
+    fun sendInputResult(session: ClientSession, result: WireInputResult) {
+        val bytes = encode { encoder.encodeInputResult(result, it) }
+        session.enqueue(OutboundFrame(bytes, isDiff = false))
+    }
+
     fun broadcastSecureScreen(secure: WireSecureScreen, excludeSession: ClientSession? = null) {
         if (sessions.isEmpty()) return
         val bytes = encode { encoder.encodeSecureScreen(secure, it) }

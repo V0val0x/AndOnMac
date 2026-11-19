@@ -1651,10 +1651,14 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
             let beforeHash = await seedVertexIfAbsent(index: currentIndex, rawHash: beforeFp.layoutHash)
             let scrollStart = Date()
 
+            let zeroFling = await executor.supportsZeroFlingSwipes(serial: serial)
             let cx = max(1, (scrollRect.minX + scrollRect.maxX) / 2)
             let spanY = scrollRect.maxY - scrollRect.minY
-            let yHigh = scrollRect.minY + (spanY * 72) / 100
-            let yLow = scrollRect.minY + (spanY * 28) / 100
+            let highPct = zeroFling ? 80 : 72
+            let lowPct = zeroFling ? 18 : 28
+            let swipeDurMs = zeroFling ? 145 : 500
+            let yHigh = scrollRect.minY + (spanY * highPct) / 100
+            let yLow = scrollRect.minY + (spanY * lowPct) / 100
             let startY = scrollingDown ? yHigh : yLow
             let endY = scrollingDown ? yLow : yHigh
             let dirLabel = scrollingDown ? "down" : "up"
@@ -1666,7 +1670,7 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
                 y: startY,
                 endX: cx,
                 endY: endY,
-                durationMs: 500
+                durationMs: swipeDurMs
             )
 
             emitMacroEvent(.recoveryAction(
@@ -1714,7 +1718,33 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
             }
 
             if postSettleQuiescenceMs > 0 {
-                try await Task.sleep(for: .milliseconds(max(postSettleQuiescenceMs, 400)))
+                if zeroFling {
+                    // Drain any in-flight mid-swipe and post-ACTION_UP accessibility frames
+                    // until the Shadow DOM stream stays quiet (~70-95ms daemon debounce+collect).
+                    let quietMs = max(postSettleQuiescenceMs, 115)
+                    let maxDrainMs = max(quietMs, 380)
+                    let drainStart = Date()
+                    var lastSeq = await domState.currentIndex?.seq
+                    var lastChange = drainStart
+                    while true {
+                        try Task.checkCancellation()
+                        let now = Date()
+                        let sinceStartMs = Int(now.timeIntervalSince(drainStart) * 1000.0)
+                        let sinceChangeMs = Int(now.timeIntervalSince(lastChange) * 1000.0)
+                        if sinceChangeMs >= quietMs || sinceStartMs >= maxDrainMs {
+                            break
+                        }
+                        let remMs = min(quietMs - sinceChangeMs, maxDrainMs - sinceStartMs)
+                        try await Task.sleep(for: .milliseconds(max(10, min(20, remMs))))
+                        let currentSeq = await domState.currentIndex?.seq
+                        if currentSeq != lastSeq {
+                            lastSeq = currentSeq
+                            lastChange = Date()
+                        }
+                    }
+                } else {
+                    try await Task.sleep(for: .milliseconds(max(postSettleQuiescenceMs, 400)))
+                }
             }
 
             if let afterIdx = await domState.currentIndex {
@@ -1742,8 +1772,12 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
                 // If mid-scroll deceleration frames consumed `pendingAction` before the list
                 // settled, bridge `(beforeHash -> settledAfterHash)` directly with `swipeAction`
                 // so A* has a continuous executable edge across scrolled screens (no implicit gap).
-                let currentGraphHash = await graphEngine.currentStateHash
-                let resolvedAfterHash: UInt64 = (afterFp.layoutHash != beforeFp.layoutHash ? currentGraphHash : nil) ?? afterFp.layoutHash
+                let resolvedAfterHash: UInt64
+                if afterFp.layoutHash == beforeFp.layoutHash {
+                    resolvedAfterHash = beforeHash
+                } else {
+                    resolvedAfterHash = (await graphEngine.currentStateHash) ?? afterFp.layoutHash
+                }
                 if resolvedAfterHash != beforeHash {
                     let existing = await graphEngine.neighbors(of: beforeHash)
                     let hasDirectExec = existing.contains { $0.toHash == resolvedAfterHash && $0.action != nil }
@@ -2023,8 +2057,12 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         )
         var processedEdge = await graphEngine.process(update: commitUpdate) != nil
 
-        let currentGraphHash = await graphEngine.currentStateHash
-        let resolvedFinalHash: UInt64 = (finalFp.layoutHash != beforeFp.layoutHash ? currentGraphHash : nil) ?? finalFp.layoutHash
+        let resolvedFinalHash: UInt64
+        if finalFp.layoutHash == beforeFp.layoutHash {
+            resolvedFinalHash = beforeHash
+        } else {
+            resolvedFinalHash = (await graphEngine.currentStateHash) ?? finalFp.layoutHash
+        }
 
         // If intermediate skeleton frames consumed `pendingAction` before the final settled screen
         // finished inflating, bridge `(beforeHash -> resolvedFinalHash)` directly with `action`
@@ -2045,15 +2083,15 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
 
         let edgesAfter = await graphEngine.edgeCount
         let edgeRecorded: Bool
-        if processedEdge || edgesAfter > edgesBefore {
+        if resolvedFinalHash == beforeHash {
+            edgeRecorded = false
+        } else if processedEdge || edgesAfter > edgesBefore {
             edgeRecorded = true
-        } else if resolvedFinalHash != beforeHash {
+        } else {
             let neighbors = await graphEngine.neighbors(of: beforeHash)
             edgeRecorded = neighbors.contains(where: { $0.toHash == resolvedFinalHash })
-        } else {
-            edgeRecorded = false
         }
-        let screenChanged = (finalFp.layoutHash != beforeFp.layoutHash) || (resolvedFinalHash != beforeHash)
+        let screenChanged = resolvedFinalHash != beforeHash
 
         return .exploredAndClicked(
             matchedCandidate: candidate,
@@ -2124,6 +2162,13 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         for node in index.orderedNodes {
             guard node.visible, (node.centerX > 0 || node.centerY > 0) else { continue }
             if skipIgnored && isIgnoredNode(node, ignoredPackages: ignoredPackages) { continue }
+            if MacroExecutionEngine.isNodeClippedByScrollableAncestor(
+                in: index,
+                node: node,
+                ignoredPackages: ignoredPackages
+            ) {
+                continue
+            }
 
             let area = ShadowTreeIndex.parseBoundsRect(node.bounds)?.area ?? Int64.max
             let baseScore = nodeMatchBaseScore(node, qLower: qLower, qTokens: qTokens)
@@ -2192,6 +2237,13 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         for node in index.orderedNodes {
             guard node.visible, (node.centerX > 0 || node.centerY > 0) else { continue }
             if skipIgnored && isIgnoredNode(node, ignoredPackages: ignoredPackages) { continue }
+            if MacroExecutionEngine.isNodeClippedByScrollableAncestor(
+                in: index,
+                node: node,
+                ignoredPackages: ignoredPackages
+            ) {
+                continue
+            }
 
             let effectiveClickable = node.clickable || hasClickableAncestor(in: index, node: node)
             let rawLabel: String

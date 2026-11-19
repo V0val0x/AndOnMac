@@ -11,6 +11,7 @@ import com.shadowgraph.daemon.transport.NdjsonWireEncoder
 import com.shadowgraph.daemon.transport.WireDiff
 import com.shadowgraph.daemon.transport.WireError
 import com.shadowgraph.daemon.transport.WireHello
+import com.shadowgraph.daemon.transport.WireInputResult
 import com.shadowgraph.daemon.transport.WirePong
 import com.shadowgraph.daemon.transport.WireSecureScreen
 import com.shadowgraph.daemon.transport.WireSnapshot
@@ -217,5 +218,73 @@ class WireEncoderTest {
         encoder.encodeSnapshot(WireSnapshot(secureSnap, "window_event"), buf)
         val snapJson = decode(buf)
         assertTrue(snapJson.contains("\"secure_screen\":true"))
+    }
+
+    @Test
+    fun `encodes hello capabilities and input_result frames and parses input commands`() {
+        val buf = ByteArrayBuffer(128)
+
+        encoder.encodeHello(WireHello(1, "ndjson/1", 37, "Pixel 10a", 999L, listOf("input")), buf)
+        val helloJson = decode(buf)
+        assertTrue(helloJson.contains("\"capabilities\":[\"input\"]"))
+
+        encoder.encodeInputResult(
+            WireInputResult(id = 7L, cmd = "tap", ok = true, error = null, elapsedMs = 6L, timestampMs = 5555L),
+            buf
+        )
+        assertEquals(
+            "{\"type\":\"input_result\",\"id\":7,\"cmd\":\"tap\",\"ok\":true,\"elapsed_ms\":6,\"ts_ms\":5555}\n",
+            decode(buf)
+        )
+
+        encoder.encodeInputResult(
+            WireInputResult(id = 8L, cmd = "swipe", ok = false, error = "uia_null", elapsedMs = 1L, timestampMs = 5556L),
+            buf
+        )
+        assertEquals(
+            "{\"type\":\"input_result\",\"id\":8,\"cmd\":\"swipe\",\"ok\":false,\"error\":\"uia_null\",\"elapsed_ms\":1,\"ts_ms\":5556}\n",
+            decode(buf)
+        )
+
+        val tap = assertIs<InboundCommand.Tap>(CommandParser.parseLine("{\"cmd\":\"tap\",\"id\":11,\"x\":540,\"y\":1200}"))
+        assertEquals(11L, tap.id)
+        assertEquals(540, tap.x)
+        assertEquals(1200, tap.y)
+
+        val tapNoId = assertIs<InboundCommand.Tap>(CommandParser.parseLine("{\"cmd\":\"tap\",\"x\":10,\"y\":20}"))
+        assertEquals(0L, tapNoId.id)
+
+        val swipe = assertIs<InboundCommand.Swipe>(
+            CommandParser.parseLine("{\"cmd\":\"swipe\",\"id\":12,\"x1\":540,\"y1\":1900,\"x2\":540,\"y2\":400,\"duration_ms\":150,\"hold_ms\":30}")
+        )
+        assertEquals(12L, swipe.id)
+        assertEquals(540, swipe.x1)
+        assertEquals(1900, swipe.y1)
+        assertEquals(540, swipe.x2)
+        assertEquals(400, swipe.y2)
+        assertEquals(150L, swipe.durationMs)
+        assertEquals(30L, swipe.holdMs)
+
+        val swipeDefaults = assertIs<InboundCommand.Swipe>(
+            CommandParser.parseLine("{\"cmd\":\"swipe\",\"x1\":100,\"y1\":800,\"x2\":100,\"y2\":200}")
+        )
+        assertEquals(145L, swipeDefaults.durationMs)
+        assertEquals(25L, swipeDefaults.holdMs)
+
+        val key = assertIs<InboundCommand.Keyevent>(
+            CommandParser.parseLine("{\"cmd\":\"keyevent\",\"id\":13,\"keycode\":4}")
+        )
+        assertEquals(13L, key.id)
+        assertEquals(4, key.keycode)
+
+        // Boundary and error validations
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"tap\",\"x\":-1,\"y\":10}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"tap\",\"x\":99999,\"y\":10}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"tap\",\"x\":10}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"swipe\",\"x1\":10,\"y1\":20,\"x2\":30,\"y2\":40,\"duration_ms\":5}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"swipe\",\"x1\":10,\"y1\":20,\"x2\":30,\"y2\":40,\"hold_ms\":-1}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"keyevent\",\"keycode\":0}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"keyevent\",\"keycode\":2000}"))
+        assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"tap\",\"id\":-5,\"x\":10,\"y\":20}"))
     }
 }

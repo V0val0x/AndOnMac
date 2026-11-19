@@ -249,7 +249,7 @@ public actor ShadowDOMState {
         case .error(let err):
             lastError = err
 
-        case .pong:
+        case .pong, .inputResult:
             if hasSessionSnapshot {
                 lastReceivedAt = now
                 isDisconnected = false

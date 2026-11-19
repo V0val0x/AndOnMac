@@ -33,6 +33,9 @@ public actor DaemonTCPClient {
 
     private var messageContinuations: [UUID: AsyncStream<WireMessage>.Continuation] = [:]
     private var stateContinuations: [UUID: AsyncStream<DaemonConnectionState>.Continuation] = [:]
+    private var nextInputId: UInt64 = 1
+    private var pendingInputWaiters: [UInt64: CheckedContinuation<WireInputResultPayload, Error>] = [:]
+    private var pendingInputTimeouts: [UInt64: Task<Void, Never>] = [:]
 
     /// Queue-confined framing state so TCP chunks are framed and decoded strictly in arrival order off the main thread.
     private final class SerialFramePipeline: @unchecked Sendable {
@@ -133,6 +136,7 @@ public actor DaemonTCPClient {
         reconnectAttempt = 0
         reconnectTask?.cancel()
         reconnectTask = nil
+        failAllPendingInputs(error: DaemonClientError.notConnected)
         if let beforeReconnect {
             await beforeReconnect(0)
         }
@@ -158,6 +162,7 @@ public actor DaemonTCPClient {
         }
 
         state = .stopped
+        failAllPendingInputs(error: DaemonClientError.stopped)
 
         let msgConts = Array(messageContinuations.values)
         messageContinuations.removeAll()
@@ -202,6 +207,131 @@ public actor DaemonTCPClient {
 
     public func setDebounce(ms: Int) async throws {
         try await send(.setDebounce(ms: ms))
+    }
+
+    public var supportsNativeInput: Bool {
+        if case .connected(let hello) = state, hello?.supportsNativeInput == true {
+            return true
+        }
+        return false
+    }
+
+    public func injectTap(x: Int, y: Int) async throws -> WireInputResultPayload {
+        let id = allocateInputId()
+        return try await sendInputAndAwait(id: id, command: .tap(id: id, x: x, y: y), timeoutMs: 1500)
+    }
+
+    public func injectSwipe(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Int,
+        holdMs: Int
+    ) async throws -> WireInputResultPayload {
+        let id = allocateInputId()
+        let timeoutMs = max(2000, max(0, durationMs) + max(0, holdMs) + 1500)
+        return try await sendInputAndAwait(
+            id: id,
+            command: .swipe(
+                id: id,
+                x1: x1,
+                y1: y1,
+                x2: x2,
+                y2: y2,
+                durationMs: durationMs,
+                holdMs: holdMs
+            ),
+            timeoutMs: timeoutMs
+        )
+    }
+
+    public func injectKeyevent(keycode: Int) async throws -> WireInputResultPayload {
+        let id = allocateInputId()
+        return try await sendInputAndAwait(
+            id: id,
+            command: .keyevent(id: id, keycode: keycode),
+            timeoutMs: 1500
+        )
+    }
+
+    private func allocateInputId() -> UInt64 {
+        let id = nextInputId
+        nextInputId &+= 1
+        if nextInputId == 0 {
+            nextInputId = 1
+        }
+        return id
+    }
+
+    private func sendInputAndAwait(
+        id: UInt64,
+        command: DaemonCommand,
+        timeoutMs: Int
+    ) async throws -> WireInputResultPayload {
+        guard !isStopped else {
+            throw DaemonClientError.stopped
+        }
+        guard case .connected(let hello) = state, let conn = connection else {
+            throw DaemonClientError.notConnected
+        }
+        guard hello?.supportsNativeInput == true else {
+            throw DaemonClientError.notSupported
+        }
+        let payload = try codec.encodeCommand(command)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.pendingInputWaiters[id] = continuation
+                self.pendingInputTimeouts[id] = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(timeoutMs))
+                    await self?.failPendingInput(id: id, error: DaemonClientError.inputTimeout)
+                }
+                conn.send(content: payload, completion: .contentProcessed { [weak self] error in
+                    if let error {
+                        Task {
+                            await self?.failPendingInput(
+                                id: id,
+                                error: DaemonClientError.sendFailed(error.localizedDescription)
+                            )
+                        }
+                    }
+                })
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.failPendingInput(id: id, error: CancellationError())
+            }
+        }
+    }
+
+    private func resolvePendingInput(_ result: WireInputResultPayload) {
+        pendingInputTimeouts.removeValue(forKey: result.id)?.cancel()
+        guard let cont = pendingInputWaiters.removeValue(forKey: result.id) else { return }
+        if result.ok {
+            cont.resume(returning: result)
+        } else {
+            cont.resume(throwing: DaemonClientError.inputFailed(result.error ?? "daemon_input_returned_false"))
+        }
+    }
+
+    private func failPendingInput(id: UInt64, error: Error) {
+        pendingInputTimeouts.removeValue(forKey: id)?.cancel()
+        guard let cont = pendingInputWaiters.removeValue(forKey: id) else { return }
+        cont.resume(throwing: error)
+    }
+
+    private func failAllPendingInputs(error: Error) {
+        let timeouts = pendingInputTimeouts
+        pendingInputTimeouts.removeAll()
+        for task in timeouts.values {
+            task.cancel()
+        }
+        let waiters = pendingInputWaiters
+        pendingInputWaiters.removeAll()
+        for cont in waiters.values {
+            cont.resume(throwing: error)
+        }
     }
 
     // MARK: - Connection Lifecycle
@@ -375,8 +505,13 @@ public actor DaemonTCPClient {
                 metrics.framesReceived &+= UInt64(msgs.count)
                 metrics.lastFrameAt = now
                 for msg in msgs {
-                    if case .hello(let hello) = msg {
+                    switch msg {
+                    case .hello(let hello):
                         state = .connected(hello: hello)
+                    case .inputResult(let res):
+                        resolvePendingInput(res)
+                    default:
+                        break
                     }
                     broadcastMessage(msg)
                 }
@@ -431,6 +566,7 @@ public actor DaemonTCPClient {
             conn.cancel()
         }
 
+        failAllPendingInputs(error: DaemonClientError.notConnected)
         scheduleReconnect(lastError: reason)
     }
 

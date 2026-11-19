@@ -40,4 +40,7 @@ public enum DaemonClientError: Error, Sendable, Equatable {
     case notConnected
     case stopped
     case sendFailed(String)
+    case notSupported
+    case inputFailed(String)
+    case inputTimeout
 }

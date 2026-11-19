@@ -8,7 +8,8 @@ data class WireHello(
     val format: String,
     val sdkInt: Int,
     val deviceModel: String,
-    val daemonPid: Long
+    val daemonPid: Long,
+    val capabilities: List<String> = emptyList()
 )
 
 data class WireSnapshot(
@@ -50,10 +51,30 @@ data class WireSecureScreen(
     val timestampMs: Long
 )
 
+data class WireInputResult(
+    val id: Long,
+    val cmd: String,
+    val ok: Boolean,
+    val error: String? = null,
+    val elapsedMs: Long,
+    val timestampMs: Long
+)
+
 sealed class InboundCommand {
     data object Snapshot : InboundCommand()
     data object Ping : InboundCommand()
     data class SetDebounce(val debounceMs: Long) : InboundCommand()
     data object Shutdown : InboundCommand()
+    data class Tap(val id: Long, val x: Int, val y: Int) : InboundCommand()
+    data class Swipe(
+        val id: Long,
+        val x1: Int,
+        val y1: Int,
+        val x2: Int,
+        val y2: Int,
+        val durationMs: Long,
+        val holdMs: Long
+    ) : InboundCommand()
+    data class Keyevent(val id: Long, val keycode: Int) : InboundCommand()
     data class Unknown(val raw: String, val reason: String) : InboundCommand()
 }

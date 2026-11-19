@@ -22,6 +22,14 @@ class NdjsonWireEncoder : WireEncoder {
         out.appendJsonString(hello.deviceModel)
         out.appendAscii(",\"pid\":")
         out.appendLong(hello.daemonPid)
+        if (hello.capabilities.isNotEmpty()) {
+            out.appendAscii(",\"capabilities\":[")
+            for (i in 0 until hello.capabilities.size) {
+                if (i > 0) out.appendByte(','.code)
+                out.appendJsonString(hello.capabilities[i])
+            }
+            out.appendByte(']'.code)
+        }
         out.appendAscii("}\n")
     }
 
@@ -142,6 +150,25 @@ class NdjsonWireEncoder : WireEncoder {
         out.appendJsonString(secure.activePackage)
         out.appendAscii(",\"ts_ms\":")
         out.appendLong(secure.timestampMs)
+        out.appendAscii("}\n")
+    }
+
+    override fun encodeInputResult(result: WireInputResult, out: ByteArrayBuffer) {
+        out.reset()
+        out.appendAscii("{\"type\":\"input_result\",\"id\":")
+        out.appendLong(result.id)
+        out.appendAscii(",\"cmd\":")
+        out.appendJsonString(result.cmd)
+        out.appendAscii(",\"ok\":")
+        out.appendBoolean(result.ok)
+        if (result.error != null) {
+            out.appendAscii(",\"error\":")
+            out.appendJsonString(result.error)
+        }
+        out.appendAscii(",\"elapsed_ms\":")
+        out.appendLong(result.elapsedMs)
+        out.appendAscii(",\"ts_ms\":")
+        out.appendLong(result.timestampMs)
         out.appendAscii("}\n")
     }
 
