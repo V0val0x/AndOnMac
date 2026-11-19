@@ -25,7 +25,7 @@ Native macOS app (SwiftUI, VideoToolbox, Metal) for mirroring, controlling, and 
 - **App Windows & File Transfer:** Launch individual Android apps in separate macOS windows, drag and drop photos (`Cmd+4`), browse files (`Cmd+5`), and sync clipboard text and screenshots.
 - **On-Device OCR & Recall:** Grab unselectable text with Apple Vision (`Cmd+Shift+X`) and search local screen history with SQLite FTS5 (`Cmd+Shift+F`).
 - **Device Frames & Ambilight:** Vector bezels with camera cutouts for Pixel, Galaxy S, Nothing Phone, and OnePlus devices, paired with CoreImage edge lighting and trackpad gestures.
-- **Agentic Routing & MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Headless Kotlin `android-daemon` streams Shadow DOM updates over ADB TCP (`:27189`) into a persistent Spatial Graph (`shadow_graph.json`). `android_navigate_to_node` runs A* pathfinding locally with a 120Hz tap crosshair and swipe vector overlay, plus Visual-to-MCP macros (`Cmd+Shift+M`).
+- **Agentic Routing & MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Headless Kotlin `android-daemon` streams Shadow DOM updates and `FLAG_SECURE` events over ADB TCP (`:27189`) into a persistent Spatial Graph (`shadow_graph.json`, normalized across clocks, dates, prices `<PRICE>`, `<ETA>`, `<WEIGHT>`, decorative banners, and `systemui` overlays). `android_navigate_to_node` runs A* pathfinding locally with forward-skip & scroll auto-recovery, universal popup dismissal, Human-in-the-Loop confirmation (`requires_confirmation` / `confirmed: true`) for payment/destructive steps, `FLAG_SECURE` biometric handoff, a 3-color 120Hz Agentic HUD (**Red** autonomous, **Yellow** awaiting confirmation, **Blue** awaiting biometrics), and Visual-to-MCP macros (`Cmd+Shift+M`).
 
 Details on MCP setup, security, shortcuts, and architecture: [docs/FEATURES.md](docs/FEATURES.md).
 
@@ -73,13 +73,13 @@ chmod +x scripts/*.sh && ./scripts/create_dmg.sh
 
 Full shortcut and gesture reference: [docs/FEATURES.md](docs/FEATURES.md#keyboard-shortcuts--gestures).
 
-## Extracted Swift Packages
+## Ecosystem & Companion Packages
 
-Core modules are available as standalone MIT-licensed Swift packages (`macOS 14+`):
+Cross-platform companion and standalone Swift packages (`macOS 14+`, MIT):
 
-| Repository | Purpose | SPM Dependency |
+| Repository | Purpose | Platform / Integration |
 | :--- | :--- | :--- |
-| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Kotlin Shadow DOM daemon, persistent Spatial Graph, A* router & `droidpath-mcp` | `.package(url: "https://github.com/V0val0x/DroidPath.git", from: "1.0.0")` |
+| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Cross-platform Rust A* UI router, Tauri v2 Desktop HUD, `npx droidpath` 1-click CLI & Kotlin Shadow DOM daemon (100% `shadow_graph.json` compatible with AndOnMac) | Windows · Linux · macOS (`npx droidpath` / Rust / Tauri v2) |
 | [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | VideoToolbox H.264/HEVC decoder, `CAMetalLayer` renderer & ABR engine | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
 | [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Swift ADB SDK: USB, Wi-Fi QR pairing, Bonjour & Hotspot/BT PAN bypass | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
 | [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | MCP Server (`stdio` / SSE), Visual-to-MCP macros & `android-mcp` CLI | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |

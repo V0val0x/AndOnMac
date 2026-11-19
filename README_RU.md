@@ -25,7 +25,7 @@
 - **Окна приложений и файлы:** запуск Android-приложений в отдельных окнах macOS, drag-and-drop фото (`Cmd+4`), файловый менеджер (`Cmd+5`) и синхронизация буфера обмена.
 - **Vision OCR и Recall:** распознавание текста с экрана через Apple Vision (`Cmd+Shift+X`) и локальный поиск по истории экрана на SQLite FTS5 (`Cmd+Shift+F`).
 - **Рамки и Ambilight:** векторные рамки с вырезами камер для Pixel, Galaxy S, Nothing Phone и OnePlus, подсветка краёв и жесты трекпада.
-- **A*-роутинг и MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Kotlin-демон `android-daemon` стримит Shadow DOM по ADB TCP (`:27189`) в локальный граф `shadow_graph.json`. `android_navigate_to_node` строит маршруты по A* с 120Hz HUD-индикацией (прицел для тапов, вектор направления для свайпов), плюс запись макросов (`Cmd+Shift+M`).
+- **A*-роутинг и MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Kotlin-демон `android-daemon` стримит Shadow DOM и события `FLAG_SECURE` по ADB TCP (`:27189`) в персистентный граф `shadow_graph.json` (с нормализацией часов, дат, цен `<PRICE>`, `<ETA>`, `<WEIGHT>`, фильтрацией баннеров и маскированием `systemui`). `android_navigate_to_node` строит маршруты по A* с auto-recovery (forward-skip и пересчёт при скролле), автозакрытием попапов, Human-in-the-Loop подтверждением опасных шагов (`requires_confirmation` / `confirmed: true`), паузой на биометрии (`FLAG_SECURE`), трёхцветным 120Hz Agentic HUD (**Красный** — автономный шаг, **Жёлтый** — ожидание подтверждения, **Синий** — ожидание биометрии) и записью макросов (`Cmd+Shift+M`).
 
 Настройка MCP, безопасность, все шорткаты и архитектура: [docs/FEATURES_RU.md](docs/FEATURES_RU.md).
 
@@ -73,13 +73,13 @@ chmod +x scripts/*.sh && ./scripts/create_dmg.sh
 
 Полная таблица: [docs/FEATURES_RU.md](docs/FEATURES_RU.md#горячие-клавиши-и-жесты).
 
-## Отдельные Swift-пакеты
+## Экосистема и связанные пакеты
 
-Ключевые модули вынесены в отдельные MIT-пакеты (`macOS 14+`):
+Кроссплатформенный компаньон и отдельные Swift-пакеты (`macOS 14+`, MIT):
 
-| Репозиторий | Назначение | Подключение в SPM |
+| Репозиторий | Назначение | Платформа / Подключение |
 | :--- | :--- | :--- |
-| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Kotlin Shadow DOM демон, персистентный Spatial Graph, A*-роутер и `droidpath-mcp` | `.package(url: "https://github.com/V0val0x/DroidPath.git", from: "1.0.0")` |
+| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Кроссплатформенный A* UI-роутер на Rust, Tauri v2 Desktop HUD, 1-клик CLI `npx droidpath` и Kotlin Shadow DOM демон (100% совместимость `shadow_graph.json` с AndOnMac) | Windows · Linux · macOS (`npx droidpath` / Rust / Tauri v2) |
 | [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | VideoToolbox H.264/HEVC декодер, рендерер на `CAMetalLayer` и ABR | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
 | [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Swift ADB SDK: USB, QR Wi-Fi, Bonjour и обход изоляции (Hotspot / BT PAN) | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
 | [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | MCP-сервер (`stdio` / SSE), Visual-to-MCP макросы и CLI `android-mcp` | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |
