@@ -194,6 +194,19 @@ public actor MacroExecutionEngine {
                 var resolvedAction = resolved.action
                 var matchedNode = resolved.node
 
+                // Smart Scroll-to-Selector: if tap selector is off-screen inside a scrollable container,
+                // perform up to 2 search scrolls (down / reverse up at bottom) to reveal & lock onto the node.
+                if configuration.enableSmartScrollToSelector && matchedNode == nil && rawAction.kind == .tap {
+                    if let scrolled = try await smartScrollToSelector(
+                        rawAction: rawAction,
+                        serial: serial,
+                        recoveredSteps: &recoveredSteps
+                    ) {
+                        resolvedAction = scrolled.action
+                        matchedNode = scrolled.node
+                    }
+                }
+
                 // Hazardous / irreversible transaction HITL check (#2, Variant A):
                 // Halt right before executing the dangerous step while keeping safe prefix steps completed.
                 let liveLabel = matchedNode.map { !$0.text.isEmpty ? $0.text : $0.contentDesc }
@@ -275,14 +288,22 @@ public actor MacroExecutionEngine {
                 emit(.willExecuteAction(stepIndex: stepIndex, totalSteps: path.count, action: resolvedAction))
 
                 let stepStart = ContinuousClock.now
-                let settleOutcome = try await executeAndWaitForSettle(
-                    stepIndex: stepIndex,
-                    action: resolvedAction,
-                    serial: serial,
-                    targets: suffixTargets,
-                    updateStream: updateStream,
-                    secureStream: secureStream
-                )
+                let settleOutcome: SettleOutcome
+                do {
+                    settleOutcome = try await executeAndWaitForSettle(
+                        stepIndex: stepIndex,
+                        action: resolvedAction,
+                        serial: serial,
+                        targets: suffixTargets,
+                        updateStream: updateStream,
+                        secureStream: secureStream
+                    )
+                } catch let deviation as PathDeviationError {
+                    if case .stepTimeout = deviation, configuration.recordEdgeFailuresOnTimeout {
+                        await graphEngine.recordEdgeFailure(edgeId: edge.id)
+                    }
+                    throw deviation
+                }
 
                 let matchedIdx: Int
                 let settledHash: UInt64
@@ -298,15 +319,24 @@ public actor MacroExecutionEngine {
                     if try await awaitSecureHandoffIfActive() {
                         recoveredSteps.append("secure_handoff")
                     }
-                    let postHandoffResult = try await settleAfterSecureHandoff(
-                        stepIndex: stepIndex,
-                        suffixTargets: suffixTargets,
-                        lastKnownHash: lastSettledHash
-                    )
-                    matchedIdx = postHandoffResult.matchedStepIndex
-                    settledHash = postHandoffResult.hash
-                    settledExact = postHandoffResult.matchedByExactHash
+                    do {
+                        let postHandoffResult = try await settleAfterSecureHandoff(
+                            stepIndex: stepIndex,
+                            suffixTargets: suffixTargets,
+                            lastKnownHash: lastSettledHash
+                        )
+                        matchedIdx = postHandoffResult.matchedStepIndex
+                        settledHash = postHandoffResult.hash
+                        settledExact = postHandoffResult.matchedByExactHash
+                    } catch let deviation as PathDeviationError {
+                        if case .stepTimeout = deviation, configuration.recordEdgeFailuresOnTimeout {
+                            await graphEngine.recordEdgeFailure(edgeId: edge.id)
+                        }
+                        throw deviation
+                    }
                 }
+
+                await graphEngine.recordEdgeSuccess(edgeId: edge.id)
 
                 let elapsedMs = Self.elapsedMilliseconds(since: stepStart)
                 lastSettledHash = settledHash
@@ -349,10 +379,11 @@ public actor MacroExecutionEngine {
                 stepIndex = matchedIdx + 1
 
                 if stepIndex < path.count && configuration.postSettleQuiescenceMs > 0 {
-                    // Wait for scroll deceleration / RecyclerView fling inertia after swipes
-                    // before resolving live bounds for the subsequent step.
+                    // Wait for 120Hz RecyclerView fling deceleration before a subsequent tap so Android
+                    // reaches SCROLL_STATE_IDLE instead of swallowing the tap as a fling-brake touch.
+                    let nextIsSwipe = path[stepIndex].action?.kind == .swipe
                     let quiescenceMs = (resolvedAction.kind == .swipe)
-                        ? max(configuration.postSettleQuiescenceMs, 280)
+                        ? max(configuration.postSettleQuiescenceMs, nextIsSwipe ? 280 : 480)
                         : configuration.postSettleQuiescenceMs
                     try await Task.sleep(for: .milliseconds(quiescenceMs))
                 }
@@ -757,6 +788,248 @@ public actor MacroExecutionEngine {
             }
         }
         return unionRect
+    }
+
+    /// Finds the largest visible non-system `scrollable` container bounds on screen.
+    internal static func largestScrollableRect(
+        in index: ShadowTreeIndex,
+        ignoredPackages: Set<String>
+    ) -> ShadowTreeIndex.BoundsRect? {
+        let skipIgnored = !ignoredPackages.contains(index.activePackage)
+        var best: ShadowTreeIndex.BoundsRect?
+
+        for node in index.orderedNodes where node.visible && node.scrollable {
+            if skipIgnored {
+                if !node.packageName.isEmpty && ignoredPackages.contains(node.packageName) {
+                    continue
+                }
+                if !node.resourceId.isEmpty && ignoredPackages.contains(where: { node.resourceId.hasPrefix("\($0):") }) {
+                    continue
+                }
+            }
+            // Skip horizontal-only pagers and launcher home-screen workspaces where a vertical
+            // downward swipe pulls down the Android Notification Shade instead of scrolling a list.
+            let clsLower = node.className.lowercased()
+            if clsLower.contains("horizontalscrollview") || clsLower.contains("viewpager") {
+                continue
+            }
+            let ridLower = node.resourceId.lowercased()
+            if ridLower.hasSuffix(":id/workspace")
+                || ridLower.hasSuffix("/workspace")
+                || ridLower.hasSuffix(":id/hotseat")
+                || ridLower.hasSuffix("/hotseat")
+                || ridLower.hasSuffix(":id/smartspace_card_pager")
+                || ridLower.hasSuffix("/smartspace_card_pager") {
+                continue
+            }
+            guard let rect = ShadowTreeIndex.parseBoundsRect(node.bounds) else { continue }
+            let width = rect.maxX - rect.minX
+            let height = rect.maxY - rect.minY
+            guard width >= 120, height >= 120 else { continue }
+            if let currentBest = best {
+                if rect.area > currentBest.area {
+                    best = rect
+                }
+            } else {
+                best = rect
+            }
+        }
+        return best
+    }
+
+    internal struct ScrollItemSignature: Equatable, Sendable {
+        let label: String
+        let centerY: Int
+    }
+
+    /// Extracts an ordered signature of visible labeled items inside `container` to detect scroll movement vs boundaries.
+    internal static func scrollViewportSignature(
+        in index: ShadowTreeIndex,
+        container: ShadowTreeIndex.BoundsRect,
+        ignoredPackages: Set<String>
+    ) -> [ScrollItemSignature] {
+        let skipIgnored = !ignoredPackages.contains(index.activePackage)
+        var items: [ScrollItemSignature] = []
+        for node in index.orderedNodes where node.visible {
+            if skipIgnored {
+                if !node.packageName.isEmpty && ignoredPackages.contains(node.packageName) {
+                    continue
+                }
+                if !node.resourceId.isEmpty && ignoredPackages.contains(where: { node.resourceId.hasPrefix("\($0):") }) {
+                    continue
+                }
+            }
+            guard container.contains(x: node.centerX, y: node.centerY) else { continue }
+            let label = !node.text.isEmpty ? node.text : node.contentDesc
+            guard !label.isEmpty else { continue }
+            items.append(ScrollItemSignature(label: label, centerY: node.centerY))
+        }
+        return items
+    }
+
+    private enum SmartScrollStepOutcome: Sendable {
+        case found(action: AttributedUIAction, node: ShadowUINode)
+        case moved
+        case boundaryOrUnavailable
+    }
+
+    /// Performs controlled search scrolls (up to 2 downward; if not found, reverses upward to cover
+    /// items positioned above a mid-scroll or bottom-positioned viewport) when a tap selector is absent
+    /// from the currently visible viewport of a scrollable container.
+    private func smartScrollToSelector(
+        rawAction: AttributedUIAction,
+        serial: String,
+        recoveredSteps: inout [String]
+    ) async throws -> (action: AttributedUIAction, node: ShadowUINode)? {
+        let hasText = rawAction.selectorText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let hasRid = rawAction.selectorResourceId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let hasDesc = rawAction.selectorContentDesc?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        guard hasText || hasRid || hasDesc else { return nil }
+
+        // Phase 1: Scroll downward (up to 2 attempts, stopping early on bottom boundary).
+        var downMoves = 0
+        for attempt in 1...2 {
+            try Task.checkCancellation()
+            switch try await performSmartScrollStep(
+                rawAction: rawAction,
+                serial: serial,
+                scrollingDown: true,
+                attempt: attempt,
+                budget: 2
+            ) {
+            case .found(let updatedAction, let foundNode):
+                recoveredSteps.append("smart_scroll_to_selector:down:\(attempt)")
+                return (updatedAction, foundNode)
+            case .moved:
+                downMoves += 1
+            case .boundaryOrUnavailable:
+                break
+            }
+            if downMoves < attempt {
+                break
+            }
+        }
+
+        // Phase 2: Reverse upward to recover targets above a mid-scroll or bottom viewport.
+        let upBudget = min(3, max(2, downMoves + 1))
+        for attempt in 1...upBudget {
+            try Task.checkCancellation()
+            switch try await performSmartScrollStep(
+                rawAction: rawAction,
+                serial: serial,
+                scrollingDown: false,
+                attempt: attempt,
+                budget: upBudget
+            ) {
+            case .found(let updatedAction, let foundNode):
+                recoveredSteps.append("smart_scroll_to_selector:up:\(attempt)")
+                return (updatedAction, foundNode)
+            case .moved:
+                continue
+            case .boundaryOrUnavailable:
+                return nil
+            }
+        }
+
+        return nil
+    }
+
+    private func performSmartScrollStep(
+        rawAction: AttributedUIAction,
+        serial: String,
+        scrollingDown: Bool,
+        attempt: Int,
+        budget: Int
+    ) async throws -> SmartScrollStepOutcome {
+        guard let liveIndex = await domState.currentIndex,
+              let scrollRect = Self.largestScrollableRect(in: liveIndex, ignoredPackages: hasher.ignoredPackages) else {
+            return .boundaryOrUnavailable
+        }
+
+        let beforeHash = hasher.fingerprint(for: liveIndex).layoutHash
+        let beforeSig = Self.scrollViewportSignature(
+            in: liveIndex,
+            container: scrollRect,
+            ignoredPackages: hasher.ignoredPackages
+        )
+
+        let cx = max(1, (scrollRect.minX + scrollRect.maxX) / 2)
+        let spanY = scrollRect.maxY - scrollRect.minY
+        let yHigh = scrollRect.minY + (spanY * 72) / 100
+        let yLow = scrollRect.minY + (spanY * 28) / 100
+        let startY = scrollingDown ? yHigh : yLow
+        let endY = scrollingDown ? yLow : yHigh
+        let dirLabel = scrollingDown ? "down" : "up"
+
+        let swipeAction = AttributedUIAction(
+            kind: .swipe,
+            targetDescription: "Smart scroll \(dirLabel) for '\(rawAction.targetDescription)'",
+            x: cx,
+            y: startY,
+            endX: cx,
+            endY: endY,
+            durationMs: 500
+        )
+
+        emit(.recoveryAction(
+            kind: "smart_scroll_to_selector",
+            detail: "Scrolling \(dirLabel) (\(attempt)/\(budget)) to reveal '\(rawAction.targetDescription)'"
+        ))
+
+        // Subscribe BEFORE swipe and explicitly do NOT call graphEngine.recordPendingAction(...)
+        let updateStream = await domState.updates
+        try await executor.execute(action: swipeAction, serial: serial)
+
+        let waitMs = max(150, min(800, configuration.stepTimeoutMs))
+        let hasherRef = self.hasher
+        let ignored = hasher.ignoredPackages
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await upd in updateStream {
+                    if Task.isCancelled { return }
+                    if upd.isSecureScreenActive { continue }
+                    let nextHash = hasherRef.fingerprint(for: upd.index).layoutHash
+                    let nextSig = Self.scrollViewportSignature(
+                        in: upd.index,
+                        container: scrollRect,
+                        ignoredPackages: ignored
+                    )
+                    if nextHash != beforeHash || nextSig != beforeSig {
+                        return
+                    }
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(waitMs))
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
+
+        if configuration.postSettleQuiescenceMs > 0 {
+            let qMs = max(configuration.postSettleQuiescenceMs, 400)
+            try await Task.sleep(for: .milliseconds(qMs))
+        }
+
+        let refreshed = await resolveLiveActionWithNode(rawAction)
+        if let foundNode = refreshed.node {
+            return .found(action: refreshed.action, node: foundNode)
+        }
+
+        if let afterIndex = await domState.currentIndex {
+            let afterHash = hasher.fingerprint(for: afterIndex).layoutHash
+            let afterSig = Self.scrollViewportSignature(
+                in: afterIndex,
+                container: scrollRect,
+                ignoredPackages: hasher.ignoredPackages
+            )
+            if afterHash == beforeHash && afterSig == beforeSig {
+                return .boundaryOrUnavailable
+            }
+            return .moved
+        }
+
+        return .boundaryOrUnavailable
     }
 
     private func resolveLiveActionWithNode(_ action: AttributedUIAction) async -> (action: AttributedUIAction, node: ShadowUINode?) {

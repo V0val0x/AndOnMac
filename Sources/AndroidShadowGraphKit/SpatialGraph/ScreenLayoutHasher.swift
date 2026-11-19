@@ -80,7 +80,8 @@ public struct ScreenLayoutHasher: Sendable {
             tokenSet.insert(token)
 
             if !rawLabel.isEmpty, (isInteractive || !node.resourceId.isEmpty) {
-                let compactLabel = String(rawLabel.prefix(40))
+                let safeLabel = Self.redactPII(rawLabel)
+                let compactLabel = String(safeLabel.prefix(40))
                 if seenLabels.insert(compactLabel).inserted {
                     if temporalKind != nil {
                         if temporalLabels.count < 8 {
@@ -333,7 +334,8 @@ public struct ScreenLayoutHasher: Sendable {
         let label = String(parts[2])
         guard !label.isEmpty else { return token }
         if label == "<TEXT>" || label == "<CLOCK>" || label == "<DATE>"
-            || label == "<PRICE>" || label == "<ETA>" || label == "<WEIGHT>" {
+            || label == "<PRICE>" || label == "<ETA>" || label == "<WEIGHT>"
+            || label == "<CARD>" || label == "<OTP>" {
             return token
         }
 
@@ -415,9 +417,177 @@ public struct ScreenLayoutHasher: Sendable {
         pattern: #"#(?:[.,]#)?\s*(?:g|l|г\.?|л\.?)(?!\p{L})"#
     )
 
+    private static let otpAfterMarkerRegex = try! NSRegularExpression(
+        pattern: #"((?<![\p{L}\d])(?:code|otp|pin|verification|2fa|код|подтверждени[ея]|смс|sms)(?![\p{L}\d])[^\r\n.!?;]{0,32}?(?:\r?\n[ \t]*)?)(?<!\d[./-])(?<!\d)(?:\d{4,8}|\d{3}[ -]\d{3})(?!\d)(?![./-]\d)"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let otpBeforeMarkerRegex = try! NSRegularExpression(
+        pattern: #"(?<!\d[./-])(?<!\d)(?:\d{4,8}|\d{3}[ -]\d{3})(?!\d)(?![./-]\d)((?:\r?\n[ \t]*)?[^\r\n.!?;]{0,32}?(?<![\p{L}\d])(?:code|otp|pin|verification|2fa|код|подтверждени[ея]|смс|sms)(?![\p{L}\d]))"#,
+        options: [.caseInsensitive]
+    )
+
     private static func replacing(_ regex: NSRegularExpression, in text: String, with template: String) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
+    }
+
+    private static func passesLuhn(_ digits: [UInt8]) -> Bool {
+        var sum = 0
+        var shouldDouble = false
+        for d in digits.reversed() {
+            var val = Int(d)
+            if shouldDouble {
+                val *= 2
+                if val > 9 { val -= 9 }
+            }
+            sum += val
+            shouldDouble.toggle()
+        }
+        return sum % 10 == 0
+    }
+
+    @inline(__always)
+    private static func isCardSeparator(_ s: UnicodeScalar) -> Bool {
+        s.value == 32 || s.value == 45 || s.value == 0x00A0
+    }
+
+    @inline(__always)
+    private static func isAsciiDigitScalar(_ s: UnicodeScalar) -> Bool {
+        s.value >= 48 && s.value <= 57
+    }
+
+    private static func isDateOrTimeContinuation(_ scalars: [UnicodeScalar], idx: Int) -> Bool {
+        idx + 1 < scalars.count
+            && (scalars[idx].value == 47 || scalars[idx].value == 58)
+            && isAsciiDigitScalar(scalars[idx + 1])
+    }
+
+    private static func redactCardNumbers(_ input: String) -> String {
+        let scalars = Array(input.unicodeScalars)
+        let n = scalars.count
+        var out = ""
+        out.reserveCapacity(input.count)
+        var i = 0
+
+        while i < n {
+            let s = scalars[i]
+            if isAsciiDigitScalar(s) && (i == 0 || !isAsciiDigitScalar(scalars[i - 1])) {
+                var firstEnd = i
+                while firstEnd < n && isAsciiDigitScalar(scalars[firstEnd]) {
+                    firstEnd += 1
+                }
+                let firstLen = firstEnd - i
+                let precededByDateTime = i >= 2
+                    && (scalars[i - 1].value == 47 || scalars[i - 1].value == 58)
+                    && isAsciiDigitScalar(scalars[i - 2])
+
+                if firstLen > 19 || precededByDateTime || isDateOrTimeContinuation(scalars, idx: firstEnd) {
+                    for k in i..<firstEnd {
+                        out.unicodeScalars.append(scalars[k])
+                    }
+                    i = firstEnd
+                    continue
+                }
+
+                var digits: [UInt8] = []
+                digits.reserveCapacity(20)
+                for k in i..<firstEnd {
+                    digits.append(UInt8(scalars[k].value - 48))
+                }
+
+                var bestEnd: Int? = nil
+                if (13...19).contains(digits.count)
+                    && digits.contains(where: { $0 != digits[0] })
+                    && passesLuhn(digits) {
+                    bestEnd = firstEnd
+                }
+
+                if firstLen >= 4 {
+                    var cursor = firstEnd
+                    var sepIsHyphen: Bool? = nil
+                    while cursor < n && digits.count < 19 {
+                        var sepEnd = cursor
+                        while sepEnd < n && sepEnd - cursor < 2 && isCardSeparator(scalars[sepEnd]) {
+                            sepEnd += 1
+                        }
+                        if sepEnd == cursor || sepEnd >= n || !isAsciiDigitScalar(scalars[sepEnd]) {
+                            break
+                        }
+                        var curHasHyphen = false
+                        var curHasSpace = false
+                        for k in cursor..<sepEnd {
+                            if scalars[k].value == 45 {
+                                curHasHyphen = true
+                            } else {
+                                curHasSpace = true
+                            }
+                        }
+                        if curHasHyphen && curHasSpace {
+                            break
+                        }
+                        if let expectedHyphen = sepIsHyphen {
+                            if curHasHyphen != expectedHyphen {
+                                break
+                            }
+                        } else {
+                            sepIsHyphen = curHasHyphen
+                        }
+
+                        var groupEnd = sepEnd
+                        while groupEnd < n && isAsciiDigitScalar(scalars[groupEnd]) {
+                            groupEnd += 1
+                        }
+                        if isDateOrTimeContinuation(scalars, idx: groupEnd) {
+                            break
+                        }
+                        let groupLen = groupEnd - sepEnd
+                        if digits.count + groupLen > 19 {
+                            break
+                        }
+                        for k in sepEnd..<groupEnd {
+                            digits.append(UInt8(scalars[k].value - 48))
+                        }
+                        cursor = groupEnd
+
+                        if (13...19).contains(digits.count)
+                            && digits.contains(where: { $0 != digits[0] })
+                            && passesLuhn(digits) {
+                            bestEnd = cursor
+                        }
+                    }
+                }
+
+                if let end = bestEnd {
+                    out.append("<CARD>")
+                    i = end
+                } else {
+                    for k in i..<firstEnd {
+                        out.unicodeScalars.append(scalars[k])
+                    }
+                    i = firstEnd
+                }
+            } else {
+                out.unicodeScalars.append(s)
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Scrubs Luhn-valid payment card PANs (`<CARD>`) and context-anchored OTP/2FA codes (`<OTP>`)
+    /// while leaving ordinary numbers (`2026`, `1080`, timestamps, repeated zeros) untouched.
+    /// Bit-exact compatible with Rust `ScreenLayoutHasher::redact_pii`.
+    public static func redactPII(_ raw: String) -> String {
+        guard raw.utf8.contains(where: { $0 >= 48 && $0 <= 57 }) else {
+            return raw
+        }
+        var result = redactCardNumbers(raw)
+        if result.utf8.contains(where: { $0 >= 48 && $0 <= 57 }) {
+            result = replacing(otpAfterMarkerRegex, in: result, with: "$1<OTP>")
+            result = replacing(otpBeforeMarkerRegex, in: result, with: "<OTP>$1")
+        }
+        return result
     }
 
     /// Normalizes volatile digit sequences (`13:49`, `85%`, `42 unread`), temporal clock/date
@@ -426,13 +596,14 @@ public struct ScreenLayoutHasher: Sendable {
     public static func normalizeLabel(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
+        let redacted = redactPII(trimmed)
 
         var collapsed = ""
-        collapsed.reserveCapacity(min(256, trimmed.count))
+        collapsed.reserveCapacity(min(256, redacted.count))
         var inDigits = false
         var lastWasSpace = false
 
-        for scalar in trimmed.unicodeScalars {
+        for scalar in redacted.unicodeScalars {
             if scalar.value >= 48 && scalar.value <= 57 { // ASCII '0'...'9'
                 if !inDigits {
                     collapsed.append("#")

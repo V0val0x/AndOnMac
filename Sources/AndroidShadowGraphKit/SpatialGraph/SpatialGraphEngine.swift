@@ -12,6 +12,7 @@ public actor SpatialGraphEngine {
 
     private static let defaultCanonicalSimilarityThreshold: Double = 0.90
     private static let minimumCanonicalTokenCount: Int = 4
+    public static let edgePruneFailureThreshold: Int = 5
 
     private let hasher: ScreenLayoutHasher
     private let significanceThreshold: Double
@@ -40,8 +41,124 @@ public actor SpatialGraphEngine {
     public var edgeCount: Int { outgoingEdges.values.reduce(0) { $0 + $1.count } }
 
     /// Records the user/agent UI action just dispatched so the next significant screen shift labels the edge.
+    /// Automatically scrubs PII (`<CARD>`, `<OTP>`) before storing in memory or persisting to `shadow_graph.json`.
     public func recordPendingAction(_ action: AttributedUIAction) {
-        pendingAction = action
+        pendingAction = action.redactedForStorage()
+    }
+
+    /// Resets `consecutiveFailures` to `0` when an edge is traversed cleanly.
+    public func recordEdgeSuccess(edgeId: UUID) {
+        var changed = false
+        for (fromHash, var edges) in outgoingEdges {
+            if let idx = edges.firstIndex(where: { $0.id == edgeId }) {
+                if edges[idx].consecutiveFailures != 0 {
+                    edges[idx].consecutiveFailures = 0
+                    outgoingEdges[fromHash] = edges
+                    changed = true
+                }
+                break
+            }
+        }
+        if changed {
+            notifyTopologyChanged()
+        }
+    }
+
+    /// Increments `consecutiveFailures` for an edge after a `stepTimeout`.
+    /// Automatically prunes the edge once `consecutiveFailures >= edgePruneFailureThreshold` (5),
+    /// rebuilding the acyclic spanning DAG when a spanning edge is removed.
+    @discardableResult
+    public func recordEdgeFailure(edgeId: UUID) -> (newCount: Int, pruned: Bool)? {
+        for (fromHash, var edges) in outgoingEdges {
+            guard let idx = edges.firstIndex(where: { $0.id == edgeId }) else { continue }
+            edges[idx].consecutiveFailures += 1
+            let newCount = edges[idx].consecutiveFailures
+            let pruned: Bool
+            let wasSpanning: Bool
+            if newCount >= Self.edgePruneFailureThreshold {
+                let removed = edges.remove(at: idx)
+                pruned = true
+                wasSpanning = removed.isSpanningTreeEdge
+            } else {
+                pruned = false
+                wasSpanning = false
+            }
+
+            if edges.isEmpty {
+                outgoingEdges.removeValue(forKey: fromHash)
+            } else {
+                outgoingEdges[fromHash] = edges
+            }
+
+            if pruned && wasSpanning {
+                rebuildSpanningDAG()
+            }
+            notifyTopologyChanged()
+            return (newCount, pruned)
+        }
+        return nil
+    }
+
+    /// Explicitly attributes a direct executable edge `(fromHash -> toHash)` when an action settled
+    /// across intermediate async-loading skeleton frames that consumed `pendingAction`.
+    @discardableResult
+    public func recordDirectEdge(
+        fromHash: UInt64,
+        toHash: UInt64,
+        action: AttributedUIAction,
+        transitionMs: Double
+    ) -> ScreenTransitionEdge? {
+        guard fromHash != toHash,
+              vertices[fromHash] != nil,
+              vertices[toHash] != nil else {
+            return nil
+        }
+        let redacted = action.redactedForStorage()
+        let actionSig = redacted.signature
+        let hazard = HazardousActionClassifier.assess(action: redacted, actionSignature: actionSig)
+        let now = Date()
+
+        var edges = outgoingEdges[fromHash] ?? []
+        let committed: ScreenTransitionEdge
+        if let idx = edges.firstIndex(where: { $0.toHash == toHash && $0.actionSignature == actionSig }) {
+            let existing = edges[idx]
+            let oldCount = Double(existing.traversalCount)
+            let updated = ScreenTransitionEdge(
+                id: existing.id,
+                fromHash: existing.fromHash,
+                toHash: existing.toHash,
+                action: redacted,
+                actionSignature: existing.actionSignature,
+                traversalCount: existing.traversalCount + 1,
+                averageTransitionMs: ((existing.averageTransitionMs * oldCount) + transitionMs) / (oldCount + 1.0),
+                isSpanningTreeEdge: existing.isSpanningTreeEdge,
+                lastTraversedAt: now,
+                isHazardous: existing.isHazardous || hazard.isHazardous,
+                hazardReason: hazard.isHazardous ? hazard.reason : existing.hazardReason,
+                consecutiveFailures: 0
+            )
+            edges[idx] = updated
+            committed = updated
+        } else {
+            let edge = ScreenTransitionEdge(
+                fromHash: fromHash,
+                toHash: toHash,
+                action: redacted,
+                actionSignature: actionSig,
+                traversalCount: 1,
+                averageTransitionMs: transitionMs,
+                isSpanningTreeEdge: false,
+                lastTraversedAt: now,
+                isHazardous: hazard.isHazardous,
+                hazardReason: hazard.isHazardous ? hazard.reason : nil,
+                consecutiveFailures: 0
+            )
+            edges.append(edge)
+            committed = edge
+        }
+        outgoingEdges[fromHash] = edges
+        notifyTopologyChanged()
+        return committed
     }
 
     /// Evaluates a committed `ShadowDOMUpdate`, deduplicating states and recording transitions.
@@ -149,7 +266,7 @@ public actor SpatialGraphEngine {
             )
         }
 
-        let attributedAction = consumeValidPendingAction(now: now)
+        let attributedAction = consumeValidPendingAction(now: now)?.redactedForStorage()
         let transitionMs = max(0, (now.timeIntervalSince(attributedAction?.timestamp ?? lastStateTransitionAt ?? now)) * 1000.0)
 
         let isNewDiscovery: Bool
@@ -193,6 +310,7 @@ public actor SpatialGraphEngine {
             edge.traversalCount += 1
             edge.averageTransitionMs = ((edge.averageTransitionMs * prevCount) + transitionMs) / Double(edge.traversalCount)
             edge.lastTraversedAt = now
+            edge.consecutiveFailures = 0
             if hazard.isHazardous && !edge.isHazardous {
                 edge.isHazardous = true
                 edge.hazardReason = hazard.reason
@@ -211,7 +329,8 @@ public actor SpatialGraphEngine {
                 isSpanningTreeEdge: isNewDiscovery,
                 lastTraversedAt: now,
                 isHazardous: hazard.isHazardous,
-                hazardReason: hazard.isHazardous ? hazard.reason : nil
+                hazardReason: hazard.isHazardous ? hazard.reason : nil,
+                consecutiveFailures: 0
             )
             edges.append(edge)
             committedEdge = edge
@@ -362,7 +481,18 @@ public actor SpatialGraphEngine {
 
         // 1. Canonicalize persisted tokens and deduplicate exact layoutHash collisions
         var rawVerticesByHash: [UInt64: ScreenStateVertex] = Dictionary(minimumCapacity: snapshot.vertices.count)
-        for var vertex in snapshot.vertices {
+        for rawVertex in snapshot.vertices {
+            var vertex = ScreenStateVertex(
+                layoutHash: rawVertex.layoutHash,
+                activePackage: rawVertex.activePackage,
+                sampleInteractiveLabels: rawVertex.sampleInteractiveLabels.map { ScreenLayoutHasher.redactPII($0) },
+                semanticTokens: rawVertex.semanticTokens,
+                firstSeenAt: rawVertex.firstSeenAt,
+                lastSeenAt: rawVertex.lastSeenAt,
+                visitCount: rawVertex.visitCount,
+                discoveryParentHash: rawVertex.discoveryParentHash,
+                discoveryDepth: rawVertex.discoveryDepth
+            )
             if !vertex.semanticTokens.isEmpty {
                 let canonicalized = Set(
                     vertex.semanticTokens.map {
@@ -475,7 +605,25 @@ public actor SpatialGraphEngine {
         var orderedEdgeKeys: [RewiredEdgeKey] = []
         var droppedOrMergedEdgeCount = 0
 
-        for edge in snapshot.edges {
+        for rawEdge in snapshot.edges {
+            if rawEdge.consecutiveFailures >= Self.edgePruneFailureThreshold {
+                droppedOrMergedEdgeCount += 1
+                continue
+            }
+            let edge = ScreenTransitionEdge(
+                id: rawEdge.id,
+                fromHash: rawEdge.fromHash,
+                toHash: rawEdge.toHash,
+                action: rawEdge.action?.redactedForStorage(),
+                actionSignature: ScreenLayoutHasher.redactPII(rawEdge.actionSignature),
+                traversalCount: rawEdge.traversalCount,
+                averageTransitionMs: rawEdge.averageTransitionMs,
+                isSpanningTreeEdge: rawEdge.isSpanningTreeEdge,
+                lastTraversedAt: rawEdge.lastTraversedAt,
+                isHazardous: rawEdge.isHazardous,
+                hazardReason: rawEdge.hazardReason,
+                consecutiveFailures: max(0, rawEdge.consecutiveFailures)
+            )
             guard let mappedFrom = canonicalMap[edge.fromHash],
                   let mappedTo = canonicalMap[edge.toHash],
                   vertices[mappedFrom] != nil,
@@ -513,10 +661,13 @@ public actor SpatialGraphEngine {
                     mergedAvgMs = existing.averageTransitionMs
                 }
                 let newerAction: AttributedUIAction?
+                let mergedFailures: Int
                 if edge.lastTraversedAt >= existing.lastTraversedAt {
                     newerAction = edge.action ?? existing.action
+                    mergedFailures = max(0, edge.consecutiveFailures)
                 } else {
                     newerAction = existing.action ?? edge.action
+                    mergedFailures = max(0, existing.consecutiveFailures)
                 }
                 let hazard = HazardousActionClassifier.assess(action: newerAction, actionSignature: edge.actionSignature)
                 let mergedHazardous = existing.isHazardous || edge.isHazardous || hazard.isHazardous
@@ -532,7 +683,8 @@ public actor SpatialGraphEngine {
                     isSpanningTreeEdge: existing.isSpanningTreeEdge || edge.isSpanningTreeEdge,
                     lastTraversedAt: max(existing.lastTraversedAt, edge.lastTraversedAt),
                     isHazardous: mergedHazardous,
-                    hazardReason: mergedHazardous ? mergedReason : nil
+                    hazardReason: mergedHazardous ? mergedReason : nil,
+                    consecutiveFailures: mergedFailures
                 )
             } else {
                 let hazard = HazardousActionClassifier.assess(action: edge.action, actionSignature: edge.actionSignature)
@@ -549,7 +701,8 @@ public actor SpatialGraphEngine {
                     isSpanningTreeEdge: edge.isSpanningTreeEdge,
                     lastTraversedAt: edge.lastTraversedAt,
                     isHazardous: isHaz,
-                    hazardReason: isHaz ? hazReason : nil
+                    hazardReason: isHaz ? hazReason : nil,
+                    consecutiveFailures: max(0, edge.consecutiveFailures)
                 )
                 orderedEdgeKeys.append(key)
             }
@@ -765,7 +918,10 @@ public actor SpatialGraphEngine {
                     traversalCount: edge.traversalCount,
                     averageTransitionMs: edge.averageTransitionMs,
                     isSpanningTreeEdge: isSpanning,
-                    lastTraversedAt: edge.lastTraversedAt
+                    lastTraversedAt: edge.lastTraversedAt,
+                    isHazardous: edge.isHazardous,
+                    hazardReason: edge.hazardReason,
+                    consecutiveFailures: edge.consecutiveFailures
                 )
             }
         }

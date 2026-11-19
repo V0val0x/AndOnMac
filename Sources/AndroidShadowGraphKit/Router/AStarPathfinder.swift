@@ -111,7 +111,7 @@ public struct AStarPathfinder: Sendable {
     public func reachableExecutableVertexCount(from startHash: UInt64, in graph: SpatialGraphSnapshot) -> Int {
         var outgoing: [UInt64: [UInt64]] = [:]
         for edge in graph.edges {
-            guard edge.action != nil, edge.toHash != edge.fromHash else { continue }
+            guard edge.action != nil, edge.toHash != edge.fromHash, edge.consecutiveFailures < 5 else { continue }
             outgoing[edge.fromHash, default: []].append(edge.toHash)
         }
         var visited: Set<UInt64> = [startHash]
@@ -159,7 +159,7 @@ public struct AStarPathfinder: Sendable {
         // Build deterministic adjacency list filtering out unattributed (action == nil) edges and self-loops
         var outgoing: [UInt64: [ScreenTransitionEdge]] = [:]
         for edge in graph.edges {
-            guard edge.action != nil, edge.toHash != edge.fromHash else { continue }
+            guard edge.action != nil, edge.toHash != edge.fromHash, edge.consecutiveFailures < 5 else { continue }
             if spanningTreeOnly && !edge.isSpanningTreeEdge { continue }
             outgoing[edge.fromHash, default: []].append(edge)
         }
@@ -304,7 +304,9 @@ public struct AStarPathfinder: Sendable {
         let latencyTerm = configuration.latencyWeightPerSecond * (cappedMs / 1000.0)
         // Slight smoothing preference for battle-tested edges without ever going below minStepCost
         let reliabilityTerm = edge.traversalCount >= 3 ? 0.0 : (0.03 / Double(max(1, edge.traversalCount)))
-        return configuration.minStepCost + latencyTerm + reliabilityTerm
+        let baseCost = configuration.minStepCost + latencyTerm + reliabilityTerm
+        let decayMultiplier = 1.0 + 0.75 * Double(max(0, edge.consecutiveFailures))
+        return baseCost * decayMultiplier
     }
 
     private static func effectiveTokens(for vertex: ScreenStateVertex) -> Set<String> {

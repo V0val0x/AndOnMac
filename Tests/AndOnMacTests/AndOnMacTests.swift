@@ -1118,8 +1118,18 @@ final class AndOnMacTests: XCTestCase {
         let listJSON = try JSONSerialization.jsonObject(with: listRespData!) as? [String: Any]
         let listResult = listJSON?["result"] as? [String: Any]
         let tools = listResult?["tools"] as? [[String: Any]]
-        XCTAssertEqual(tools?.count, 10)
-        XCTAssertTrue(tools?.contains(where: { ($0["name"] as? String) == "android_navigate_to_node" }) == true)
+        XCTAssertEqual(tools?.count, 11)
+        let navTool = tools?.first(where: { ($0["name"] as? String) == "android_navigate_to_node" })
+        XCTAssertNotNil(navTool)
+        let navProps = (navTool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        XCTAssertNotNil(navProps?["auto_explore"])
+        let exploreTool = tools?.first(where: { ($0["name"] as? String) == "android_explore_and_click" })
+        XCTAssertNotNil(exploreTool)
+        let exploreProps = (exploreTool?["inputSchema"] as? [String: Any])?["properties"] as? [String: Any]
+        XCTAssertNotNil(exploreProps?["target"])
+        XCTAssertNotNil(exploreProps?["max_scrolls"])
+        XCTAssertNotNil(exploreProps?["prefer_graph_route"])
+        XCTAssertNotNil(exploreProps?["confirmed"])
 
         // Kill-switch must block tool calls while paused
         core.isAgentPaused = true

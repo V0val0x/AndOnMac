@@ -97,6 +97,7 @@ class DaemonTcpServerTest {
         try {
             val port = server.boundPort
             assertTrue(port > 0)
+            assertEquals("127.0.0.1", server.boundHost)
 
             val c1 = Socket(InetAddress.getByName("127.0.0.1"), port)
             val c2 = Socket(InetAddress.getByName("127.0.0.1"), port)

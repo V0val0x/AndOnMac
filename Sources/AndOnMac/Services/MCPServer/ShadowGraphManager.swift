@@ -7,6 +7,11 @@ public final class ShadowGraphManager: @unchecked Sendable {
     public static let shared = ShadowGraphManager()
 
     public static var defaultGraphStorageURL: URL {
+        if let overridePath = ProcessInfo.processInfo.environment["ANDONMAC_GRAPH_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath, isDirectory: false)
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
         return appSupport
@@ -361,12 +366,13 @@ public final class ShadowGraphManager: @unchecked Sendable {
         maxSteps: Int = 12,
         stepTimeoutMs: Int = 2000,
         confirmed: Bool = false,
+        autoExplore: Bool = false,
         secureHandoffTimeoutSeconds: TimeInterval = 60.0,
         executor: MacroActionExecutor = ADBMacroActionExecutor()
     ) async throws -> ShadowNavigationOutcome {
         await loadPersistedGraphIfNeeded()
         await ensureStarted(serial: serial, forceReconnectIfWaiting: true)
-        return try await bridge.routeAndExecute(
+        let outcome = try await bridge.routeAndExecute(
             targetHint: target,
             targetHash: targetHash,
             serial: serial,
@@ -374,8 +380,47 @@ public final class ShadowGraphManager: @unchecked Sendable {
             maxSteps: maxSteps,
             stepTimeoutMs: stepTimeoutMs,
             confirmed: confirmed,
+            autoExplore: autoExplore,
             secureHandoffTimeoutSeconds: secureHandoffTimeoutSeconds
         )
+        switch outcome {
+        case .arrived, .explored:
+            await flushPersistedGraph()
+        default:
+            break
+        }
+        return outcome
+    }
+
+    public func exploreAndClick(
+        serial: String,
+        target: String,
+        maxScrolls: Int = 3,
+        stepTimeoutMs: Int = 2000,
+        confirmed: Bool = false,
+        preferGraphRoute: Bool = true,
+        secureHandoffTimeoutSeconds: TimeInterval = 60.0,
+        executor: MacroActionExecutor = ADBMacroActionExecutor()
+    ) async throws -> ExploreOutcome {
+        await loadPersistedGraphIfNeeded()
+        await ensureStarted(serial: serial, forceReconnectIfWaiting: true)
+        let outcome = try await bridge.exploreAndClick(
+            target: target,
+            serial: serial,
+            executor: executor,
+            maxScrolls: maxScrolls,
+            stepTimeoutMs: stepTimeoutMs,
+            confirmed: confirmed,
+            preferGraphRoute: preferGraphRoute,
+            secureHandoffTimeoutSeconds: secureHandoffTimeoutSeconds
+        )
+        switch outcome {
+        case .exploredAndClicked, .arrivedViaGraph:
+            await flushPersistedGraph()
+        default:
+            break
+        }
+        return outcome
     }
 
     // MARK: - Daemon Auto-Recovery

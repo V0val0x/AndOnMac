@@ -98,6 +98,8 @@ public struct MacroExecutionConfiguration: Sendable, Equatable {
     public let allowHazardousActions: Bool
     public let enableForwardSkipRecovery: Bool
     public let enableOverlaySwipeDismiss: Bool
+    public let enableSmartScrollToSelector: Bool
+    public let recordEdgeFailuresOnTimeout: Bool
     public let secureHandoffTimeoutSeconds: TimeInterval
 
     public init(
@@ -107,6 +109,8 @@ public struct MacroExecutionConfiguration: Sendable, Equatable {
         allowHazardousActions: Bool = false,
         enableForwardSkipRecovery: Bool = true,
         enableOverlaySwipeDismiss: Bool = true,
+        enableSmartScrollToSelector: Bool = true,
+        recordEdgeFailuresOnTimeout: Bool = true,
         secureHandoffTimeoutSeconds: TimeInterval = 60.0
     ) {
         self.stepTimeoutMs = max(50, stepTimeoutMs)
@@ -115,6 +119,8 @@ public struct MacroExecutionConfiguration: Sendable, Equatable {
         self.allowHazardousActions = allowHazardousActions
         self.enableForwardSkipRecovery = enableForwardSkipRecovery
         self.enableOverlaySwipeDismiss = enableOverlaySwipeDismiss
+        self.enableSmartScrollToSelector = enableSmartScrollToSelector
+        self.recordEdgeFailuresOnTimeout = recordEdgeFailuresOnTimeout
         self.secureHandoffTimeoutSeconds = max(0.5, secureHandoffTimeoutSeconds)
     }
 }

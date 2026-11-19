@@ -268,7 +268,7 @@ public struct ShadowTreeIndex: Sendable, Equatable {
         return (score, -node.index)
     }
 
-    private static func extractShortResourceId(_ resourceId: String) -> String {
+    public static func extractShortResourceId(_ resourceId: String) -> String {
         if let range = resourceId.range(of: ":id/") {
             return String(resourceId[range.upperBound...])
         }

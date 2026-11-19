@@ -11,7 +11,7 @@ public struct AndroidNotificationSummary: Codable, Sendable, Equatable {
     public let timestamp: String
 }
 
-/// Implements all 10 semantic Android UI & control tools exposed via MCP.
+/// Implements all 11 semantic Android UI & control tools exposed via MCP.
 public enum AndroidMCPTools {
     public static let allDefinitions: [MCPToolDefinition] = [
         MCPToolDefinition(
@@ -134,8 +134,25 @@ public enum AndroidMCPTools {
                     "target_hash": .object(["type": .string("string"), "description": .string("Optional hex (0x...) or decimal UInt64 layoutHash for exact vertex pinning.")]),
                     "max_steps": .object(["type": .string("integer"), "description": .string("Maximum transition hops allowed (default 12).")]),
                     "step_timeout_ms": .object(["type": .string("integer"), "description": .string("Per-step Shadow DOM settle timeout in milliseconds (default 2000).")]),
-                    "confirmed": .object(["type": .string("boolean"), "description": .string("Set to true ONLY after explicit user confirmation in chat to allow irreversible/hazardous actions (payment, purchase, delete). Default: false.")])
+                    "confirmed": .object(["type": .string("boolean"), "description": .string("Set to true ONLY after explicit user confirmation in chat to allow irreversible/hazardous actions (payment, purchase, delete). Default: false.")]),
+                    "auto_explore": .object(["type": .string("boolean"), "description": .string("When true and no known graph route exists (no_route / target_not_found), automatically fall back to live Shadow DOM explore-and-click with bounded scrolling and DAG edge recording. Default: false.")])
                 ])
+            ])
+        ),
+        MCPToolDefinition(
+            name: "android_explore_and_click",
+            description: "Dynamic Shadow DOM discovery + click with optional A* graph/prefix routing, bounded list scrolling (down/up), hazardous action HITL guard, and automatic Spatial Graph edge recording. Returns top-20 PII-redacted interactive candidates (needs_selection, isError: false) if no confident match is found.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "serial": .object(["type": .string("string"), "description": .string("Optional ADB device serial.")]),
+                    "target": .object(["type": .string("string"), "description": .string("Target UI label, resource_id suffix, content_desc, or breadcrumb path (e.g. 'Night Light', 'Display > Night Light').")]),
+                    "max_scrolls": .object(["type": .string("integer"), "description": .string("Maximum bounded discovery scrolls (0-10). Default: 3.")]),
+                    "step_timeout_ms": .object(["type": .string("integer"), "description": .string("Per-step Shadow DOM settle timeout in milliseconds (default 2000).")]),
+                    "confirmed": .object(["type": .string("boolean"), "description": .string("Set to true ONLY after explicit user confirmation in chat to click hazardous/irreversible elements. Default: false.")]),
+                    "prefer_graph_route": .object(["type": .string("boolean"), "description": .string("Try known A* graph route (or nearest known prefix vertex) before scanning live Shadow DOM. Default: true.")])
+                ]),
+                "required": .array([.string("target")])
             ])
         )
     ]
@@ -175,6 +192,9 @@ public enum AndroidMCPTools {
             case "android_navigate_to_node":
                 let serial = try await resolveSerial(arguments["serial"]?.stringValue)
                 return try await navigateToNode(serial: serial, args: arguments)
+            case "android_explore_and_click":
+                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                return try await exploreAndClick(serial: serial, args: arguments)
             default:
                 return .text("Unknown tool: \(name)", isError: true)
             }
@@ -507,6 +527,7 @@ public enum AndroidMCPTools {
         let maxSteps = max(1, min(32, args["max_steps"]?.intValue ?? 12))
         let stepTimeoutMs = max(100, min(30_000, args["step_timeout_ms"]?.intValue ?? 2000))
         let confirmed = args["confirmed"]?.boolValue ?? false
+        let autoExplore = args["auto_explore"]?.boolValue ?? false
 
         let outcome = try await ShadowGraphManager.shared.navigateToNode(
             serial: serial,
@@ -514,9 +535,31 @@ public enum AndroidMCPTools {
             targetHash: targetHash,
             maxSteps: maxSteps,
             stepTimeoutMs: stepTimeoutMs,
-            confirmed: confirmed
+            confirmed: confirmed,
+            autoExplore: autoExplore
         )
         return formatNavigationOutcome(outcome)
+    }
+
+    private static func exploreAndClick(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
+        guard let target = args["target"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !target.isEmpty else {
+            return .text("Missing required 'target' parameter.", isError: true)
+        }
+        let maxScrolls = max(0, min(10, args["max_scrolls"]?.intValue ?? 3))
+        let stepTimeoutMs = max(100, min(30_000, args["step_timeout_ms"]?.intValue ?? 2000))
+        let confirmed = args["confirmed"]?.boolValue ?? false
+        let preferGraphRoute = args["prefer_graph_route"]?.boolValue ?? true
+
+        let outcome = try await ShadowGraphManager.shared.exploreAndClick(
+            serial: serial,
+            target: target,
+            maxScrolls: maxScrolls,
+            stepTimeoutMs: stepTimeoutMs,
+            confirmed: confirmed,
+            preferGraphRoute: preferGraphRoute
+        )
+        return formatExploreOutcome(outcome)
     }
 
     public static func parseLayoutHash(_ value: MCPJSONValue?) throws -> UInt64? {
@@ -566,15 +609,18 @@ public enum AndroidMCPTools {
                     "skipped": .bool(step.wasSkipped)
                 ])
             }
-            let payload: MCPJSONValue = .object([
+            var obj: [String: MCPJSONValue] = [
                 "status": .string("arrived"),
                 "start_hash": .string(hex(report.startHash)),
                 "target_hash": .string(hex(report.finalHash)),
                 "steps_executed": .int(report.steps.count),
                 "total_elapsed_ms": .int(report.totalElapsedMs),
                 "path_summary": .array(summary)
-            ])
-            return .text(encodeJSONValue(payload), isError: false)
+            ]
+            if !report.recoveredSteps.isEmpty {
+                obj["recovered_steps"] = .array(report.recoveredSteps.map { .string($0) })
+            }
+            return .text(encodeJSONValue(.object(obj)), isError: false)
 
         case .alreadyAtTarget(let stateHash, let activePackage):
             let payload: MCPJSONValue = .object([
@@ -585,6 +631,9 @@ public enum AndroidMCPTools {
                 "total_elapsed_ms": .int(0)
             ])
             return .text(encodeJSONValue(payload), isError: false)
+
+        case .explored(let exploreOutcome):
+            return formatExploreOutcome(exploreOutcome)
 
         case .requiresConfirmation(let req):
             let payload: MCPJSONValue = .object([
@@ -639,6 +688,115 @@ public enum AndroidMCPTools {
                 "message": .string("Shadow DOM stream is unavailable; ensure android-daemon is running and connected.")
             ])
             return .text(encodeJSONValue(payload), isError: true)
+        }
+    }
+
+    public static func formatExploreOutcome(_ outcome: ExploreOutcome) -> MCPToolResult {
+        func hex(_ hash: UInt64) -> String { String(format: "0x%016llx", hash) }
+        func encodeCandidate(_ c: ExploreCandidate) -> MCPJSONValue {
+            .object([
+                "nodeId": .int(Int(c.nodeId)),
+                "label": .string(c.label),
+                "resourceId": .string(c.resourceId),
+                "className": .string(c.className),
+                "centerX": .int(c.centerX),
+                "centerY": .int(c.centerY),
+                "clickable": .bool(c.clickable),
+                "scrollable": .bool(c.scrollable),
+                "score": .int(c.score)
+            ])
+        }
+
+        switch outcome {
+        case .arrivedViaGraph(let report, let alreadyAtTarget, let activePackage):
+            let summary: [MCPJSONValue] = report.steps.map { step in
+                .object([
+                    "step_index": .int(step.stepIndex),
+                    "action": .string(step.actionSignature),
+                    "target_hash": .string(hex(step.targetHash)),
+                    "elapsed_ms": .int(step.elapsedMs),
+                    "matched_by_exact_hash": .bool(step.matchedByExactHash),
+                    "skipped": .bool(step.wasSkipped)
+                ])
+            }
+            var obj: [String: MCPJSONValue] = [
+                "status": .string("arrived_via_graph"),
+                "already_at_target": .bool(alreadyAtTarget),
+                "active_package": .string(activePackage),
+                "start_hash": .string(hex(report.startHash)),
+                "target_hash": .string(hex(report.finalHash)),
+                "steps_executed": .int(report.steps.count),
+                "total_elapsed_ms": .int(report.totalElapsedMs),
+                "path_summary": .array(summary)
+            ]
+            if !report.recoveredSteps.isEmpty {
+                obj["recovered_steps"] = .array(report.recoveredSteps.map { .string($0) })
+            }
+            return .text(encodeJSONValue(.object(obj)), isError: false)
+
+        case .exploredAndClicked(
+            let matchedCandidate,
+            let scrollsPerformed,
+            let startHash,
+            let finalHash,
+            let activePackage,
+            let screenChanged,
+            let edgeRecorded,
+            let totalElapsedMs
+        ):
+            let payload: MCPJSONValue = .object([
+                "status": .string("explored_and_clicked"),
+                "matched_candidate": encodeCandidate(matchedCandidate),
+                "scrolls_performed": .int(scrollsPerformed),
+                "start_hash": .string(hex(startHash)),
+                "final_hash": .string(hex(finalHash)),
+                "active_package": .string(activePackage),
+                "screen_changed": .bool(screenChanged),
+                "edge_recorded": .bool(edgeRecorded),
+                "total_elapsed_ms": .int(totalElapsedMs)
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
+
+        case .requiresConfirmation(let req):
+            let payload: MCPJSONValue = .object([
+                "status": .string("requires_confirmation"),
+                "is_hazardous": .bool(true),
+                "hazard_category": .string(req.hazardCategory.rawValue),
+                "hazard_reason": .string(req.hazardReason),
+                "blocked_step_index": .int(req.stepIndex),
+                "total_steps": .int(req.totalSteps),
+                "steps_completed": .int(req.stepsCompleted),
+                "blocked_action": .string(req.actionSignature),
+                "target_description": .string(req.targetDescription),
+                "current_hash": .string(hex(req.currentHash)),
+                "target_hash": .string(hex(req.targetHash)),
+                "message": .string("Irreversible action blocked awaiting human approval. Ask the user in chat to confirm, then re-run android_explore_and_click with confirmed: true.")
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
+
+        case .secureScreenTimeout(let reason, let activePackage, let timeoutSeconds):
+            let payload: MCPJSONValue = .object([
+                "status": .string("secure_screen_active"),
+                "code": .string("SECURE_SCREEN_ACTIVE"),
+                "reason": .string(reason),
+                "active_package": .string(activePackage),
+                "timeout_seconds": .int(timeoutSeconds),
+                "message": .string("Protected biometric/PIN screen remained locked past \(timeoutSeconds)s. Ask the user to unlock on the phone and retry.")
+            ])
+            return .text(encodeJSONValue(payload), isError: true)
+
+        case .needsSelection(let query, let currentHash, let activePackage, let scrollsPerformed, let candidates):
+            let payload: MCPJSONValue = .object([
+                "status": .string("needs_selection"),
+                "query": .string(query),
+                "current_hash": .string(hex(currentHash)),
+                "active_package": .string(activePackage),
+                "scrolls_performed": .int(scrollsPerformed),
+                "candidate_count": .int(candidates.count),
+                "candidates": .array(candidates.map(encodeCandidate)),
+                "message": .string("No confident live match (>=500) found. Select a candidate from 'candidates' or refine 'target'.")
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
         }
     }
 

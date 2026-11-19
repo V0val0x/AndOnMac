@@ -42,6 +42,9 @@ class DaemonTcpServer(
     val boundPort: Int
         get() = serverSocket?.localPort ?: -1
 
+    val boundHost: String?
+        get() = serverSocket?.inetAddress?.hostAddress
+
     val clientCount: Int
         get() = sessions.size
 

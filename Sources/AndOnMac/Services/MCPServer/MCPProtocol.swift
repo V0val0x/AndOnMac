@@ -230,7 +230,7 @@ public final class MCPServerCore: @unchecked Sendable {
                 ]),
                 "serverInfo": .object([
                     "name": .string("AndOnMac"),
-                    "version": .string("2.2.0")
+                    "version": .string("2.3.0")
                 ])
             ])
             return MCPJSONRPCResponse(id: id, result: result)

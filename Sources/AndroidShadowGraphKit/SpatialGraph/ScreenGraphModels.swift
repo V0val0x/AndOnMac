@@ -62,6 +62,25 @@ public struct AttributedUIAction: Sendable, Codable, Equatable {
         }
         return kind.rawValue
     }
+
+    /// Returns a PII-scrubbed copy safe to store in `SpatialGraphEngine` and serialize into `shadow_graph.json`.
+    public func redactedForStorage() -> AttributedUIAction {
+        AttributedUIAction(
+            kind: kind,
+            targetDescription: ScreenLayoutHasher.redactPII(targetDescription),
+            x: x,
+            y: y,
+            endX: endX,
+            endY: endY,
+            durationMs: durationMs,
+            textInput: textInput.map { ScreenLayoutHasher.redactPII($0) },
+            pressEnter: pressEnter,
+            selectorResourceId: selectorResourceId,
+            selectorText: selectorText.map { ScreenLayoutHasher.redactPII($0) },
+            selectorContentDesc: selectorContentDesc.map { ScreenLayoutHasher.redactPII($0) },
+            timestamp: timestamp
+        )
+    }
 }
 
 public struct ScreenStateVertex: Sendable, Codable, Identifiable, Equatable {
@@ -138,6 +157,7 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
     public var lastTraversedAt: Date
     public var isHazardous: Bool
     public var hazardReason: String?
+    public var consecutiveFailures: Int
 
     public enum CodingKeys: String, CodingKey {
         case id
@@ -151,6 +171,7 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         case lastTraversedAt
         case isHazardous
         case hazardReason
+        case consecutiveFailures
     }
 
     public init(
@@ -164,7 +185,8 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         isSpanningTreeEdge: Bool = false,
         lastTraversedAt: Date = Date(),
         isHazardous: Bool = false,
-        hazardReason: String? = nil
+        hazardReason: String? = nil,
+        consecutiveFailures: Int = 0
     ) {
         self.id = id
         self.fromHash = fromHash
@@ -177,6 +199,7 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         self.lastTraversedAt = lastTraversedAt
         self.isHazardous = isHazardous
         self.hazardReason = hazardReason
+        self.consecutiveFailures = consecutiveFailures
     }
 
     public init(from decoder: Decoder) throws {
@@ -192,6 +215,7 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         self.lastTraversedAt = try container.decode(Date.self, forKey: .lastTraversedAt)
         self.isHazardous = try container.decodeIfPresent(Bool.self, forKey: .isHazardous) ?? false
         self.hazardReason = try container.decodeIfPresent(String.self, forKey: .hazardReason)
+        self.consecutiveFailures = try container.decodeIfPresent(Int.self, forKey: .consecutiveFailures) ?? 0
     }
 }
 

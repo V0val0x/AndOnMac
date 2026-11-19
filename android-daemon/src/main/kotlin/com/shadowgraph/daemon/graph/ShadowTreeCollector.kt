@@ -223,8 +223,8 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
                 }
 
                 node.getBoundsInScreen(rectScratch)
-                val text = node.text?.toString()?.trim().orEmpty()
-                val contentDesc = node.contentDescription?.toString()?.trim().orEmpty()
+                val rawText = node.text?.toString()?.trim().orEmpty()
+                val rawContentDesc = node.contentDescription?.toString()?.trim().orEmpty()
                 val resourceId = node.viewIdResourceName?.trim().orEmpty()
                 val packageName = node.packageName?.toString()?.trim().orEmpty()
                 val className = ShadowNode.shortClassName(node.className)
@@ -236,6 +236,24 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
                 @Suppress("DEPRECATION")
                 val checked = node.isChecked
                 val enabled = node.isEnabled
+                val isPassword = node.isPassword
+                val isShowingHint = if (Build.VERSION.SDK_INT >= 26) {
+                    try {
+                        node.isShowingHintText
+                    } catch (_: Throwable) {
+                        false
+                    }
+                } else {
+                    false
+                }
+                val (text, contentDesc) = redactNodeText(
+                    rawText = rawText,
+                    rawContentDesc = rawContentDesc,
+                    resourceId = resourceId,
+                    isPassword = isPassword,
+                    editable = editable,
+                    isShowingHint = isShowingHint
+                )
 
                 val structuralHash = computeStructuralHash(
                     parentHash = entry.structuralParentHash,
@@ -383,6 +401,65 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
         private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         private const val MAX_NODES_SAFETY_CAP = 4096
         private const val FNV_PRIME = 1099511628211L
+
+        private val SENSITIVE_RESOURCE_ID_MARKERS = arrayOf(
+            "password",
+            "passwd",
+            "passcode",
+            "pin_input",
+            "pininput",
+            "cvv",
+            "cvc",
+            "security_code",
+            "securitycode"
+        )
+
+        internal fun shortResourceId(resourceId: String): String {
+            val idMarkerIdx = resourceId.indexOf(":id/")
+            if (idMarkerIdx >= 0 && idMarkerIdx + 4 < resourceId.length) {
+                return resourceId.substring(idMarkerIdx + 4)
+            }
+            val slashIdx = resourceId.lastIndexOf('/')
+            if (slashIdx >= 0 && slashIdx + 1 < resourceId.length) {
+                return resourceId.substring(slashIdx + 1)
+            }
+            return resourceId
+        }
+
+        fun hasSensitiveResourceId(resourceId: String): Boolean {
+            if (resourceId.isEmpty()) return false
+            val shortId = shortResourceId(resourceId).lowercase()
+            for (marker in SENSITIVE_RESOURCE_ID_MARKERS) {
+                if (shortId.contains(marker)) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        /**
+         * Privacy-by-design on-device redaction applied before packing [ShadowNode] or emitting over TCP.
+         * Masks entered credentials/CVV/PIN values to `"***"` while preserving placeholder/hint text.
+         */
+        fun redactNodeText(
+            rawText: String,
+            rawContentDesc: String,
+            resourceId: String,
+            isPassword: Boolean,
+            editable: Boolean,
+            isShowingHint: Boolean
+        ): Pair<String, String> {
+            val shouldRedact = !isShowingHint &&
+                rawText.isNotEmpty() &&
+                (isPassword || (editable && hasSensitiveResourceId(resourceId)))
+
+            if (!shouldRedact) {
+                return rawText to rawContentDesc
+            }
+
+            val redactedDesc = if (rawContentDesc == rawText) "***" else rawContentDesc
+            return "***" to redactedDesc
+        }
 
         private fun mix64(zIn: Long): Long {
             var z = zIn
