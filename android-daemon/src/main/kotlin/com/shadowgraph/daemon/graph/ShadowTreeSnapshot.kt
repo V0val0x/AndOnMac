@@ -10,7 +10,9 @@ class ShadowTreeSnapshot(
     val activePackage: String,
     val activeWindowId: Int,
     val nodes: List<ShadowNode>,
-    val nodesById: Map<Long, ShadowNode>
+    val nodesById: Map<Long, ShadowNode>,
+    val secureScreenActive: Boolean = false,
+    val secureScreenReason: String? = null
 ) {
     companion object {
         fun fromNodes(
@@ -19,7 +21,9 @@ class ShadowTreeSnapshot(
             timestampMs: Long,
             activePackage: String,
             activeWindowId: Int,
-            nodes: List<ShadowNode>
+            nodes: List<ShadowNode>,
+            secureScreenActive: Boolean = false,
+            secureScreenReason: String? = null
         ): ShadowTreeSnapshot {
             val map = LinkedHashMap<Long, ShadowNode>(nodes.size * 2)
             for (i in 0 until nodes.size) {
@@ -33,7 +37,9 @@ class ShadowTreeSnapshot(
                 activePackage = activePackage,
                 activeWindowId = activeWindowId,
                 nodes = nodes,
-                nodesById = map
+                nodesById = map,
+                secureScreenActive = secureScreenActive,
+                secureScreenReason = secureScreenReason
             )
         }
     }

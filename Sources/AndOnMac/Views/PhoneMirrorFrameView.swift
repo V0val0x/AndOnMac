@@ -239,6 +239,12 @@ public struct PhoneMirrorFrameView: View {
         .task {
             await agenticHUD.listen(to: ShadowGraphManager.shared.macroExecutionEvents)
         }
+        .task {
+            for await payload in ShadowGraphManager.shared.secureScreenEvents {
+                guard !Task.isCancelled else { break }
+                agenticHUD.handleSecureScreen(payload)
+            }
+        }
         .task(id: appState.selectedDevice?.id) {
             if !appState.isDemoMode,
                let device = appState.selectedDevice,

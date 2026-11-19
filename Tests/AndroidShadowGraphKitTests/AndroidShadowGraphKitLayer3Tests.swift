@@ -13,6 +13,7 @@ final class AndroidShadowGraphKitLayer3Tests: XCTestCase {
         resourceId: String = "",
         text: String = "",
         contentDesc: String = "",
+        bounds: String? = nil,
         centerX: Int = 100,
         centerY: Int = 200,
         clickable: Bool = true,
@@ -26,7 +27,7 @@ final class AndroidShadowGraphKitLayer3Tests: XCTestCase {
             className: className,
             clickable: clickable,
             scrollable: false,
-            bounds: "[\(max(0, centerX - 50)),\(max(0, centerY - 25))][\(centerX + 50),\(centerY + 25)]",
+            bounds: bounds ?? "[\(max(0, centerX - 50)),\(max(0, centerY - 25))][\(centerX + 50),\(centerY + 25)]",
             centerX: centerX,
             centerY: centerY,
             nodeId: nodeId,
@@ -1686,5 +1687,588 @@ final class AndroidShadowGraphKitLayer3Tests: XCTestCase {
         let ready = await bridge.ensureShadowStreamReady(maxWaitSeconds: 0.05, maxAgeSeconds: 15.0)
         XCTAssertFalse(ready)
         await bridge.stop()
+    }
+
+    // MARK: - Resilience, Safety HITL & Auto-Recovery Tests (#1, #2, #3, #4, #7)
+
+    private actor AsyncEventCollector {
+        private var events: [MacroExecutionEvent] = []
+        func append(_ event: MacroExecutionEvent) { events.append(event) }
+        func snapshot() -> [MacroExecutionEvent] { events }
+    }
+
+    func testMacroExecutionEngineForwardSkipRecoveryAndOffPathScrollReplan() async throws {
+        // #1: 4-hop path S0 -> S1 -> S2 -> S3 -> S4 where app remembers scroll state and tapping S0 lands straight on S3
+        let bridge = ShadowGraphBridge()
+        let nodes0 = [makeNode(nodeId: 1, index: 0, packageName: "com.settings", text: "Open List", centerX: 200, centerY: 300, clickable: true)]
+        let nodes1 = [makeNode(nodeId: 2, index: 0, packageName: "com.settings", text: "Scroll Section Alpha")]
+        let nodes2 = [makeNode(nodeId: 3, index: 0, packageName: "com.settings", text: "Scroll Section Beta")]
+        let nodes3 = [makeNode(nodeId: 4, index: 0, packageName: "com.settings", text: "Deep Option", centerX: 300, centerY: 900, clickable: true)]
+        let nodes4 = [makeNode(nodeId: 5, index: 0, packageName: "com.settings", text: "Night Light Arrived")]
+
+        let idx0 = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.settings", activeWindowId: 1, nodes: nodes0)
+        let idx1 = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.settings", activeWindowId: 1, nodes: nodes1)
+        let idx2 = ShadowTreeIndex(seq: 3, timestampMs: 300, activePackage: "com.settings", activeWindowId: 1, nodes: nodes2)
+        let idx3 = ShadowTreeIndex(seq: 4, timestampMs: 400, activePackage: "com.settings", activeWindowId: 1, nodes: nodes3)
+        let idx4 = ShadowTreeIndex(seq: 5, timestampMs: 500, activePackage: "com.settings", activeWindowId: 1, nodes: nodes4)
+
+        let h0 = ScreenLayoutHasher().fingerprint(for: idx0).layoutHash
+        let h1 = ScreenLayoutHasher().fingerprint(for: idx1).layoutHash
+        let h2 = ScreenLayoutHasher().fingerprint(for: idx2).layoutHash
+        let h3 = ScreenLayoutHasher().fingerprint(for: idx3).layoutHash
+        let h4 = ScreenLayoutHasher().fingerprint(for: idx4).layoutHash
+
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idx0, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Open List", x: 200, y: 300, selectorText: "Open List"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idx1, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .swipe, targetDescription: "Scroll 1", x: 500, y: 1800, endX: 500, endY: 800, durationMs: 200))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idx2, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .swipe, targetDescription: "Scroll 2", x: 500, y: 1800, endX: 500, endY: 800, durationMs: 200))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idx3, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Deep Option", x: 300, y: 900, selectorText: "Deep Option"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idx4, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+
+        // Start back at idx0
+        await bridge.domState.handleMessage(makeSnapshotPayload(seq: 10, package: "com.settings", nodes: nodes0))
+
+        final class SkipExecutor: MacroActionExecutor, @unchecked Sendable {
+            let bridge: ShadowGraphBridge
+            let nodes3: [ShadowUINode]
+            let nodes4: [ShadowUINode]
+            var dispatched: [String] = []
+            init(bridge: ShadowGraphBridge, nodes3: [ShadowUINode], nodes4: [ShadowUINode]) {
+                self.bridge = bridge; self.nodes3 = nodes3; self.nodes4 = nodes4
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                dispatched.append(action.signature)
+                if dispatched.count == 1 {
+                    // Tapping S0 jumps straight to S3 (app restored scroll position, skipping S1 and S2)
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 11, timestampMs: 1100, reason: "step", activePackage: "com.settings", activeWindowId: 1, nodeCount: nodes3.count, nodes: nodes3
+                    )))
+                } else {
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 1200, reason: "step", activePackage: "com.settings", activeWindowId: 1, nodeCount: nodes4.count, nodes: nodes4
+                    )))
+                }
+            }
+        }
+
+        let exec = SkipExecutor(bridge: bridge, nodes3: nodes3, nodes4: nodes4)
+        let outcome = try await bridge.routeAndExecute(
+            targetHash: h4,
+            serial: "61061JEA307110",
+            executor: exec,
+            stepTimeoutMs: 500,
+            postSettleQuiescenceMs: 0
+        )
+
+        guard case .arrived(let report) = outcome else {
+            return XCTFail("Expected .arrived with forward-skip recovery, got \(outcome)")
+        }
+        XCTAssertEqual(report.finalHash, h4)
+        XCTAssertEqual(exec.dispatched, ["tap:Open List", "tap:Deep Option"])
+        XCTAssertEqual(report.steps.count, 4)
+        if report.steps.count == 4 {
+            XCTAssertFalse(report.steps[0].wasSkipped)
+            XCTAssertTrue(report.steps[1].wasSkipped)
+            XCTAssertTrue(report.steps[2].wasSkipped)
+            XCTAssertFalse(report.steps[3].wasSkipped)
+            XCTAssertEqual(report.steps[0].targetHash, h1)
+            XCTAssertEqual(report.steps[1].targetHash, h2)
+            XCTAssertEqual(report.steps[2].targetHash, h3)
+            XCTAssertEqual(report.steps[3].targetHash, h4)
+        }
+        XCTAssertTrue(report.recoveredSteps.contains(where: { $0.hasPrefix("forward_skip:") }))
+        _ = h0
+    }
+
+    func testShadowGraphBridgeOffPathScrollStateRecoveryReplansAStar() async throws {
+        // #1 Part 2: Executing step 0 lands on an off-path remembered-scroll vertex S_alt (not on the initial path)
+        // which has its own path to the goal -> ShadowGraphBridge recovers from stepTimeout and replans A*!
+        let bridge = ShadowGraphBridge()
+        let nStart = [makeNode(nodeId: 1, index: 0, packageName: "com.shop", text: "Open Catalog", centerX: 200, centerY: 300, clickable: true)]
+        let nExpected1 = [makeNode(nodeId: 2, index: 0, packageName: "com.shop", text: "Top of Catalog", centerX: 200, centerY: 400, clickable: true)]
+        let nAltScroll = [makeNode(nodeId: 3, index: 0, packageName: "com.shop", text: "Restored Scroll Mid", centerX: 200, centerY: 700, clickable: true)]
+        let nGoal = [makeNode(nodeId: 4, index: 0, packageName: "com.shop", text: "Target Item Details")]
+
+        let idxStart = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.shop", activeWindowId: 1, nodes: nStart)
+        let idxExpected1 = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.shop", activeWindowId: 1, nodes: nExpected1)
+        let idxAltScroll = ShadowTreeIndex(seq: 3, timestampMs: 300, activePackage: "com.shop", activeWindowId: 1, nodes: nAltScroll)
+        let idxGoal = ShadowTreeIndex(seq: 4, timestampMs: 400, activePackage: "com.shop", activeWindowId: 1, nodes: nGoal)
+        let hGoal = ScreenLayoutHasher().fingerprint(for: idxGoal).layoutHash
+
+        // Chain 1: Start -> Expected1 -> Goal
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxStart, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Open Catalog", x: 200, y: 300, selectorText: "Open Catalog"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxExpected1, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Item from top", x: 200, y: 400, selectorText: "Top of Catalog"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxGoal, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+
+        // Alternate known branch: AltScroll -> Goal
+        await bridge.domState.handleMessage(makeSnapshotPayload(seq: 5, package: "com.shop", nodes: nAltScroll))
+        _ = await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxAltScroll, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Item from scroll", x: 200, y: 700, selectorText: "Restored Scroll Mid"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxGoal, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+
+        // Reset live screen to Start
+        await bridge.domState.handleMessage(makeSnapshotPayload(seq: 10, package: "com.shop", nodes: nStart))
+
+        final class ScrollRestoreExecutor: MacroActionExecutor, @unchecked Sendable {
+            let bridge: ShadowGraphBridge
+            let nAltScroll: [ShadowUINode]
+            let nGoal: [ShadowUINode]
+            var calls: [String] = []
+            init(bridge: ShadowGraphBridge, nAltScroll: [ShadowUINode], nGoal: [ShadowUINode]) {
+                self.bridge = bridge; self.nAltScroll = nAltScroll; self.nGoal = nGoal
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                calls.append(action.signature)
+                if calls.count == 1 {
+                    // Opening Catalog opens at remembered scrolled state (nAltScroll) instead of nExpected1!
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 11, timestampMs: 1100, reason: "restored_scroll", activePackage: "com.shop", activeWindowId: 1, nodeCount: nAltScroll.count, nodes: nAltScroll
+                    )))
+                } else {
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 1200, reason: "goal", activePackage: "com.shop", activeWindowId: 1, nodeCount: nGoal.count, nodes: nGoal
+                    )))
+                }
+            }
+        }
+
+        let exec = ScrollRestoreExecutor(bridge: bridge, nAltScroll: nAltScroll, nGoal: nGoal)
+        let outcome = try await bridge.routeAndExecute(
+            targetHash: hGoal,
+            serial: "61061JEA307110",
+            executor: exec,
+            stepTimeoutMs: 150,
+            postSettleQuiescenceMs: 0
+        )
+
+        guard case .arrived(let report) = outcome else {
+            return XCTFail("Expected .arrived after off-path scroll recovery replan, got \(outcome)")
+        }
+        XCTAssertEqual(report.finalHash, hGoal)
+        XCTAssertEqual(exec.calls, ["tap:Open Catalog", "tap:Item from scroll"])
+        XCTAssertTrue(report.recoveredSteps.contains(where: { $0.hasPrefix("replan_from:") }))
+    }
+
+    func testHazardousActionHITLPausesBeforeDangerousStepAndResumesWithConfirmedTrue() async throws {
+        // #2 Variant A: Safe prefix executes -> halts right before "Оплатить" with requires_confirmation -> confirmed: true completes
+        let bridge = ShadowGraphBridge()
+        let homeNodes = [makeNode(nodeId: 1, index: 0, packageName: "com.shop", text: "Checkout", centerX: 300, centerY: 400, clickable: true)]
+        let checkoutNodes = [
+            makeNode(nodeId: 2, index: 0, packageName: "com.shop", text: "Order Summary"),
+            makeNode(nodeId: 3, index: 1, packageName: "com.shop", resourceId: "com.shop:id/btn_pay", text: "Оплатить 15.99€", centerX: 540, centerY: 2100, clickable: true)
+        ]
+        let receiptNodes = [makeNode(nodeId: 4, index: 0, packageName: "com.shop", text: "Receipt Confirmed")]
+
+        let idxHome = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.shop", activeWindowId: 1, nodes: homeNodes)
+        let idxCheckout = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.shop", activeWindowId: 1, nodes: checkoutNodes)
+        let idxReceipt = ShadowTreeIndex(seq: 3, timestampMs: 300, activePackage: "com.shop", activeWindowId: 1, nodes: receiptNodes)
+        let hashCheckout = ScreenLayoutHasher().fingerprint(for: idxCheckout).layoutHash
+        let hashReceipt = ScreenLayoutHasher().fingerprint(for: idxReceipt).layoutHash
+
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxHome, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Checkout", x: 300, y: 400, selectorText: "Checkout"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxCheckout, isFullSnapshot: true, insertedCount: 2, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Оплатить 15.99€", x: 540, y: 2100, selectorResourceId: "com.shop:id/btn_pay", selectorText: "Оплатить 15.99€"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxReceipt, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+
+        // Also verify importSnapshot classifies persisted hazardous edges automatically
+        let exported = try await bridge.graphEngine.exportGraphJSON(prettyPrinted: false)
+        let reimportedEngine = SpatialGraphEngine()
+        try await reimportedEngine.importGraphJSON(exported)
+        let checkoutEdges = await reimportedEngine.neighbors(of: hashCheckout)
+        XCTAssertEqual(checkoutEdges.first?.isHazardous, true)
+
+        await bridge.domState.handleMessage(makeSnapshotPayload(seq: 10, package: "com.shop", nodes: homeNodes))
+
+        let collectedEvents = AsyncEventCollector()
+        let subTask = Task {
+            for await ev in bridge.macroExecutionEvents {
+                await collectedEvents.append(ev)
+            }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        final class PayExecutor: MacroActionExecutor, @unchecked Sendable {
+            let bridge: ShadowGraphBridge
+            let checkoutNodes: [ShadowUINode]
+            let receiptNodes: [ShadowUINode]
+            var calls: [String] = []
+            init(bridge: ShadowGraphBridge, checkoutNodes: [ShadowUINode], receiptNodes: [ShadowUINode]) {
+                self.bridge = bridge; self.checkoutNodes = checkoutNodes; self.receiptNodes = receiptNodes
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                calls.append(action.signature)
+                if action.signature.contains("Checkout") {
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 11, timestampMs: 200, reason: "step", activePackage: "com.shop", activeWindowId: 1, nodeCount: checkoutNodes.count, nodes: checkoutNodes
+                    )))
+                } else {
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 300, reason: "step", activePackage: "com.shop", activeWindowId: 1, nodeCount: receiptNodes.count, nodes: receiptNodes
+                    )))
+                }
+            }
+        }
+
+        let exec = PayExecutor(bridge: bridge, checkoutNodes: checkoutNodes, receiptNodes: receiptNodes)
+        let firstOutcome = try await bridge.routeAndExecute(
+            targetHash: hashReceipt,
+            serial: "61061JEA307110",
+            executor: exec,
+            stepTimeoutMs: 500,
+            postSettleQuiescenceMs: 0,
+            confirmed: false
+        )
+
+        guard case .requiresConfirmation(let req) = firstOutcome else {
+            return XCTFail("Expected .requiresConfirmation on unconfirmed payment, got \(firstOutcome)")
+        }
+        XCTAssertEqual(exec.calls, ["tap:Checkout"])
+        XCTAssertEqual(req.hazardCategory, .payment)
+        XCTAssertEqual(req.stepIndex, 1)
+        XCTAssertEqual(req.stepsCompleted, 1)
+        XCTAssertEqual(req.currentHash, hashCheckout)
+        XCTAssertEqual(req.tapX, 540)
+        XCTAssertEqual(req.tapY, 2100)
+
+        try await Task.sleep(for: .milliseconds(20))
+        let eventsSoFar = await collectedEvents.snapshot()
+        XCTAssertTrue(eventsSoFar.contains(where: { if case .awaitingConfirmation = $0 { return true }; return false }))
+        XCTAssertFalse(eventsSoFar.contains(where: { if case .failed = $0 { return true }; return false }))
+
+        // Now confirm in chat and re-invoke with confirmed: true from current Checkout screen
+        let confirmedOutcome = try await bridge.routeAndExecute(
+            targetHash: hashReceipt,
+            serial: "61061JEA307110",
+            executor: exec,
+            stepTimeoutMs: 500,
+            postSettleQuiescenceMs: 0,
+            confirmed: true
+        )
+        guard case .arrived(let confirmedReport) = confirmedOutcome else {
+            return XCTFail("Expected .arrived with confirmed: true, got \(confirmedOutcome)")
+        }
+        XCTAssertEqual(confirmedReport.finalHash, hashReceipt)
+        XCTAssertEqual(exec.calls.count, 2)
+        subTask.cancel()
+    }
+
+    func testReflexiveSwipeDismissesOccludingPushBannerWithoutPoisoningGraph() async throws {
+        // #3: Heads-up notification covers target tap -> upward swipe without recording graph edge -> tap succeeds
+        let domState = ShadowDOMState()
+        let graphEngine = SpatialGraphEngine()
+
+        let startWithBannerNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.app", text: "Compose", centerX: 500, centerY: 200, clickable: true),
+            makeNode(nodeId: 900, index: 1, packageName: "com.android.systemui", className: "FrameLayout", resourceId: "com.android.systemui:id/expandableNotificationRow", text: "Push Alert", bounds: "[40,120][1040,320]", centerX: 540, centerY: 220, clickable: true)
+        ]
+        let cleanStartNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.app", text: "Compose", centerX: 500, centerY: 200, clickable: true)
+        ]
+        let targetNodes = [
+            makeNode(nodeId: 2, index: 0, packageName: "com.app", text: "New Draft")
+        ]
+
+        let idxStartClean = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.app", activeWindowId: 1, nodes: cleanStartNodes)
+        let idxTarget = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.app", activeWindowId: 1, nodes: targetNodes)
+        let hStart = ScreenLayoutHasher().fingerprint(for: idxStartClean).layoutHash
+        let hTarget = ScreenLayoutHasher().fingerprint(for: idxTarget).layoutHash
+
+        await graphEngine.process(update: ShadowDOMUpdate(index: idxStartClean, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Compose", x: 500, y: 200, selectorText: "Compose"))
+        let edge = await graphEngine.process(update: ShadowDOMUpdate(index: idxTarget, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))!
+        let edgeCountBefore = await graphEngine.edgeCount
+
+        await domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 10, timestampMs: 1000, reason: "init", activePackage: "com.app", activeWindowId: 1, nodeCount: startWithBannerNodes.count, nodes: startWithBannerNodes
+        )))
+
+        final class BannerAwareExecutor: MacroActionExecutor, @unchecked Sendable {
+            let domState: ShadowDOMState
+            let cleanStartNodes: [ShadowUINode]
+            let targetNodes: [ShadowUINode]
+            var actions: [AttributedUIAction] = []
+            init(domState: ShadowDOMState, cleanStartNodes: [ShadowUINode], targetNodes: [ShadowUINode]) {
+                self.domState = domState; self.cleanStartNodes = cleanStartNodes; self.targetNodes = targetNodes
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                actions.append(action)
+                if action.kind == .swipe {
+                    await domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 11, timestampMs: 1100, reason: "banner_gone", activePackage: "com.app", activeWindowId: 1, nodeCount: cleanStartNodes.count, nodes: cleanStartNodes
+                    )))
+                } else {
+                    await domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 1200, reason: "settled", activePackage: "com.app", activeWindowId: 1, nodeCount: targetNodes.count, nodes: targetNodes
+                    )))
+                }
+            }
+        }
+
+        let exec = BannerAwareExecutor(domState: domState, cleanStartNodes: cleanStartNodes, targetNodes: targetNodes)
+        let engine = MacroExecutionEngine(
+            domState: domState,
+            graphEngine: graphEngine,
+            executor: exec,
+            configuration: MacroExecutionConfiguration(stepTimeoutMs: 600, postSettleQuiescenceMs: 0)
+        )
+        let report = try await engine.execute(path: [edge], serial: "61061JEA307110")
+        XCTAssertEqual(report.finalHash, hTarget)
+        XCTAssertEqual(exec.actions.count, 2)
+        XCTAssertEqual(exec.actions[0].kind, .swipe)
+        XCTAssertGreaterThan(exec.actions[0].y ?? 0, exec.actions[0].endY ?? 9999) // upward swipe
+        XCTAssertEqual(exec.actions[1].kind, .tap)
+        let edgeCountAfter = await graphEngine.edgeCount
+        XCTAssertEqual(edgeCountAfter, edgeCountBefore)
+        XCTAssertTrue(report.recoveredSteps.contains(where: { $0.hasPrefix("dismiss_notification_overlay") }))
+        _ = hStart
+    }
+
+    func testUniversalDismissClosesPromoPopupAndRefusesHazardousButtons() async throws {
+        // #4 Universal Dismiss safety check: must never treat "Удалить" or "Close account" as a popup dismiss
+        let dangerIndex = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.app", activeWindowId: 1, nodes: [
+            makeNode(nodeId: 1, index: 0, packageName: "com.app", text: "Close account", centerX: 500, centerY: 1200, clickable: true),
+            makeNode(nodeId: 2, index: 1, packageName: "com.app", text: "Удалить профиль", centerX: 500, centerY: 1400, clickable: true)
+        ])
+        XCTAssertNil(UniversalDismissDetector.findDismissCandidate(in: dangerIndex))
+
+        // Full ShadowGraphBridge recovery: land on unknown promo splash -> Universal Dismiss -> re-plan A* -> arrive
+        let bridge = ShadowGraphBridge()
+        let catalogNodes = [makeNode(nodeId: 1, index: 0, packageName: "com.shop", text: "Open Profile", centerX: 300, centerY: 400, clickable: true)]
+        let profileNodes = [makeNode(nodeId: 2, index: 0, packageName: "com.shop", text: "Profile Ready")]
+        let promoPopupNodes = [
+            makeNode(nodeId: 10, index: 0, packageName: "com.shop", text: "Subscribe 50% OFF!"),
+            makeNode(nodeId: 11, index: 1, packageName: "com.shop", resourceId: "com.shop:id/btn_dismiss", text: "Не сейчас", centerX: 540, centerY: 1800, clickable: true)
+        ]
+
+        let idxCatalog = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.shop", activeWindowId: 1, nodes: catalogNodes)
+        let idxProfile = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.shop", activeWindowId: 1, nodes: profileNodes)
+        let hProfile = ScreenLayoutHasher().fingerprint(for: idxProfile).layoutHash
+
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxCatalog, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await bridge.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Open Profile", x: 300, y: 400, selectorText: "Open Profile"))
+        await bridge.graphEngine.process(update: ShadowDOMUpdate(index: idxProfile, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+
+        // Put live device onto unknown Promo Popup screen (not in graph -> would otherwise fail with noRoute)
+        await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 10, timestampMs: 500, reason: "promo", activePackage: "com.shop", activeWindowId: 2, nodeCount: promoPopupNodes.count, nodes: promoPopupNodes
+        )))
+
+        final class PromoDismissExecutor: MacroActionExecutor, @unchecked Sendable {
+            let bridge: ShadowGraphBridge
+            let catalogNodes: [ShadowUINode]
+            let profileNodes: [ShadowUINode]
+            var taps: [(Int, Int)] = []
+            init(bridge: ShadowGraphBridge, catalogNodes: [ShadowUINode], profileNodes: [ShadowUINode]) {
+                self.bridge = bridge; self.catalogNodes = catalogNodes; self.profileNodes = profileNodes
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                taps.append((action.x ?? -1, action.y ?? -1))
+                if taps.count == 1 {
+                    // Dismissing popup reveals Catalog
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 11, timestampMs: 600, reason: "dismissed", activePackage: "com.shop", activeWindowId: 1, nodeCount: catalogNodes.count, nodes: catalogNodes
+                    )))
+                } else {
+                    await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 700, reason: "settled", activePackage: "com.shop", activeWindowId: 1, nodeCount: profileNodes.count, nodes: profileNodes
+                    )))
+                }
+            }
+        }
+
+        let exec = PromoDismissExecutor(bridge: bridge, catalogNodes: catalogNodes, profileNodes: profileNodes)
+        let outcome = try await bridge.routeAndExecute(
+            targetHash: hProfile,
+            serial: "61061JEA307110",
+            executor: exec,
+            stepTimeoutMs: 600,
+            postSettleQuiescenceMs: 0
+        )
+        guard case .arrived(let report) = outcome else {
+            return XCTFail("Expected .arrived after Universal Dismiss recovery, got \(outcome)")
+        }
+        XCTAssertEqual(exec.taps.count, 2)
+        XCTAssertEqual(exec.taps[0].0, 540)
+        XCTAssertEqual(exec.taps[0].1, 1800)
+        XCTAssertEqual(report.finalHash, hProfile)
+        XCTAssertTrue(report.recoveredSteps.contains("universal_dismiss:Не сейчас"))
+    }
+
+    func testMacroExecutionEnginePausesOnSecureScreenAndResumesOnClear() async throws {
+        // #7 FLAG_SECURE / biometric lock pauses step timeout and resumes cleanly once unlocked
+        let domState = ShadowDOMState()
+        let graphEngine = SpatialGraphEngine()
+
+        let startNodes = [makeNode(nodeId: 1, index: 0, packageName: "com.bank", text: "Transfer", centerX: 300, centerY: 400, clickable: true)]
+        let vaultNodes = [makeNode(nodeId: 2, index: 0, packageName: "com.bank", text: "Vault Unlocked")]
+        let idxStart = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.bank", activeWindowId: 1, nodes: startNodes)
+        let idxVault = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.bank", activeWindowId: 1, nodes: vaultNodes)
+        let hVault = ScreenLayoutHasher().fingerprint(for: idxVault).layoutHash
+
+        await graphEngine.process(update: ShadowDOMUpdate(index: idxStart, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))
+        await graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Transfer", x: 300, y: 400, selectorText: "Transfer"))
+        let edge = await graphEngine.process(update: ShadowDOMUpdate(index: idxVault, isFullSnapshot: true, insertedCount: 1, updatedCount: 0, removedCount: 0))!
+
+        await domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 10, timestampMs: 1000, reason: "init", activePackage: "com.bank", activeWindowId: 1, nodeCount: startNodes.count, nodes: startNodes
+        )))
+
+        final class BiometricExecutor: MacroActionExecutor, @unchecked Sendable {
+            let domState: ShadowDOMState
+            let vaultNodes: [ShadowUINode]
+            init(domState: ShadowDOMState, vaultNodes: [ShadowUINode]) {
+                self.domState = domState; self.vaultNodes = vaultNodes
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                // Immediately trigger SECURE_SCREEN_ACTIVE (longer than the 120ms normal stepTimeoutMs!)
+                await domState.handleMessage(.secureScreen(WireSecureScreenPayload(
+                    code: "SECURE_SCREEN_ACTIVE",
+                    active: true,
+                    reason: "biometric_prompt",
+                    activePackage: "com.bank",
+                    timestampMs: 1100
+                )))
+                Task {
+                    try? await Task.sleep(for: .milliseconds(240))
+                    await domState.handleMessage(.secureScreen(WireSecureScreenPayload(
+                        code: "SECURE_SCREEN_CLEARED",
+                        active: false,
+                        reason: "tree_restored",
+                        activePackage: "com.bank",
+                        timestampMs: 1340
+                    )))
+                    await domState.handleMessage(.snapshot(WireSnapshotPayload(
+                        seq: 12, timestampMs: 1350, reason: "unlocked", activePackage: "com.bank", activeWindowId: 1, nodeCount: vaultNodes.count, nodes: vaultNodes, secureScreenActive: false
+                    )))
+                }
+            }
+        }
+
+        let collector = AsyncEventCollector()
+        let engine = MacroExecutionEngine(
+            domState: domState,
+            graphEngine: graphEngine,
+            executor: BiometricExecutor(domState: domState, vaultNodes: vaultNodes),
+            configuration: MacroExecutionConfiguration(
+                stepTimeoutMs: 120,
+                postSettleQuiescenceMs: 0,
+                allowHazardousActions: true,
+                secureHandoffTimeoutSeconds: 5.0
+            ),
+            onEvent: { ev in
+                Task { await collector.append(ev) }
+            }
+        )
+
+        let report = try await engine.execute(path: [edge], serial: "61061JEA307110")
+        XCTAssertEqual(report.finalHash, hVault)
+        XCTAssertTrue(report.recoveredSteps.contains("secure_handoff"))
+
+        try await Task.sleep(for: .milliseconds(30))
+        let events = await collector.snapshot()
+        XCTAssertTrue(events.contains(where: { if case .awaitingBiometrics = $0 { return true }; return false }))
+        XCTAssertTrue(events.contains(where: { if case .biometricsCleared = $0 { return true }; return false }))
+    }
+
+    func testSuppressedSamePackageFrameBetweenSignificanceAndSettleThresholdsDoesNotThrowUnexpectedStartState() async throws {
+        // Reproduce live Pixel 10a bug: SpatialGraphEngine.significanceThreshold (0.72) < settleSimilarityThreshold (0.80).
+        // When a scrolled screen in the same package has Jaccard in [0.72, 0.80) vs currentStateHash,
+        // process(update:) keeps currentStateHash on prevVertex without creating the new vertex.
+        // ShadowGraphBridge must NOT force-adopt prevVertex (which would throw unexpectedStartState).
+        let baseLabels = ["Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta"]
+        let prevLabels = ["Alpha"] + baseLabels                 // 8 tokens
+        let scrolledLabels = baseLabels + ["Iota"]              // vs prev: 7/9 = 0.7778 in [0.72, 0.80)
+        let aliasLabels = baseLabels + ["Iota", "Subheader"]    // vs scrolled: 8/9 = 0.8889 >= 0.80
+
+        let prevNodes = prevLabels.enumerated().map { idx, txt in
+            makeNode(nodeId: Int64(10 + idx), index: idx, packageName: "com.android.settings", text: txt, centerX: 300, centerY: 200 + idx * 100)
+        }
+        let scrolledNodes = scrolledLabels.enumerated().map { idx, txt in
+            makeNode(nodeId: Int64(30 + idx), index: idx, packageName: "com.android.settings", text: txt, centerX: 300, centerY: 200 + idx * 100)
+        }
+        let aliasNodes = aliasLabels.enumerated().map { idx, txt in
+            makeNode(nodeId: Int64(50 + idx), index: idx, packageName: "com.android.settings", text: txt, centerX: 300, centerY: 200 + idx * 100)
+        }
+        let destNodes = [
+            makeNode(nodeId: 90, index: 0, packageName: "com.android.settings", text: "Connection preferences"),
+            makeNode(nodeId: 91, index: 1, packageName: "com.android.settings", text: "Bluetooth")
+        ]
+
+        let idxPrev = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.android.settings", activeWindowId: 1, nodes: prevNodes)
+        let idxAlias = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.android.settings", activeWindowId: 1, nodes: aliasNodes)
+        let idxDest = ShadowTreeIndex(seq: 3, timestampMs: 300, activePackage: "com.android.settings", activeWindowId: 1, nodes: destNodes)
+        let hDest = ScreenLayoutHasher().fingerprint(for: idxDest).layoutHash
+
+        // Part 1: Only prev -> dest edge exists, while live DOM is scrolled (0.7778 vs prev): must return .noRoute, NOT throw unexpectedStartState.
+        let bridgeNoAlias = ShadowGraphBridge()
+        await bridgeNoAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxPrev, isFullSnapshot: true, insertedCount: prevNodes.count, updatedCount: 0, removedCount: 0))
+        await bridgeNoAlias.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Alpha", x: 300, y: 200, selectorText: "Alpha"))
+        await bridgeNoAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxDest, isFullSnapshot: true, insertedCount: destNodes.count, updatedCount: 0, removedCount: 0))
+        await bridgeNoAlias.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Back", x: 50, y: 100))
+        await bridgeNoAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxPrev, isFullSnapshot: true, insertedCount: prevNodes.count, updatedCount: 0, removedCount: 0))
+
+        await bridgeNoAlias.domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 10, timestampMs: 1000, reason: "scrolled", activePackage: "com.android.settings", activeWindowId: 1, nodeCount: scrolledNodes.count, nodes: scrolledNodes
+        )))
+
+        final class NoOpExec: MacroActionExecutor, @unchecked Sendable {
+            func execute(action: AttributedUIAction, serial: String) async throws {}
+        }
+
+        let noAliasOutcome = try await bridgeNoAlias.routeAndExecute(
+            targetHash: hDest,
+            serial: "61061JEA307110",
+            executor: NoOpExec(),
+            stepTimeoutMs: 400,
+            postSettleQuiescenceMs: 0
+        )
+        guard case .noRoute = noAliasOutcome else {
+            return XCTFail("Expected clean .noRoute instead of unexpectedStartState/wrong alias, got \(noAliasOutcome)")
+        }
+
+        // Part 2: When a valid >= 0.80 semantic alias (idxAlias) DOES exist, route through idxAlias and arrive cleanly.
+        let bridgeWithAlias = ShadowGraphBridge()
+        await bridgeWithAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxAlias, isFullSnapshot: true, insertedCount: aliasNodes.count, updatedCount: 0, removedCount: 0))
+        await bridgeWithAlias.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Iota", x: 300, y: 900, selectorText: "Iota"))
+        await bridgeWithAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxDest, isFullSnapshot: true, insertedCount: destNodes.count, updatedCount: 0, removedCount: 0))
+        // Move currentStateHash onto idxPrev (0.7778 similarity with scrolledNodes) so process(update: scrolled) stays suppressed on idxPrev
+        await bridgeWithAlias.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "PrevScreen", x: 100, y: 100))
+        await bridgeWithAlias.graphEngine.process(update: ShadowDOMUpdate(index: idxPrev, isFullSnapshot: true, insertedCount: prevNodes.count, updatedCount: 0, removedCount: 0))
+        await bridgeWithAlias.graphEngine.recordPendingAction(AttributedUIAction(kind: .tap, targetDescription: "Alpha", x: 300, y: 200, selectorText: "Alpha"))
+        // Give idxPrev a dummy vertex or direct edge to ensure currentStateHash is idxPrev with scrolled suppressed
+        await bridgeWithAlias.domState.handleMessage(.snapshot(WireSnapshotPayload(
+            seq: 20, timestampMs: 2000, reason: "scrolled", activePackage: "com.android.settings", activeWindowId: 1, nodeCount: scrolledNodes.count, nodes: scrolledNodes
+        )))
+
+        final class DestSettleExec: MacroActionExecutor, @unchecked Sendable {
+            let bridge: ShadowGraphBridge
+            let destNodes: [ShadowUINode]
+            init(bridge: ShadowGraphBridge, destNodes: [ShadowUINode]) {
+                self.bridge = bridge; self.destNodes = destNodes
+            }
+            func execute(action: AttributedUIAction, serial: String) async throws {
+                await bridge.domState.handleMessage(.snapshot(WireSnapshotPayload(
+                    seq: 21, timestampMs: 2100, reason: "arrived", activePackage: "com.android.settings", activeWindowId: 1, nodeCount: destNodes.count, nodes: destNodes
+                )))
+            }
+        }
+
+        let aliasOutcome = try await bridgeWithAlias.routeAndExecute(
+            targetHash: hDest,
+            serial: "61061JEA307110",
+            executor: DestSettleExec(bridge: bridgeWithAlias, destNodes: destNodes),
+            stepTimeoutMs: 500,
+            postSettleQuiescenceMs: 0
+        )
+        guard case .arrived(let report) = aliasOutcome else {
+            return XCTFail("Expected .arrived via semantic alias when canonicalStart had similarity < 0.80, got \(aliasOutcome)")
+        }
+        XCTAssertEqual(report.finalHash, hDest)
     }
 }

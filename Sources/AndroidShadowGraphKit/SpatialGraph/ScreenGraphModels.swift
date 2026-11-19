@@ -136,6 +136,22 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
     public var averageTransitionMs: Double
     public let isSpanningTreeEdge: Bool
     public var lastTraversedAt: Date
+    public var isHazardous: Bool
+    public var hazardReason: String?
+
+    public enum CodingKeys: String, CodingKey {
+        case id
+        case fromHash
+        case toHash
+        case action
+        case actionSignature
+        case traversalCount
+        case averageTransitionMs
+        case isSpanningTreeEdge
+        case lastTraversedAt
+        case isHazardous
+        case hazardReason
+    }
 
     public init(
         id: UUID = UUID(),
@@ -146,7 +162,9 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         traversalCount: Int = 1,
         averageTransitionMs: Double = 0,
         isSpanningTreeEdge: Bool = false,
-        lastTraversedAt: Date = Date()
+        lastTraversedAt: Date = Date(),
+        isHazardous: Bool = false,
+        hazardReason: String? = nil
     ) {
         self.id = id
         self.fromHash = fromHash
@@ -157,6 +175,23 @@ public struct ScreenTransitionEdge: Sendable, Codable, Identifiable, Equatable {
         self.averageTransitionMs = averageTransitionMs
         self.isSpanningTreeEdge = isSpanningTreeEdge
         self.lastTraversedAt = lastTraversedAt
+        self.isHazardous = isHazardous
+        self.hazardReason = hazardReason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.fromHash = try container.decode(UInt64.self, forKey: .fromHash)
+        self.toHash = try container.decode(UInt64.self, forKey: .toHash)
+        self.action = try container.decodeIfPresent(AttributedUIAction.self, forKey: .action)
+        self.actionSignature = try container.decode(String.self, forKey: .actionSignature)
+        self.traversalCount = try container.decode(Int.self, forKey: .traversalCount)
+        self.averageTransitionMs = try container.decode(Double.self, forKey: .averageTransitionMs)
+        self.isSpanningTreeEdge = try container.decode(Bool.self, forKey: .isSpanningTreeEdge)
+        self.lastTraversedAt = try container.decode(Date.self, forKey: .lastTraversedAt)
+        self.isHazardous = try container.decodeIfPresent(Bool.self, forKey: .isHazardous) ?? false
+        self.hazardReason = try container.decodeIfPresent(String.self, forKey: .hazardReason)
     }
 }
 

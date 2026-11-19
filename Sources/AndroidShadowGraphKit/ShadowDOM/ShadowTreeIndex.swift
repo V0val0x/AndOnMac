@@ -290,6 +290,7 @@ public struct ShadowDOMUpdate: Sendable, Equatable {
     public let removedCount: Int
     public let eventType: Int?
     public let eventPackage: String?
+    public let isSecureScreenActive: Bool
 
     public init(
         index: ShadowTreeIndex,
@@ -298,7 +299,8 @@ public struct ShadowDOMUpdate: Sendable, Equatable {
         updatedCount: Int,
         removedCount: Int,
         eventType: Int? = nil,
-        eventPackage: String? = nil
+        eventPackage: String? = nil,
+        isSecureScreenActive: Bool = false
     ) {
         self.index = index
         self.isFullSnapshot = isFullSnapshot
@@ -307,5 +309,6 @@ public struct ShadowDOMUpdate: Sendable, Equatable {
         self.removedCount = removedCount
         self.eventType = eventType
         self.eventPackage = eventPackage
+        self.isSecureScreenActive = isSecureScreenActive
     }
 }

@@ -34,6 +34,7 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
     private static let prefixPong = Array("{\"type\":\"pong\"".utf8)
     private static let prefixHello = Array("{\"type\":\"hello\"".utf8)
     private static let prefixError = Array("{\"type\":\"error\"".utf8)
+    private static let prefixSecureScreen = Array("{\"type\":\"secure_screen\"".utf8)
 
     public init() {}
 
@@ -84,6 +85,8 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
             return .hello(try decoder.decode(WireHelloPayload.self, from: data))
         case "error":
             return .error(try decoder.decode(WireErrorPayload.self, from: data))
+        case "secure_screen":
+            return .secureScreen(try decoder.decode(WireSecureScreenPayload.self, from: data))
         default:
             throw WireCodecError.unknownMessageType(type)
         }
@@ -100,6 +103,7 @@ public final class NdjsonWireCodec: WireCodec, Sendable {
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixPong) { return "pong" }
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixHello) { return "hello" }
             if Self.matchesPrefix(base, count: count, prefix: Self.prefixError) { return "error" }
+            if Self.matchesPrefix(base, count: count, prefix: Self.prefixSecureScreen) { return "secure_screen" }
             return nil
         }
     }

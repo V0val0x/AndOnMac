@@ -47,6 +47,9 @@ public actor SpatialGraphEngine {
     /// Evaluates a committed `ShadowDOMUpdate`, deduplicating states and recording transitions.
     @discardableResult
     public func process(update: ShadowDOMUpdate) -> ScreenTransitionEdge? {
+        if update.isSecureScreenActive {
+            return nil
+        }
         let now = Date()
         let fp = hasher.fingerprint(for: update.index)
 
@@ -179,6 +182,7 @@ public actor SpatialGraphEngine {
         }
 
         let actionSig = attributedAction?.signature ?? "implicit"
+        let hazard = HazardousActionClassifier.assess(action: attributedAction, actionSignature: actionSig)
         var edges = outgoingEdges[prevHash, default: []]
         let committedEdge: ScreenTransitionEdge
         let isNewEdge: Bool
@@ -189,6 +193,10 @@ public actor SpatialGraphEngine {
             edge.traversalCount += 1
             edge.averageTransitionMs = ((edge.averageTransitionMs * prevCount) + transitionMs) / Double(edge.traversalCount)
             edge.lastTraversedAt = now
+            if hazard.isHazardous && !edge.isHazardous {
+                edge.isHazardous = true
+                edge.hazardReason = hazard.reason
+            }
             edges[existingIdx] = edge
             committedEdge = edge
             isNewEdge = false
@@ -201,7 +209,9 @@ public actor SpatialGraphEngine {
                 traversalCount: 1,
                 averageTransitionMs: transitionMs,
                 isSpanningTreeEdge: isNewDiscovery,
-                lastTraversedAt: now
+                lastTraversedAt: now,
+                isHazardous: hazard.isHazardous,
+                hazardReason: hazard.isHazardous ? hazard.reason : nil
             )
             edges.append(edge)
             committedEdge = edge
@@ -354,11 +364,13 @@ public actor SpatialGraphEngine {
         var rawVerticesByHash: [UInt64: ScreenStateVertex] = Dictionary(minimumCapacity: snapshot.vertices.count)
         for var vertex in snapshot.vertices {
             if !vertex.semanticTokens.isEmpty {
-                vertex.semanticTokens = Set(
+                let canonicalized = Set(
                     vertex.semanticTokens.map {
                         ScreenLayoutHasher.canonicalizeToken($0, activePackage: vertex.activePackage)
                     }
                 )
+                let pruned = canonicalized.filter { !ScreenLayoutHasher.isUnanchoredImageToken($0) }
+                vertex.semanticTokens = pruned.count >= Self.minimumCanonicalTokenCount ? pruned : canonicalized
             }
             if let existing = rawVerticesByHash[vertex.layoutHash] {
                 let earliestFirst = min(existing.firstSeenAt, vertex.firstSeenAt)
@@ -506,6 +518,9 @@ public actor SpatialGraphEngine {
                 } else {
                     newerAction = existing.action ?? edge.action
                 }
+                let hazard = HazardousActionClassifier.assess(action: newerAction, actionSignature: edge.actionSignature)
+                let mergedHazardous = existing.isHazardous || edge.isHazardous || hazard.isHazardous
+                let mergedReason = existing.hazardReason ?? edge.hazardReason ?? (hazard.isHazardous ? hazard.reason : nil)
                 deduplicatedEdges[key] = ScreenTransitionEdge(
                     id: existing.id,
                     fromHash: mappedFrom,
@@ -515,9 +530,14 @@ public actor SpatialGraphEngine {
                     traversalCount: max(1, totalCount),
                     averageTransitionMs: mergedAvgMs,
                     isSpanningTreeEdge: existing.isSpanningTreeEdge || edge.isSpanningTreeEdge,
-                    lastTraversedAt: max(existing.lastTraversedAt, edge.lastTraversedAt)
+                    lastTraversedAt: max(existing.lastTraversedAt, edge.lastTraversedAt),
+                    isHazardous: mergedHazardous,
+                    hazardReason: mergedHazardous ? mergedReason : nil
                 )
             } else {
+                let hazard = HazardousActionClassifier.assess(action: edge.action, actionSignature: edge.actionSignature)
+                let isHaz = edge.isHazardous || hazard.isHazardous
+                let hazReason = edge.hazardReason ?? (hazard.isHazardous ? hazard.reason : nil)
                 deduplicatedEdges[key] = ScreenTransitionEdge(
                     id: edge.id,
                     fromHash: mappedFrom,
@@ -527,7 +547,9 @@ public actor SpatialGraphEngine {
                     traversalCount: edge.traversalCount,
                     averageTransitionMs: edge.averageTransitionMs,
                     isSpanningTreeEdge: edge.isSpanningTreeEdge,
-                    lastTraversedAt: edge.lastTraversedAt
+                    lastTraversedAt: edge.lastTraversedAt,
+                    isHazardous: isHaz,
+                    hazardReason: isHaz ? hazReason : nil
                 )
                 orderedEdgeKeys.append(key)
             }

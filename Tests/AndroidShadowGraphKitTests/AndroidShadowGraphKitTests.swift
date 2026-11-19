@@ -1937,4 +1937,129 @@ final class AndroidShadowGraphKitTests: XCTestCase {
 
         await bridge.stop()
     }
+
+    func testScreenLayoutHasherNormalizesEcommercePricesEtasWeightsAndProtects5GAndYears() {
+        // #5 Prices (prefix & suffix, spaced/grouped digits, RU & EU/US currencies)
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("15.99€"), "<PRICE>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("$1,299.00"), "<PRICE>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("€ 9,99"), "<PRICE>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("499 ₽"), "<PRICE>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("1 250 руб."), "<PRICE>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("Order 2 items 250 р."), "Order # items <PRICE>")
+        XCTAssertEqual(
+            ScreenLayoutHasher.normalizeLabel("Pay $15.99"),
+            ScreenLayoutHasher.normalizeLabel("Pay $1,250.00")
+        )
+
+        // #5 ETAs
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("15-25 min"), "<ETA>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("~20 мин"), "<ETA>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("1 hr 20 min"), "<ETA>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("ETA 14:30"), "<ETA>")
+        XCTAssertEqual(
+            ScreenLayoutHasher.normalizeLabel("Delivery 10-15 min"),
+            ScreenLayoutHasher.normalizeLabel("Delivery 45 min")
+        )
+
+        // #5 Weights & volumes
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("250g"), "<WEIGHT>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("1.5 kg"), "<WEIGHT>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("500 г"), "<WEIGHT>")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("330 ml"), "<WEIGHT>")
+
+        // Critical protections: 5G and Russian dates ("г.") must NOT be mangled as <WEIGHT>
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("5G"), "#G")
+        XCTAssertEqual(ScreenLayoutHasher.normalizeLabel("15 нояб. 2026 г."), "<DATE>")
+
+        // Full product-screen hash invariance across price/ETA/weight updates
+        let hasher = ScreenLayoutHasher()
+        let screenA = ShadowTreeIndex(seq: 1, timestampMs: 100, activePackage: "com.shop.app", activeWindowId: 1, nodes: [
+            makeNode(nodeId: 1, index: 0, packageName: "com.shop.app", className: "TextView", resourceId: "id/title", text: "Artisan Coffee Beans"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.shop.app", className: "TextView", resourceId: "id/weight", text: "250g"),
+            makeNode(nodeId: 3, index: 2, packageName: "com.shop.app", className: "TextView", resourceId: "id/eta", text: "15-25 min"),
+            makeNode(nodeId: 4, index: 3, packageName: "com.shop.app", className: "Button", resourceId: "id/buy_btn", text: "Add · 15.99€", clickable: true)
+        ])
+        let screenB = ShadowTreeIndex(seq: 2, timestampMs: 200, activePackage: "com.shop.app", activeWindowId: 1, nodes: [
+            makeNode(nodeId: 1, index: 0, packageName: "com.shop.app", className: "TextView", resourceId: "id/title", text: "Artisan Coffee Beans"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.shop.app", className: "TextView", resourceId: "id/weight", text: "1.2 kg"),
+            makeNode(nodeId: 3, index: 2, packageName: "com.shop.app", className: "TextView", resourceId: "id/eta", text: "~40 мин"),
+            makeNode(nodeId: 4, index: 3, packageName: "com.shop.app", className: "Button", resourceId: "id/buy_btn", text: "Add · 1 490 руб.", clickable: true)
+        ])
+        XCTAssertEqual(hasher.fingerprint(for: screenA).layoutHash, hasher.fingerprint(for: screenB).layoutHash)
+    }
+
+    func testScreenLayoutHasherVisualNoiseReductionAndOverlayMasking() {
+        let hasher = ScreenLayoutHasher()
+
+        // #6 Exclude non-interactive ImageViews without resourceId while preserving clickable/anchored icons
+        let baseNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.shop.app", className: "TextView", resourceId: "id/header", text: "Catalog"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.shop.app", className: "Button", resourceId: "id/cart", text: "Cart", clickable: true),
+            makeNode(nodeId: 3, index: 2, packageName: "com.shop.app", className: "ImageView", resourceId: "id/logo", contentDesc: "Brand", clickable: false),
+            makeNode(nodeId: 4, index: 3, packageName: "com.shop.app", className: "AppCompatImageView", contentDesc: "Search", clickable: true),
+            makeNode(nodeId: 5, index: 4, packageName: "com.shop.app", className: "ImageView", contentDesc: "Winter Sale 50% Promo!", clickable: false)
+        ]
+        let rotatedBannerNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.shop.app", className: "TextView", resourceId: "id/header", text: "Catalog"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.shop.app", className: "Button", resourceId: "id/cart", text: "Cart", clickable: true),
+            makeNode(nodeId: 3, index: 2, packageName: "com.shop.app", className: "ImageView", resourceId: "id/logo", contentDesc: "Brand", clickable: false),
+            makeNode(nodeId: 4, index: 3, packageName: "com.shop.app", className: "AppCompatImageView", contentDesc: "Search", clickable: true),
+            makeNode(nodeId: 5, index: 4, packageName: "com.shop.app", className: "ImageView", contentDesc: "Flash Deal Weekend", clickable: false),
+            makeNode(nodeId: 6, index: 5, packageName: "com.shop.app", className: "ShapeableImageView", contentDesc: "Hero Card", clickable: false)
+        ]
+
+        let fpBase = hasher.fingerprint(for: ShadowTreeIndex(seq: 1, timestampMs: 10, activePackage: "com.shop.app", activeWindowId: 1, nodes: baseNodes))
+        let fpRotated = hasher.fingerprint(for: ShadowTreeIndex(seq: 2, timestampMs: 20, activePackage: "com.shop.app", activeWindowId: 1, nodes: rotatedBannerNodes))
+        XCTAssertEqual(fpBase.layoutHash, fpRotated.layoutHash)
+        XCTAssertEqual(ScreenLayoutHasher.similarity(fpBase, fpRotated), 1.0, accuracy: 0.0001)
+        XCTAssertTrue(fpBase.tokens.contains("ImageView|id/logo|Brand"))
+        XCTAssertTrue(fpBase.tokens.contains("AppCompatImageView||Search"))
+
+        // #3 Overlay masking: even if a heads-up notification transiently flips activePackage to com.android.systemui,
+        // the foreground app screen still hashes identically to the clean app screen.
+        let overlayNodes = [
+            makeNode(nodeId: 1, index: 0, packageName: "com.shop.app", className: "TextView", resourceId: "id/header", text: "Catalog"),
+            makeNode(nodeId: 2, index: 1, packageName: "com.shop.app", className: "Button", resourceId: "id/cart", text: "Cart", clickable: true),
+            makeNode(nodeId: 3, index: 2, packageName: "com.shop.app", className: "ImageView", resourceId: "id/logo", contentDesc: "Brand", clickable: false),
+            makeNode(nodeId: 4, index: 3, packageName: "com.shop.app", className: "AppCompatImageView", contentDesc: "Search", clickable: true),
+            makeNode(nodeId: 99, index: 4, packageName: "com.android.systemui", className: "FrameLayout", resourceId: "com.android.systemui:id/expandableNotificationRow", text: "Incoming Telegram message", bounds: "[20,40][1060,260]", clickable: true)
+        ]
+        let fpOverlay = hasher.fingerprint(for: ShadowTreeIndex(seq: 3, timestampMs: 30, activePackage: "com.android.systemui", activeWindowId: 99, nodes: overlayNodes))
+        XCTAssertEqual(fpOverlay.activePackage, "com.shop.app")
+        XCTAssertEqual(fpOverlay.layoutHash, fpBase.layoutHash)
+    }
+
+    func testWireCodecDecodesSecureScreenMessagesAndSpatialGraphSkipsSecureFrames() async throws {
+        let codec = NdjsonWireCodec()
+        let activeLine = #"{"type":"secure_screen","code":"SECURE_SCREEN_ACTIVE","active":true,"reason":"flag_secure_null_root","package":"com.bank.app","ts_ms":1000}"#
+        let msgActive = try codec.decodeFrame(Data(activeLine.utf8))
+        guard case .secureScreen(let activePayload) = msgActive else {
+            return XCTFail("Expected .secureScreen active payload")
+        }
+        XCTAssertEqual(activePayload.code, "SECURE_SCREEN_ACTIVE")
+        XCTAssertTrue(activePayload.active)
+        XCTAssertEqual(activePayload.reason, "flag_secure_null_root")
+        XCTAssertEqual(activePayload.activePackage, "com.bank.app")
+
+        let clearedLine = #"{"type":"secure_screen","code":"SECURE_SCREEN_CLEARED","active":false,"reason":"tree_restored","package":"com.bank.app","ts_ms":2000}"#
+        let msgCleared = try codec.decodeFrame(Data(clearedLine.utf8))
+        guard case .secureScreen(let clearedPayload) = msgCleared else {
+            return XCTFail("Expected .secureScreen cleared payload")
+        }
+        XCTAssertFalse(clearedPayload.active)
+
+        let domState = ShadowDOMState()
+        let graphEngine = SpatialGraphEngine()
+        await domState.handleMessage(msgActive)
+        let isSecure = await domState.isSecureScreenActive
+        XCTAssertTrue(isSecure)
+
+        // Secure updates must not poison SpatialGraphEngine with empty screens
+        let secureIdx = ShadowTreeIndex(seq: 1, timestampMs: 1000, activePackage: "com.bank.app", activeWindowId: 1, nodes: [])
+        _ = await graphEngine.process(update: ShadowDOMUpdate(
+            index: secureIdx, isFullSnapshot: true, insertedCount: 0, updatedCount: 0, removedCount: 0, isSecureScreenActive: true
+        ))
+        let countDuringSecure = await graphEngine.vertexCount
+        XCTAssertEqual(countDuringSecure, 0)
+    }
 }

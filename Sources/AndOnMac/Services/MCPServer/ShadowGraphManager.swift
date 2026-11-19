@@ -308,6 +308,10 @@ public final class ShadowGraphManager: @unchecked Sendable {
         bridge.macroExecutionEvents
     }
 
+    public var secureScreenEvents: AsyncStream<WireSecureScreenPayload> {
+        bridge.secureScreenEvents
+    }
+
     public func recordAction(_ action: AttributedUIAction) async {
         await bridge.recordAction(action)
     }
@@ -356,6 +360,8 @@ public final class ShadowGraphManager: @unchecked Sendable {
         targetHash: UInt64?,
         maxSteps: Int = 12,
         stepTimeoutMs: Int = 2000,
+        confirmed: Bool = false,
+        secureHandoffTimeoutSeconds: TimeInterval = 60.0,
         executor: MacroActionExecutor = ADBMacroActionExecutor()
     ) async throws -> ShadowNavigationOutcome {
         await loadPersistedGraphIfNeeded()
@@ -366,7 +372,9 @@ public final class ShadowGraphManager: @unchecked Sendable {
             serial: serial,
             executor: executor,
             maxSteps: maxSteps,
-            stepTimeoutMs: stepTimeoutMs
+            stepTimeoutMs: stepTimeoutMs,
+            confirmed: confirmed,
+            secureHandoffTimeoutSeconds: secureHandoffTimeoutSeconds
         )
     }
 

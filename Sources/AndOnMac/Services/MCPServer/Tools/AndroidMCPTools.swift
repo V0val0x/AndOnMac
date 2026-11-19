@@ -133,7 +133,8 @@ public enum AndroidMCPTools {
                     "target": .object(["type": .string("string"), "description": .string("Semantic destination hint (package name, screen title, label, or resource_id). Required unless target_hash is provided.")]),
                     "target_hash": .object(["type": .string("string"), "description": .string("Optional hex (0x...) or decimal UInt64 layoutHash for exact vertex pinning.")]),
                     "max_steps": .object(["type": .string("integer"), "description": .string("Maximum transition hops allowed (default 12).")]),
-                    "step_timeout_ms": .object(["type": .string("integer"), "description": .string("Per-step Shadow DOM settle timeout in milliseconds (default 2000).")])
+                    "step_timeout_ms": .object(["type": .string("integer"), "description": .string("Per-step Shadow DOM settle timeout in milliseconds (default 2000).")]),
+                    "confirmed": .object(["type": .string("boolean"), "description": .string("Set to true ONLY after explicit user confirmation in chat to allow irreversible/hazardous actions (payment, purchase, delete). Default: false.")])
                 ])
             ])
         )
@@ -505,13 +506,15 @@ public enum AndroidMCPTools {
 
         let maxSteps = max(1, min(32, args["max_steps"]?.intValue ?? 12))
         let stepTimeoutMs = max(100, min(30_000, args["step_timeout_ms"]?.intValue ?? 2000))
+        let confirmed = args["confirmed"]?.boolValue ?? false
 
         let outcome = try await ShadowGraphManager.shared.navigateToNode(
             serial: serial,
             target: targetHint,
             targetHash: targetHash,
             maxSteps: maxSteps,
-            stepTimeoutMs: stepTimeoutMs
+            stepTimeoutMs: stepTimeoutMs,
+            confirmed: confirmed
         )
         return formatNavigationOutcome(outcome)
     }
@@ -583,6 +586,34 @@ public enum AndroidMCPTools {
             ])
             return .text(encodeJSONValue(payload), isError: false)
 
+        case .requiresConfirmation(let req):
+            let payload: MCPJSONValue = .object([
+                "status": .string("requires_confirmation"),
+                "is_hazardous": .bool(true),
+                "hazard_category": .string(req.hazardCategory.rawValue),
+                "hazard_reason": .string(req.hazardReason),
+                "blocked_step_index": .int(req.stepIndex),
+                "total_steps": .int(req.totalSteps),
+                "steps_completed": .int(req.stepsCompleted),
+                "blocked_action": .string(req.actionSignature),
+                "target_description": .string(req.targetDescription),
+                "current_hash": .string(hex(req.currentHash)),
+                "target_hash": .string(hex(req.targetHash)),
+                "message": .string("Irreversible action blocked awaiting human approval. Ask the user in chat to confirm, then re-run android_navigate_to_node with confirmed: true.")
+            ])
+            return .text(encodeJSONValue(payload), isError: false)
+
+        case .secureScreenTimeout(let reason, let activePackage, let timeoutSeconds):
+            let payload: MCPJSONValue = .object([
+                "status": .string("secure_screen_active"),
+                "code": .string("SECURE_SCREEN_ACTIVE"),
+                "reason": .string(reason),
+                "active_package": .string(activePackage),
+                "timeout_seconds": .int(timeoutSeconds),
+                "message": .string("Protected biometric/PIN screen remained locked past \(timeoutSeconds)s. Ask the user to unlock on the phone and retry.")
+            ])
+            return .text(encodeJSONValue(payload), isError: true)
+
         case .noRoute(let startHash, let activePackage, let candidates, let reachableCount, let knownCount):
             let payload: MCPJSONValue = .object([
                 "status": .string("no_route"),
@@ -645,6 +676,19 @@ public enum AndroidMCPTools {
             obj["last_observed_hash"] = lastObservedHash.map { .string(hex($0)) } ?? .null
             obj["last_observed_package"] = .string(lastObservedPackage)
             obj["timeout_ms"] = .int(timeoutMs)
+        case .requiresConfirmation(let req):
+            obj["status"] = .string("requires_confirmation")
+            obj["error_type"] = .string("requires_confirmation")
+            obj["hazard_category"] = .string(req.hazardCategory.rawValue)
+            obj["hazard_reason"] = .string(req.hazardReason)
+            obj["blocked_action"] = .string(req.actionSignature)
+            obj["blocked_step_index"] = .int(req.stepIndex)
+        case .secureScreenTimeout(let reason, let activePackage, let timeoutSeconds):
+            obj["status"] = .string("secure_screen_active")
+            obj["error_type"] = .string("secure_screen_timeout")
+            obj["reason"] = .string(reason)
+            obj["active_package"] = .string(activePackage)
+            obj["timeout_seconds"] = .int(timeoutSeconds)
         }
 
         return .text(encodeJSONValue(.object(obj)), isError: true)

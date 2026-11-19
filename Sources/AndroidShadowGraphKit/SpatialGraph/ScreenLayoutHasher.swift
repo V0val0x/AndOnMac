@@ -32,8 +32,12 @@ public struct ScreenLayoutHasher: Sendable {
     }
 
     public func fingerprint(for index: ShadowTreeIndex) -> ScreenSemanticFingerprint {
-        let activePkg = index.activePackage
-        let skipIgnored = !ignoredPackages.contains(activePkg)
+        let effectiveActivePackage = Self.resolveEffectiveActivePackage(
+            reportedPackage: index.activePackage,
+            nodes: index.orderedNodes,
+            ignoredPackages: ignoredPackages
+        )
+        let skipIgnored = !ignoredPackages.contains(effectiveActivePackage)
 
         var tokenSet = Set<String>()
         tokenSet.reserveCapacity(min(256, index.orderedNodes.count))
@@ -47,9 +51,12 @@ public struct ScreenLayoutHasher: Sendable {
             if skipIgnored, Self.isIgnoredSystemNode(node, ignoredPackages: ignoredPackages) {
                 continue
             }
+            if Self.isDecorativeBannerImage(node) {
+                continue
+            }
 
             let rawLabel = !node.text.isEmpty ? node.text : node.contentDesc
-            let temporalKind = Self.temporalKind(for: node, activePackage: activePkg)
+            let temporalKind = Self.temporalKind(for: node, activePackage: effectiveActivePackage)
             let normalizedLabel = Self.normalizeLabel(rawLabel)
             let isInteractive = node.clickable || node.scrollable || node.editable
 
@@ -89,15 +96,72 @@ public struct ScreenLayoutHasher: Sendable {
         let interactiveLabels = Array((nonTemporalLabels + temporalLabels).prefix(8))
 
         let sortedTokens = tokenSet.sorted()
-        let hash = Self.fnv1a64(activePackage: activePkg, sortedTokens: sortedTokens)
+        let hash = Self.fnv1a64(activePackage: effectiveActivePackage, sortedTokens: sortedTokens)
 
         return ScreenSemanticFingerprint(
             layoutHash: hash,
-            activePackage: activePkg,
+            activePackage: effectiveActivePackage,
             activeWindowId: index.activeWindowId,
             tokens: tokenSet,
             sampleInteractiveLabels: interactiveLabels
         )
+    }
+
+    /// Overlay masking (#3): when `reportedPackage` is an overlay package (e.g. `com.android.systemui`
+    /// from a heads-up notification or system banner) while foreground app nodes are visible beneath it,
+    /// anchor the fingerprint to the dominant visible foreground app package instead of `systemui`.
+    private static func resolveEffectiveActivePackage(
+        reportedPackage: String,
+        nodes: [ShadowUINode],
+        ignoredPackages: Set<String>
+    ) -> String {
+        guard ignoredPackages.contains(reportedPackage) else {
+            return reportedPackage
+        }
+        var packageCounts: [String: Int] = [:]
+        for node in nodes where node.visible {
+            let pkg = node.packageName
+            guard !pkg.isEmpty, !ignoredPackages.contains(pkg) else { continue }
+            let hasContent = node.clickable || node.scrollable || node.editable
+                || !node.resourceId.isEmpty || !node.text.isEmpty || !node.contentDesc.isEmpty
+            guard hasContent else { continue }
+            packageCounts[pkg, default: 0] += 1
+        }
+        guard !packageCounts.isEmpty else {
+            return reportedPackage
+        }
+        return packageCounts.max { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value < rhs.value }
+            return lhs.key > rhs.key
+        }?.key ?? reportedPackage
+    }
+
+    private static let decorativeImageClasses: Set<String> = [
+        "ImageView", "AppCompatImageView", "ShapeableImageView",
+        "DraweeView", "SimpleDraweeView", "Image"
+    ]
+
+    private static func isImageViewClassName(_ className: String) -> Bool {
+        let shortClass = shortClassName(className)
+        return decorativeImageClasses.contains(shortClass) || shortClass.hasSuffix("ImageView")
+    }
+
+    /// Visual noise reduction (#6): excludes non-interactive image views that lack an explicit
+    /// `resourceId` (e.g. rotating promo banners / carousel art) so Jaccard similarity stays stable.
+    private static func isDecorativeBannerImage(_ node: ShadowUINode) -> Bool {
+        guard node.resourceId.isEmpty,
+              !node.clickable, !node.scrollable, !node.editable else {
+            return false
+        }
+        return isImageViewClassName(node.className)
+    }
+
+    /// Identifies persisted legacy tokens generated from unanchored `ImageView` nodes (`className|resourceId|label`
+    /// where `resourceId` is empty and `className` is an ImageView variant).
+    public static func isUnanchoredImageToken(_ token: String) -> Bool {
+        let parts = token.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[1].isEmpty else { return false }
+        return isImageViewClassName(String(parts[0]))
     }
 
     /// Computes Jaccard similarity in `[0.0, 1.0]` between two semantic fingerprints without heap allocations.
@@ -268,7 +332,8 @@ public struct ScreenLayoutHasher: Sendable {
         let resourceId = String(parts[1])
         let label = String(parts[2])
         guard !label.isEmpty else { return token }
-        if label == "<TEXT>" || label == "<CLOCK>" || label == "<DATE>" {
+        if label == "<TEXT>" || label == "<CLOCK>" || label == "<DATE>"
+            || label == "<PRICE>" || label == "<ETA>" || label == "<WEIGHT>" {
             return token
         }
 
@@ -317,13 +382,47 @@ public struct ScreenLayoutHasher: Sendable {
         pattern: #"(?:#\.?\s+<MONTH>|<MONTH>[,\s]+#\.?)(?:\s*,?\s*#(?:\s*г\.?)?)?"#
     )
 
+    private static let pricePrefixRegex = try! NSRegularExpression(
+        pattern: #"[$€£¥₽₴₸₺₹]\s*#(?:[\s.,]#)*"#
+    )
+
+    private static let priceSuffixRegex = try! NSRegularExpression(
+        pattern: #"#(?:[\s.,]#)*\s*(?:[$€£¥₽₴₸₺₹](?!\s*#)|(?<!\p{L})(?:руб\.?|usd|eur|gbp|rub|uah|kzt|byn|pln|chf|cad|aud)(?!\p{L})|(?<!\p{L})р\.(?!\p{L}))"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let etaTimeRegex = try! NSRegularExpression(
+        pattern: #"(?<!\p{L})eta[:\s]+<TIME>"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let etaRegex = try! NSRegularExpression(
+        pattern: #"(?<!\p{L})(?:(?:~|≈|через\s+|in\s+|eta[:\s]+)\s*)?#(?:\s*[-–—]\s*#)?\s*(?:min(?:s|utes?)?|hr(?:s)?|hours?|sec(?:s|onds?)?|days?|мин(?:ут[уы]?)?\.?|час(?:а|ов)?\.?|ч\.|сек\.?|дн(?:я|ей)?\.?)(?!\p{L})"#,
+        options: [.caseInsensitive]
+    )
+
+    private static let collapseEtaRegex = try! NSRegularExpression(
+        pattern: #"<ETA>(?:\s+<ETA>)+"#
+    )
+
+    private static let weightMultiRegex = try! NSRegularExpression(
+        pattern: #"#(?:[.,]#)?\s*(?:kg|mg|lbs?|oz|ml|кг|гр\.?|мг|мл)(?!\p{L})"#,
+        options: [.caseInsensitive]
+    )
+
+    // Case-sensitive for single-letter units so "5G" cellular indicators are never tokenized as weights.
+    private static let weightSingleRegex = try! NSRegularExpression(
+        pattern: #"#(?:[.,]#)?\s*(?:g|l|г\.?|л\.?)(?!\p{L})"#
+    )
+
     private static func replacing(_ regex: NSRegularExpression, in text: String, with template: String) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
 
-    /// Normalizes volatile digit sequences (`13:49`, `85%`, `42 unread`) and temporal clock/date
-    /// strings (`16:19:05`, `5:54 pm`, `Sun, 15 Nov`) into canonical placeholders.
+    /// Normalizes volatile digit sequences (`13:49`, `85%`, `42 unread`), temporal clock/date
+    /// strings (`16:19:05`, `5:54 pm`, `Sun, 15 Nov`), and dynamic e-commerce values (`15.99€`, `ETA`, `250g`)
+    /// into canonical placeholders.
     public static func normalizeLabel(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -368,6 +467,17 @@ public struct ScreenLayoutHasher: Sendable {
         }
         if normalized.contains("<TIME>") {
             normalized = replacing(relativeDayRegex, in: normalized, with: "<DAY>")
+            normalized = replacing(etaTimeRegex, in: normalized, with: "<ETA>")
+        }
+        if normalized.contains("#") {
+            normalized = replacing(pricePrefixRegex, in: normalized, with: "<PRICE>")
+            normalized = replacing(priceSuffixRegex, in: normalized, with: "<PRICE>")
+            normalized = replacing(etaRegex, in: normalized, with: "<ETA>")
+            normalized = replacing(weightMultiRegex, in: normalized, with: "<WEIGHT>")
+            normalized = replacing(weightSingleRegex, in: normalized, with: "<WEIGHT>")
+        }
+        if normalized.contains("<ETA>") {
+            normalized = replacing(collapseEtaRegex, in: normalized, with: "<ETA>")
         }
 
         let trimmedNormalized = normalized.trimmingCharacters(in: .whitespaces)

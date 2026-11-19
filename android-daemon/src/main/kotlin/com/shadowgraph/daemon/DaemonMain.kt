@@ -18,10 +18,12 @@ import com.shadowgraph.daemon.transport.NdjsonWireEncoder
 import com.shadowgraph.daemon.transport.WireError
 import com.shadowgraph.daemon.transport.WireHello
 import com.shadowgraph.daemon.transport.WirePong
+import com.shadowgraph.daemon.transport.WireSecureScreen
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -64,9 +66,26 @@ object DaemonMain {
 
         // Worker-thread confined writes, lock-free reads for immediate client hello/snapshot & heartbeats
         val currentSnapshot = AtomicReference<ShadowTreeSnapshot?>(null)
+        val secureScreenActive = AtomicBoolean(false)
+        val secureScreenReason = AtomicReference<String?>(null)
+        val pendingSecureCheck = AtomicReference<ScheduledFuture<*>?>(null)
 
         lateinit var server: DaemonTcpServer
         lateinit var eventListener: AccessibilityEventListener
+
+        fun emitSecureScreenTransition(active: Boolean, reason: String, snapshot: ShadowTreeSnapshot) {
+            val code = if (active) "SECURE_SCREEN_ACTIVE" else "SECURE_SCREEN_CLEARED"
+            secureScreenReason.set(if (active) reason else null)
+            server.broadcastSecureScreen(
+                WireSecureScreen(
+                    code = code,
+                    active = active,
+                    reason = reason,
+                    activePackage = snapshot.activePackage,
+                    timestampMs = snapshot.timestampMs
+                )
+            )
+        }
 
         fun shutdown(reason: String) {
             if (!shuttingDown.compareAndSet(false, true)) return
@@ -93,6 +112,48 @@ object DaemonMain {
             try {
                 worker.execute(task)
             } catch (_: RejectedExecutionException) {
+            }
+        }
+
+        fun evaluateSecureScreenState(snapshot: ShadowTreeSnapshot) {
+            if (shuttingDown.get()) return
+            if (snapshot.secureScreenActive) {
+                val reason = snapshot.secureScreenReason ?: "empty_accessibility_tree"
+                if (reason == "biometric_prompt") {
+                    pendingSecureCheck.getAndSet(null)?.cancel(false)
+                    if (secureScreenActive.compareAndSet(false, true) || secureScreenReason.get() != reason) {
+                        emitSecureScreenTransition(active = true, reason = reason, snapshot = snapshot)
+                    }
+                    return
+                }
+                if (secureScreenActive.get()) return
+                if (pendingSecureCheck.get() != null) return
+                try {
+                    val future = worker.schedule({
+                        pendingSecureCheck.set(null)
+                        if (shuttingDown.get()) return@schedule
+                        val uia = host.uiAutomation ?: return@schedule
+                        val recheckSeq = seqCounter.incrementAndGet()
+                        val recheck = collector.collect(recheckSeq, uia)
+                        if (recheck.secureScreenActive) {
+                            currentSnapshot.set(recheck)
+                            if (secureScreenActive.compareAndSet(false, true)) {
+                                emitSecureScreenTransition(
+                                    active = true,
+                                    reason = recheck.secureScreenReason ?: reason,
+                                    snapshot = recheck
+                                )
+                            }
+                        }
+                    }, 250L, TimeUnit.MILLISECONDS)
+                    pendingSecureCheck.set(future)
+                } catch (_: RejectedExecutionException) {
+                }
+            } else {
+                pendingSecureCheck.getAndSet(null)?.cancel(false)
+                if (secureScreenActive.compareAndSet(true, false)) {
+                    emitSecureScreenTransition(active = false, reason = "tree_restored", snapshot = snapshot)
+                }
             }
         }
 
@@ -128,6 +189,7 @@ object DaemonMain {
                             server.sendSnapshot(targetSession, next, reasonOverride ?: "requested")
                         }
                     }
+                    evaluateSecureScreenState(next)
                     return
                 }
 
@@ -145,6 +207,7 @@ object DaemonMain {
                         server.broadcastDiff(diffResult, eventType, eventPackage)
                     }
                 }
+                evaluateSecureScreenState(next)
             } catch (t: Throwable) {
                 System.err.println("[ShadowGraph] Collection error: ${t.javaClass.simpleName}: ${t.message}")
             }
@@ -170,6 +233,18 @@ object DaemonMain {
                         val cached = currentSnapshot.get()
                         if (cached != null) {
                             server.sendSnapshot(session, cached, reason = "initial")
+                            if (secureScreenActive.get()) {
+                                server.sendSecureScreen(
+                                    session,
+                                    WireSecureScreen(
+                                        code = "SECURE_SCREEN_ACTIVE",
+                                        active = true,
+                                        reason = secureScreenReason.get() ?: "flag_secure_null_root",
+                                        activePackage = cached.activePackage,
+                                        timestampMs = System.currentTimeMillis()
+                                    )
+                                )
+                            }
                         } else {
                             collectAndBroadcast(
                                 forceSnapshot = true,

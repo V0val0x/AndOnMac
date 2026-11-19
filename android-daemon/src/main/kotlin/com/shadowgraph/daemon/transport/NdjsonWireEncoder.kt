@@ -38,6 +38,8 @@ class NdjsonWireEncoder : WireEncoder {
         out.appendJsonString(s.activePackage)
         out.appendAscii(",\"window_id\":")
         out.appendInt(s.activeWindowId)
+        out.appendAscii(",\"secure_screen\":")
+        out.appendBoolean(s.secureScreenActive)
         out.appendAscii(",\"node_count\":")
         out.appendInt(s.nodes.size)
         out.appendAscii(",\"nodes\":[")
@@ -125,6 +127,21 @@ class NdjsonWireEncoder : WireEncoder {
         out.appendLong(pong.timestampMs)
         out.appendAscii(",\"seq\":")
         out.appendLong(pong.seq)
+        out.appendAscii("}\n")
+    }
+
+    override fun encodeSecureScreen(secure: WireSecureScreen, out: ByteArrayBuffer) {
+        out.reset()
+        out.appendAscii("{\"type\":\"secure_screen\",\"code\":")
+        out.appendJsonString(secure.code)
+        out.appendAscii(",\"active\":")
+        out.appendBoolean(secure.active)
+        out.appendAscii(",\"reason\":")
+        out.appendJsonString(secure.reason)
+        out.appendAscii(",\"package\":")
+        out.appendJsonString(secure.activePackage)
+        out.appendAscii(",\"ts_ms\":")
+        out.appendLong(secure.timestampMs)
         out.appendAscii("}\n")
     }
 

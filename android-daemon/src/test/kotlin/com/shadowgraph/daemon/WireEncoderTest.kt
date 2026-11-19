@@ -12,6 +12,7 @@ import com.shadowgraph.daemon.transport.WireDiff
 import com.shadowgraph.daemon.transport.WireError
 import com.shadowgraph.daemon.transport.WireHello
 import com.shadowgraph.daemon.transport.WirePong
+import com.shadowgraph.daemon.transport.WireSecureScreen
 import com.shadowgraph.daemon.transport.WireSnapshot
 import java.nio.charset.StandardCharsets
 import kotlin.test.Test
@@ -167,5 +168,54 @@ class WireEncoderTest {
         val decoded = decode(buf)
         assertTrue(decoded.endsWith("\n"))
         assertTrue(decoded.contains("hi\uFFFDworld"))
+    }
+
+    @Test
+    fun `encodes secure_screen active and cleared frames and snapshot flag`() {
+        val buf = ByteArrayBuffer(128)
+        encoder.encodeSecureScreen(
+            WireSecureScreen(
+                code = "SECURE_SCREEN_ACTIVE",
+                active = true,
+                reason = "flag_secure_null_root",
+                activePackage = "com.bank.app",
+                timestampMs = 4200L
+            ),
+            buf
+        )
+        val activeJson = decode(buf)
+        assertTrue(activeJson.startsWith("{\"type\":\"secure_screen\""))
+        assertTrue(activeJson.contains("\"code\":\"SECURE_SCREEN_ACTIVE\""))
+        assertTrue(activeJson.contains("\"active\":true"))
+        assertTrue(activeJson.contains("\"reason\":\"flag_secure_null_root\""))
+        assertTrue(activeJson.contains("\"package\":\"com.bank.app\""))
+
+        encoder.encodeSecureScreen(
+            WireSecureScreen(
+                code = "SECURE_SCREEN_CLEARED",
+                active = false,
+                reason = "tree_restored",
+                activePackage = "com.bank.app",
+                timestampMs = 5200L
+            ),
+            buf
+        )
+        val clearedJson = decode(buf)
+        assertTrue(clearedJson.contains("\"code\":\"SECURE_SCREEN_CLEARED\""))
+        assertTrue(clearedJson.contains("\"active\":false"))
+
+        val secureSnap = ShadowTreeSnapshot.fromNodes(
+            seq = 9L,
+            timestampNs = 900L,
+            timestampMs = 4200L,
+            activePackage = "com.bank.app",
+            activeWindowId = 3,
+            nodes = emptyList(),
+            secureScreenActive = true,
+            secureScreenReason = "empty_accessibility_tree"
+        )
+        encoder.encodeSnapshot(WireSnapshot(secureSnap, "window_event"), buf)
+        val snapJson = decode(buf)
+        assertTrue(snapJson.contains("\"secure_screen\":true"))
     }
 }

@@ -50,6 +50,7 @@ public struct WireSnapshotPayload: Decodable, Sendable, Equatable {
     public let activeWindowId: Int
     public let nodeCount: Int
     public let nodes: [ShadowUINode]
+    public let secureScreenActive: Bool?
 
     public enum CodingKeys: String, CodingKey {
         case seq
@@ -59,6 +60,7 @@ public struct WireSnapshotPayload: Decodable, Sendable, Equatable {
         case activeWindowId = "window_id"
         case nodeCount = "node_count"
         case nodes
+        case secureScreenActive = "secure_screen"
     }
 
     public init(
@@ -68,7 +70,8 @@ public struct WireSnapshotPayload: Decodable, Sendable, Equatable {
         activePackage: String,
         activeWindowId: Int,
         nodeCount: Int,
-        nodes: [ShadowUINode]
+        nodes: [ShadowUINode],
+        secureScreenActive: Bool? = nil
     ) {
         self.seq = seq
         self.timestampMs = timestampMs
@@ -77,6 +80,7 @@ public struct WireSnapshotPayload: Decodable, Sendable, Equatable {
         self.activeWindowId = activeWindowId
         self.nodeCount = nodeCount
         self.nodes = nodes
+        self.secureScreenActive = secureScreenActive
     }
 }
 
@@ -327,6 +331,36 @@ public struct WirePongPayload: Decodable, Sendable, Equatable {
     }
 }
 
+public struct WireSecureScreenPayload: Decodable, Sendable, Equatable {
+    public let code: String
+    public let active: Bool
+    public let reason: String
+    public let activePackage: String
+    public let timestampMs: Int64
+
+    public enum CodingKeys: String, CodingKey {
+        case code
+        case active
+        case reason
+        case activePackage = "package"
+        case timestampMs = "ts_ms"
+    }
+
+    public init(
+        code: String,
+        active: Bool,
+        reason: String,
+        activePackage: String,
+        timestampMs: Int64
+    ) {
+        self.code = code
+        self.active = active
+        self.reason = reason
+        self.activePackage = activePackage
+        self.timestampMs = timestampMs
+    }
+}
+
 public enum WireMessage: Sendable, Equatable {
     case hello(WireHelloPayload)
     case snapshot(WireSnapshotPayload)
@@ -334,6 +368,7 @@ public enum WireMessage: Sendable, Equatable {
     case heartbeat(WireHeartbeatPayload)
     case error(WireErrorPayload)
     case pong(WirePongPayload)
+    case secureScreen(WireSecureScreenPayload)
 }
 
 public enum DaemonCommand: Sendable, Equatable {

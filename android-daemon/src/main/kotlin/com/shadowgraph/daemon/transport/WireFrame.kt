@@ -42,6 +42,14 @@ data class WirePong(
     val seq: Long
 )
 
+data class WireSecureScreen(
+    val code: String,
+    val active: Boolean,
+    val reason: String,
+    val activePackage: String,
+    val timestampMs: Long
+)
+
 sealed class InboundCommand {
     data object Snapshot : InboundCommand()
     data object Ping : InboundCommand()

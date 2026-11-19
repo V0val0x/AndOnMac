@@ -48,9 +48,15 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
         val nodesById = LinkedHashMap<Long, ShadowNode>(256)
         seenIdsScratch.clear()
 
-        var activePackage = ""
-        var activeWindowId = -1
-        var activePriority = -1
+        var bestAnyPackage = ""
+        var bestAnyWindowId = -1
+        var bestAnyPriority = -1
+
+        var bestAppPackage = ""
+        var bestAppWindowId = -1
+        var bestAppPriority = -1
+
+        var hasNullRootAppWindow = false
 
         val windows: List<AccessibilityWindowInfo> = try {
             uiAutomation.windows ?: emptyList()
@@ -73,21 +79,30 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
                     val root = window.root
                     if (root != null) {
                         val rootPkg = root.packageName?.toString()?.trim().orEmpty()
-                        if (priority > activePriority) {
-                            activePriority = priority
-                            activeWindowId = winId
+                        if (priority > bestAnyPriority) {
+                            bestAnyPriority = priority
+                            bestAnyWindowId = winId
                             if (rootPkg.isNotEmpty()) {
-                                activePackage = rootPkg
+                                bestAnyPackage = rootPkg
                             }
-                        } else if (activePackage.isEmpty() && rootPkg.isNotEmpty()) {
-                            activePackage = rootPkg
+                        } else if (bestAnyPackage.isEmpty() && rootPkg.isNotEmpty()) {
+                            bestAnyPackage = rootPkg
                         }
+
+                        if (isApp && rootPkg.isNotEmpty() && rootPkg != SYSTEM_UI_PACKAGE && priority > bestAppPriority) {
+                            bestAppPriority = priority
+                            bestAppWindowId = winId
+                            bestAppPackage = rootPkg
+                        }
+
                         traverseWindowRoot(
                             root = root,
                             windowId = winId,
                             nodes = nodes,
                             nodesById = nodesById
                         )
+                    } else if (isApp && (isActive || isFocused)) {
+                        hasNullRootAppWindow = true
                     }
                 } finally {
                     safeRecycleWindow(window)
@@ -100,15 +115,48 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
                 null
             }
             if (root != null) {
-                activeWindowId = root.windowId
-                activePackage = root.packageName?.toString()?.trim().orEmpty()
+                bestAnyWindowId = root.windowId
+                bestAnyPackage = root.packageName?.toString()?.trim().orEmpty()
+                if (bestAnyPackage.isNotEmpty() && bestAnyPackage != SYSTEM_UI_PACKAGE) {
+                    bestAppWindowId = bestAnyWindowId
+                    bestAppPackage = bestAnyPackage
+                }
                 traverseWindowRoot(
                     root = root,
-                    windowId = activeWindowId,
+                    windowId = bestAnyWindowId,
                     nodes = nodes,
                     nodesById = nodesById
                 )
+            } else {
+                hasNullRootAppWindow = true
             }
+        }
+
+        // Overlay masking (#3): anchor snapshot metadata to the visible foreground app window
+        // whenever a heads-up notification or transient systemui window overlays it.
+        val activePackage = if (bestAppPackage.isNotEmpty()) bestAppPackage else bestAnyPackage
+        val activeWindowId = if (bestAppWindowId != -1) bestAppWindowId else bestAnyWindowId
+
+        // Secure screen / FLAG_SECURE / biometric detection (#7)
+        var nonSystemUiNodeCount = 0
+        var biometricPromptActive = false
+        for (i in 0 until nodes.size) {
+            val n = nodes[i]
+            if (n.packageName != SYSTEM_UI_PACKAGE && !n.resourceId.startsWith("$SYSTEM_UI_PACKAGE:")) {
+                nonSystemUiNodeCount++
+            }
+            if (!biometricPromptActive && n.visible && isBiometricOrCredentialNode(n)) {
+                biometricPromptActive = true
+            }
+        }
+
+        val emptyTree = nodes.isEmpty() || (hasNullRootAppWindow && nonSystemUiNodeCount == 0)
+        val secureScreenActive = biometricPromptActive || emptyTree
+        val secureScreenReason = when {
+            biometricPromptActive -> "biometric_prompt"
+            hasNullRootAppWindow -> "flag_secure_null_root"
+            nodes.isEmpty() -> "empty_accessibility_tree"
+            else -> null
         }
 
         return ShadowTreeSnapshot(
@@ -118,8 +166,29 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
             activePackage = activePackage,
             activeWindowId = activeWindowId,
             nodes = nodes,
-            nodesById = nodesById
+            nodesById = nodesById,
+            secureScreenActive = secureScreenActive,
+            secureScreenReason = secureScreenReason
         )
+    }
+
+    private fun isBiometricOrCredentialNode(node: ShadowNode): Boolean {
+        val rid = node.resourceId.lowercase()
+        val cls = node.className.lowercase()
+        if (cls.contains("biometricprompt") || cls.contains("lockpatternview") || cls.contains("pinentry")) {
+            return true
+        }
+        val isCredentialHost = node.packageName == SYSTEM_UI_PACKAGE ||
+            node.packageName == "com.android.settings" ||
+            rid.startsWith("$SYSTEM_UI_PACKAGE:")
+        if (!isCredentialHost) return false
+        return rid.contains("biometric") ||
+            rid.contains("auth_credential") ||
+            rid.contains("keyguard_password") ||
+            rid.contains("pinentry") ||
+            rid.contains("pin_entry") ||
+            rid.contains("lockpattern") ||
+            rid.contains("lock_pattern")
     }
 
     private fun traverseWindowRoot(
@@ -311,6 +380,7 @@ class ShadowTreeCollector(private val config: DaemonConfig) {
     }
 
     companion object {
+        private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         private const val MAX_NODES_SAFETY_CAP = 4096
         private const val FNV_PRIME = 1099511628211L
 

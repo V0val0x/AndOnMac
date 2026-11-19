@@ -1585,6 +1585,42 @@ final class AndOnMacTests: XCTestCase {
             knownVertexCount: 5
         ))
         XCTAssertTrue(text.isError)
+
+        // #2 HITL confirmation outcome + #7 Secure Handoff timeout outcome
+        let hitlRes = AndroidMCPTools.formatNavigationOutcome(.requiresConfirmation(HazardousConfirmationRequest(
+            stepIndex: 2,
+            totalSteps: 3,
+            actionSignature: "tap:Оплатить",
+            targetDescription: "Оплатить",
+            hazardCategory: .payment,
+            hazardReason: "Blocked payment action 'Оплатить'",
+            currentHash: 0xAAAA,
+            targetHash: 0xBBBB,
+            stepsCompleted: 2,
+            tapX: 540,
+            tapY: 2000
+        )))
+        XCTAssertFalse(hitlRes.isError)
+        let hitlText = hitlRes.content.compactMap { block -> String? in
+            if case .text(let value) = block { return value }
+            return nil
+        }.joined()
+        XCTAssertTrue(hitlText.contains(#""status":"requires_confirmation""#))
+        XCTAssertTrue(hitlText.contains(#""hazard_category":"payment""#))
+        XCTAssertTrue(hitlText.contains(#""blocked_step_index":2"#))
+
+        let secureRes = AndroidMCPTools.formatNavigationOutcome(.secureScreenTimeout(
+            reason: "biometric_prompt",
+            activePackage: "com.bank",
+            timeoutSeconds: 60
+        ))
+        XCTAssertTrue(secureRes.isError)
+        let secureText = secureRes.content.compactMap { block -> String? in
+            if case .text(let value) = block { return value }
+            return nil
+        }.joined()
+        XCTAssertTrue(secureText.contains(#""status":"secure_screen_active""#))
+        XCTAssertTrue(secureText.contains(#""SECURE_SCREEN_ACTIVE""#))
     }
 
     func testMultiStepMacroSchemaAutoParametersAndOverrides() throws {
@@ -1989,6 +2025,67 @@ final class AndOnMacTests: XCTestCase {
         XCTAssertEqual(captured.x, 300)
         XCTAssertEqual(captured.y, 1200)
         vm.stopListening()
+    }
+
+    @MainActor
+    func testAgenticHUDTelemetryWaitStatesYellowConfirmationAndBlueBiometrics() async throws {
+        // #8 Color telemetry: Red = autonomous, Yellow = chat/confirmation, Blue = biometrics
+        let vm = AgenticHUDViewModel()
+        let crosshair = AgenticCrosshairNSView(frame: NSRect(x: 0, y: 0, width: 400, height: 800))
+
+        let action = AttributedUIAction(kind: .tap, targetDescription: "Оплатить", x: 540, y: 1900)
+        vm.handle(event: .willExecuteAction(stepIndex: 0, totalSteps: 2, action: action))
+        XCTAssertEqual(vm.telemetryMode, .autonomous)
+        XCTAssertEqual(vm.toastPhase, .executing)
+        XCTAssertEqual(vm.activeReticle?.telemetryMode, .autonomous)
+        crosshair.update(reticle: vm.activeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertEqual(crosshair.currentTelemetryModeForTesting, .autonomous)
+        XCTAssertTrue(crosshair.isShowingTapReticleForTesting)
+
+        // Yellow: awaiting confirmation (persists past normal auto-clear duration)
+        vm.handle(event: .awaitingConfirmation(stepIndex: 1, totalSteps: 2, action: action, reason: "Blocked payment action"))
+        XCTAssertEqual(vm.telemetryMode, .awaitingUserInput)
+        XCTAssertEqual(vm.toastPhase, .awaitingConfirmation)
+        XCTAssertEqual(vm.activeReticle?.telemetryMode, .awaitingUserInput)
+        crosshair.update(reticle: vm.activeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertEqual(crosshair.currentTelemetryModeForTesting, .awaitingUserInput)
+
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNotNil(vm.activeReticle, "Yellow confirmation reticle must stay visible while awaiting user input")
+
+        // Yellow: awaiting chat input
+        vm.handle(event: .awaitingChatInput(prompt: "Enter verification code", focusX: 540, focusY: 1200))
+        XCTAssertEqual(vm.telemetryMode, .awaitingUserInput)
+        XCTAssertEqual(vm.toastPhase, .awaitingConfirmation)
+
+        // Blue: FLAG_SECURE / biometrics via WireSecureScreenPayload
+        vm.handleSecureScreen(WireSecureScreenPayload(
+            code: "SECURE_SCREEN_ACTIVE",
+            active: true,
+            reason: "biometric_prompt",
+            activePackage: "com.bank",
+            timestampMs: 1000
+        ))
+        XCTAssertEqual(vm.telemetryMode, .awaitingBiometrics)
+        XCTAssertEqual(vm.toastPhase, .awaitingBiometrics)
+        XCTAssertEqual(vm.activeReticle?.telemetryMode, .awaitingBiometrics)
+        XCTAssertEqual(vm.activeReticle?.isCenteredIndicator, true)
+        crosshair.update(reticle: vm.activeReticle, deviceWidth: 1080, deviceHeight: 2400)
+        XCTAssertEqual(crosshair.currentTelemetryModeForTesting, .awaitingBiometrics)
+
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertNotNil(vm.activeReticle, "Blue biometrics reticle must stay visible until unlock")
+
+        vm.handleSecureScreen(WireSecureScreenPayload(
+            code: "SECURE_SCREEN_CLEARED",
+            active: false,
+            reason: "tree_restored",
+            activePackage: "com.bank",
+            timestampMs: 2000
+        ))
+        XCTAssertEqual(vm.telemetryMode, .autonomous)
+        XCTAssertEqual(vm.toastPhase, .idle)
+        XCTAssertNil(vm.activeReticle)
     }
 
     func testADBServiceParseDisplaySizeHandlesPhysicalOverrideAndInvalidOutput() {

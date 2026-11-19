@@ -11,6 +11,9 @@ public actor ShadowDOMState {
     public private(set) var isDisconnected: Bool = true
     public private(set) var hasSessionSnapshot: Bool = false
     public private(set) var resyncRequestCount: UInt64 = 0
+    public private(set) var isSecureScreenActive: Bool = false
+    public private(set) var secureScreenReason: String?
+    public private(set) var secureScreenPackage: String = ""
 
     private let resyncHandler: (@Sendable () async -> Void)?
     private let resyncCooldownSeconds: TimeInterval
@@ -58,6 +61,8 @@ public actor ShadowDOMState {
     private nonisolated let snapshotCache = SnapshotCacheBox()
     private var updateContinuations: [UUID: AsyncStream<ShadowDOMUpdate>.Continuation] = [:]
     private var snapshotWaiters: [UUID: CheckedContinuation<ShadowTreeIndex?, Never>] = [:]
+    private var secureScreenContinuations: [UUID: AsyncStream<WireSecureScreenPayload>.Continuation] = [:]
+    private var secureClearedWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     public init(
         resyncCooldownSeconds: TimeInterval = 0.25,
@@ -74,6 +79,17 @@ public actor ShadowDOMState {
             updateContinuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeUpdateContinuation(id) }
+            }
+        }
+    }
+
+    /// Broadcast stream of `FLAG_SECURE` / biometric handoff state transitions.
+    public var secureScreenUpdates: AsyncStream<WireSecureScreenPayload> {
+        AsyncStream { continuation in
+            let id = UUID()
+            secureScreenContinuations[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeSecureScreenContinuation(id) }
             }
         }
     }
@@ -103,6 +119,39 @@ public actor ShadowDOMState {
             currentIndex = index
             syncSnapshotCache()
             fulfillSnapshotWaiters(with: index)
+
+            if let explicitSecure = snap.secureScreenActive {
+                if explicitSecure && !isSecureScreenActive {
+                    isSecureScreenActive = true
+                    secureScreenReason = snap.nodes.isEmpty ? "flag_secure_null_root" : "biometric_prompt"
+                    secureScreenPackage = snap.activePackage
+                } else if !explicitSecure && isSecureScreenActive {
+                    isSecureScreenActive = false
+                    secureScreenReason = nil
+                    secureScreenPackage = snap.activePackage
+                    broadcastSecureScreen(WireSecureScreenPayload(
+                        code: "SECURE_SCREEN_CLEARED",
+                        active: false,
+                        reason: "tree_restored",
+                        activePackage: snap.activePackage,
+                        timestampMs: snap.timestampMs
+                    ))
+                    fulfillSecureClearedWaiters(with: true)
+                }
+            } else if !snap.nodes.isEmpty && isSecureScreenActive {
+                isSecureScreenActive = false
+                secureScreenReason = nil
+                secureScreenPackage = snap.activePackage
+                broadcastSecureScreen(WireSecureScreenPayload(
+                    code: "SECURE_SCREEN_CLEARED",
+                    active: false,
+                    reason: "tree_restored",
+                    activePackage: snap.activePackage,
+                    timestampMs: snap.timestampMs
+                ))
+                fulfillSecureClearedWaiters(with: true)
+            }
+
             let update = ShadowDOMUpdate(
                 index: index,
                 isFullSnapshot: true,
@@ -110,7 +159,8 @@ public actor ShadowDOMState {
                 updatedCount: 0,
                 removedCount: 0,
                 eventType: nil,
-                eventPackage: nil
+                eventPackage: nil,
+                isSecureScreenActive: isSecureScreenActive
             )
             broadcastUpdate(update)
 
@@ -162,6 +212,20 @@ public actor ShadowDOMState {
             syncSnapshotCache()
             fulfillSnapshotWaiters(with: nextIndex)
 
+            if !nextIndex.orderedNodes.isEmpty && isSecureScreenActive {
+                isSecureScreenActive = false
+                secureScreenReason = nil
+                secureScreenPackage = diff.activePackage
+                broadcastSecureScreen(WireSecureScreenPayload(
+                    code: "SECURE_SCREEN_CLEARED",
+                    active: false,
+                    reason: "tree_restored",
+                    activePackage: diff.activePackage,
+                    timestampMs: diff.timestampMs
+                ))
+                fulfillSecureClearedWaiters(with: true)
+            }
+
             let update = ShadowDOMUpdate(
                 index: nextIndex,
                 isFullSnapshot: false,
@@ -169,7 +233,8 @@ public actor ShadowDOMState {
                 updatedCount: diff.updated.count,
                 removedCount: diff.removed.count,
                 eventType: diff.eventType,
-                eventPackage: diff.eventPackage
+                eventPackage: diff.eventPackage,
+                isSecureScreenActive: isSecureScreenActive
             )
             broadcastUpdate(update)
 
@@ -190,6 +255,17 @@ public actor ShadowDOMState {
                 isDisconnected = false
                 syncSnapshotCache()
             }
+
+        case .secureScreen(let payload):
+            lastReceivedAt = now
+            isDisconnected = false
+            isSecureScreenActive = payload.active
+            secureScreenReason = payload.active ? payload.reason : nil
+            secureScreenPackage = payload.activePackage
+            broadcastSecureScreen(payload)
+            if !payload.active {
+                fulfillSecureClearedWaiters(with: true)
+            }
         }
     }
 
@@ -197,8 +273,11 @@ public actor ShadowDOMState {
     public func markDisconnected() {
         isDisconnected = true
         hasSessionSnapshot = false
+        isSecureScreenActive = false
+        secureScreenReason = nil
         syncSnapshotCache()
         fulfillSnapshotWaiters(with: nil)
+        fulfillSecureClearedWaiters(with: false)
     }
 
     public func reset() {
@@ -210,8 +289,12 @@ public actor ShadowDOMState {
         isDisconnected = true
         hasSessionSnapshot = false
         lastResyncRequestedAt = nil
+        isSecureScreenActive = false
+        secureScreenReason = nil
+        secureScreenPackage = ""
         syncSnapshotCache()
         fulfillSnapshotWaiters(with: nil)
+        fulfillSecureClearedWaiters(with: false)
     }
 
     // MARK: - Instant Non-Blocking Read APIs
@@ -427,6 +510,39 @@ public actor ShadowDOMState {
         }
     }
 
+    /// Waits up to `timeoutSeconds` until `isSecureScreenActive` clears (returns `true` if cleared, `false` on timeout/disconnect).
+    public func waitUntilSecureScreenCleared(timeoutSeconds: TimeInterval = 60.0) async -> Bool {
+        if !isSecureScreenActive {
+            return true
+        }
+        guard timeoutSeconds > 0 else { return false }
+
+        let waiterId = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if !self.isSecureScreenActive {
+                    continuation.resume(returning: true)
+                    return
+                }
+                if self.isDisconnected {
+                    continuation.resume(returning: false)
+                    return
+                }
+                self.secureClearedWaiters[waiterId] = continuation
+
+                Task { [weak self] in
+                    let ns = UInt64(max(0.001, timeoutSeconds) * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: ns)
+                    await self?.resolveSecureClearedWaiter(id: waiterId, cleared: false)
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.resolveSecureClearedWaiter(id: waiterId, cleared: false)
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func triggerResyncIfNeeded(now: Date) async {
@@ -453,6 +569,20 @@ public actor ShadowDOMState {
         }
     }
 
+    private func resolveSecureClearedWaiter(id: UUID, cleared: Bool) {
+        guard let cont = secureClearedWaiters.removeValue(forKey: id) else { return }
+        cont.resume(returning: cleared)
+    }
+
+    private func fulfillSecureClearedWaiters(with cleared: Bool) {
+        guard !secureClearedWaiters.isEmpty else { return }
+        let waiters = Array(secureClearedWaiters.values)
+        secureClearedWaiters.removeAll()
+        for cont in waiters {
+            cont.resume(returning: cleared)
+        }
+    }
+
     private func broadcastUpdate(_ update: ShadowDOMUpdate) {
         for cont in updateContinuations.values {
             cont.yield(update)
@@ -461,6 +591,16 @@ public actor ShadowDOMState {
 
     private func removeUpdateContinuation(_ id: UUID) {
         updateContinuations.removeValue(forKey: id)
+    }
+
+    private func broadcastSecureScreen(_ payload: WireSecureScreenPayload) {
+        for cont in secureScreenContinuations.values {
+            cont.yield(payload)
+        }
+    }
+
+    private func removeSecureScreenContinuation(_ id: UUID) {
+        secureScreenContinuations.removeValue(forKey: id)
     }
 
     private func bestCandidate(in candidates: [ShadowUINode], preferClickable: Bool) -> ShadowUINode? {

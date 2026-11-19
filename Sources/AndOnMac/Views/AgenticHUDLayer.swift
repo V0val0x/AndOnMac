@@ -103,6 +103,12 @@ public enum AgenticHUDCoordinateMapper {
 
 // MARK: - HUD State & MacroExecutionEngine Stream Listener
 
+public enum AgenticHUDTelemetryMode: Equatable, Sendable {
+    case autonomous          // Red (#FF3B30) — autonomous A* routing & execution
+    case awaitingUserInput   // Yellow (#FFCC00) — waiting for chat confirmation or text input
+    case awaitingBiometrics  // Blue (#0A84FF) — waiting for manual biometrics / PIN (FLAG_SECURE)
+}
+
 public struct AgenticTargetReticle: Equatable, Sendable {
     public let id: UUID
     public let x: Int
@@ -111,6 +117,8 @@ public struct AgenticTargetReticle: Equatable, Sendable {
     public let startY: Int?
     public let kind: AttributedUIAction.Kind
     public let label: String
+    public let telemetryMode: AgenticHUDTelemetryMode
+    public let isCenteredIndicator: Bool
 
     public init(
         id: UUID = UUID(),
@@ -119,7 +127,9 @@ public struct AgenticTargetReticle: Equatable, Sendable {
         startX: Int? = nil,
         startY: Int? = nil,
         kind: AttributedUIAction.Kind,
-        label: String = ""
+        label: String = "",
+        telemetryMode: AgenticHUDTelemetryMode = .autonomous,
+        isCenteredIndicator: Bool = false
     ) {
         self.id = id
         self.x = x
@@ -128,12 +138,16 @@ public struct AgenticTargetReticle: Equatable, Sendable {
         self.startY = startY
         self.kind = kind
         self.label = label
+        self.telemetryMode = telemetryMode
+        self.isCenteredIndicator = isCenteredIndicator
     }
 }
 
 public enum AgenticToastPhase: Equatable, Sendable {
     case idle
     case executing
+    case awaitingConfirmation
+    case awaitingBiometrics
     case completed
     case failed
 }
@@ -143,6 +157,7 @@ public final class AgenticHUDViewModel: ObservableObject {
     @Published public private(set) var toastTitle: String?
     @Published public private(set) var toastSubtitle: String?
     @Published public private(set) var toastPhase: AgenticToastPhase = .idle
+    @Published public private(set) var telemetryMode: AgenticHUDTelemetryMode = .autonomous
     @Published public private(set) var activeReticle: AgenticTargetReticle?
     @Published public private(set) var prefersTopToastDock: Bool = false
 
@@ -202,6 +217,7 @@ public final class AgenticHUDViewModel: ObservableObject {
         case .pathComputed(let totalSteps, let targetHint):
             toastDismissTask?.cancel()
             lastPathComputedStepCount = totalSteps
+            telemetryMode = .autonomous
             let unit = totalSteps == 1 ? "step" : "steps"
             toastTitle = "🤖 A* Path Computed: \(totalSteps) \(unit). Executing..."
             toastSubtitle = targetHint?.isEmpty == false ? "Target: \(targetHint!)" : nil
@@ -210,6 +226,7 @@ public final class AgenticHUDViewModel: ObservableObject {
 
         case .executionStarted(let totalSteps):
             toastDismissTask?.cancel()
+            telemetryMode = .autonomous
             if toastPhase != .executing || lastPathComputedStepCount != totalSteps {
                 let unit = totalSteps == 1 ? "step" : "steps"
                 toastTitle = "🤖 A* Path Computed: \(totalSteps) \(unit). Executing..."
@@ -219,6 +236,7 @@ public final class AgenticHUDViewModel: ObservableObject {
 
         case .willExecuteAction(let stepIndex, let totalSteps, let action):
             toastDismissTask?.cancel()
+            telemetryMode = .autonomous
             let actionVerb = (action.kind == .swipe) ? "Scrolling" : "A* Routing"
             toastTitle = "🤖 Step \(stepIndex + 1)/\(totalSteps) · \(actionVerb)"
             let label = action.targetDescription.isEmpty ? action.signature : action.targetDescription
@@ -232,20 +250,113 @@ public final class AgenticHUDViewModel: ObservableObject {
                     startX: action.x,
                     startY: action.y,
                     kind: action.kind,
-                    label: label
+                    label: label,
+                    telemetryMode: .autonomous
                 ))
             } else {
                 prefersTopToastDock = false
             }
 
         case .stepSettled:
-            scheduleReticleClear(afterSeconds: 0.08)
+            if telemetryMode == .autonomous {
+                scheduleReticleClear(afterSeconds: 0.08)
+            }
+
+        case .awaitingConfirmation(let stepIndex, let totalSteps, let action, let reason):
+            reticleClearTask?.cancel()
+            toastDismissTask?.cancel()
+            lastPathComputedStepCount = nil
+            telemetryMode = .awaitingUserInput
+            toastPhase = .awaitingConfirmation
+            toastTitle = "⚠️ Confirm in Chat (\(stepIndex + 1)/\(totalSteps))"
+            toastSubtitle = reason
+            let label = action.targetDescription.isEmpty ? action.signature : action.targetDescription
+            if let coords = AgenticHUDCoordinateMapper.targetCoordinates(for: action) {
+                activeReticle = AgenticTargetReticle(
+                    x: coords.x,
+                    y: coords.y,
+                    startX: action.x,
+                    startY: action.y,
+                    kind: .tap,
+                    label: label,
+                    telemetryMode: .awaitingUserInput
+                )
+            } else {
+                activeReticle = AgenticTargetReticle(
+                    x: 0,
+                    y: 0,
+                    kind: .tap,
+                    label: label,
+                    telemetryMode: .awaitingUserInput,
+                    isCenteredIndicator: true
+                )
+            }
+
+        case .awaitingChatInput(let prompt, let focusX, let focusY):
+            reticleClearTask?.cancel()
+            toastDismissTask?.cancel()
+            telemetryMode = .awaitingUserInput
+            toastPhase = .awaitingConfirmation
+            toastTitle = "💬 Waiting for Chat Input"
+            toastSubtitle = prompt
+            if let fx = focusX, let fy = focusY {
+                activeReticle = AgenticTargetReticle(
+                    x: fx,
+                    y: fy,
+                    kind: .tap,
+                    label: prompt,
+                    telemetryMode: .awaitingUserInput
+                )
+            } else {
+                activeReticle = AgenticTargetReticle(
+                    x: 0,
+                    y: 0,
+                    kind: .tap,
+                    label: prompt,
+                    telemetryMode: .awaitingUserInput,
+                    isCenteredIndicator: true
+                )
+            }
+
+        case .awaitingBiometrics(let reason, let activePackage):
+            reticleClearTask?.cancel()
+            toastDismissTask?.cancel()
+            telemetryMode = .awaitingBiometrics
+            toastPhase = .awaitingBiometrics
+            toastTitle = "🔒 Biometrics / PIN Required"
+            toastSubtitle = activePackage.isEmpty ? reason : "\(activePackage) · Unlock on phone"
+            prefersTopToastDock = false
+            activeReticle = AgenticTargetReticle(
+                x: 0,
+                y: 0,
+                kind: .tap,
+                label: reason,
+                telemetryMode: .awaitingBiometrics,
+                isCenteredIndicator: true
+            )
+
+        case .biometricsCleared:
+            reticleClearTask?.cancel()
+            toastDismissTask?.cancel()
+            telemetryMode = .autonomous
+            if toastPhase == .awaitingBiometrics {
+                activeReticle = nil
+                toastTitle = nil
+                toastSubtitle = nil
+                toastPhase = .idle
+            }
+
+        case .recoveryAction(_, let detail):
+            if toastPhase == .executing {
+                toastSubtitle = "Auto-recovery: \(detail)"
+            }
 
         case .completed(let report):
             lastPathComputedStepCount = nil
+            telemetryMode = .autonomous
             let unit = report.steps.count == 1 ? "step" : "steps"
             toastTitle = "🤖 Arrived in \(report.totalElapsedMs)ms (\(report.steps.count) \(unit))"
-            toastSubtitle = nil
+            toastSubtitle = report.recoveredSteps.isEmpty ? nil : "Recovered: \(report.recoveredSteps.count)"
             toastPhase = .completed
             prefersTopToastDock = false
             scheduleReticleClear(afterSeconds: 0.16)
@@ -253,12 +364,21 @@ public final class AgenticHUDViewModel: ObservableObject {
 
         case .failed(let message):
             lastPathComputedStepCount = nil
+            telemetryMode = .autonomous
             toastTitle = "🤖 Path Execution Stopped"
             toastSubtitle = message
             toastPhase = .failed
             prefersTopToastDock = false
             scheduleReticleClear(afterSeconds: 0.25)
             scheduleToastDismiss(afterSeconds: 3.5)
+        }
+    }
+
+    public func handleSecureScreen(_ payload: WireSecureScreenPayload) {
+        if payload.active {
+            handle(event: .awaitingBiometrics(reason: payload.reason, activePackage: payload.activePackage))
+        } else {
+            handle(event: .biometricsCleared)
         }
     }
 
@@ -269,12 +389,18 @@ public final class AgenticHUDViewModel: ObservableObject {
         toastTitle = nil
         toastSubtitle = nil
         toastPhase = .idle
+        telemetryMode = .autonomous
         prefersTopToastDock = false
         lastPathComputedStepCount = nil
     }
 
     public func updateToastDocking(deviceHeight: Int, inputHeight: Int?) {
-        guard toastPhase == .executing, let reticle = activeReticle else { return }
+        guard (toastPhase == .executing || toastPhase == .awaitingConfirmation),
+              let reticle = activeReticle,
+              !reticle.isCenteredIndicator else {
+            prefersTopToastDock = false
+            return
+        }
         let refHeight = CGFloat(max(1, inputHeight ?? deviceHeight))
         let endNY = CGFloat(reticle.y) / refHeight
         let startNY = reticle.startY.map { CGFloat($0) / refHeight } ?? endNY
@@ -363,6 +489,7 @@ public final class AgenticCrosshairNSView: NSView {
 
     private var currentReticle: AgenticTargetReticle?
     private var currentReticleId: UUID?
+    private var activeTelemetryMode: AgenticHUDTelemetryMode = .autonomous
     private var deviceWidth: Int = 1080
     private var deviceHeight: Int = 2400
     private var inputWidth: Int?
@@ -383,6 +510,10 @@ public final class AgenticCrosshairNSView: NSView {
 
     public var isShowingSwipeVectorForTesting: Bool {
         !swipeLineLayer.isHidden && !swipeArrowLayer.isHidden && !swipeStartDotLayer.isHidden
+    }
+
+    public var currentTelemetryModeForTesting: AgenticHUDTelemetryMode {
+        activeTelemetryMode
     }
 
     override public init(frame frameRect: NSRect) {
@@ -538,12 +669,13 @@ public final class AgenticCrosshairNSView: NSView {
             return
         }
 
-        let isNewReticle = (reticle.id != currentReticleId)
+        let isNewReticle = (reticle.id != currentReticleId) || (reticle.telemetryMode != activeTelemetryMode)
         currentReticleId = reticle.id
+        activeTelemetryMode = reticle.telemetryMode
         positionLayers(for: reticle)
 
         if isNewReticle {
-            start120HzPulseAnimations(isSwipe: isSwipeVector(reticle))
+            start120HzPulseAnimations(isSwipe: isSwipeVector(reticle), mode: reticle.telemetryMode)
         }
     }
 
@@ -582,19 +714,60 @@ public final class AgenticCrosshairNSView: NSView {
         CATransaction.commit()
     }
 
+    private func applyTelemetryPalette(_ mode: AgenticHUDTelemetryMode) {
+        let primaryColor: NSColor
+        let haloFill: NSColor
+        let innerFill: NSColor
+
+        switch mode {
+        case .autonomous:
+            primaryColor = NSColor(srgbRed: 1.0, green: 0.23, blue: 0.19, alpha: 1.0)
+            haloFill = primaryColor.withAlphaComponent(0.16)
+            innerFill = primaryColor.withAlphaComponent(0.10)
+        case .awaitingUserInput:
+            primaryColor = NSColor(srgbRed: 1.0, green: 0.80, blue: 0.0, alpha: 1.0)
+            haloFill = primaryColor.withAlphaComponent(0.20)
+            innerFill = primaryColor.withAlphaComponent(0.14)
+        case .awaitingBiometrics:
+            primaryColor = NSColor(srgbRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
+            haloFill = primaryColor.withAlphaComponent(0.20)
+            innerFill = primaryColor.withAlphaComponent(0.14)
+        }
+
+        let cgPrimary = primaryColor.cgColor
+        pulseHaloLayer.fillColor = haloFill.cgColor
+        pulseHaloLayer.strokeColor = cgPrimary
+        innerRingLayer.fillColor = innerFill.cgColor
+        innerRingLayer.strokeColor = cgPrimary
+        innerRingLayer.shadowColor = cgPrimary
+        crosshairLayer.strokeColor = cgPrimary
+        centerDotLayer.fillColor = cgPrimary
+    }
+
     private func positionLayers(for reticle: AgenticTargetReticle) {
-        let targetPt = AgenticHUDCoordinateMapper.viewPoint(
-            deviceX: reticle.x,
-            deviceY: reticle.y,
-            in: bounds.size,
-            videoWidth: deviceWidth,
-            videoHeight: deviceHeight,
-            inputWidth: inputWidth,
-            inputHeight: inputHeight
-        )
+        let targetPt: CGPoint
+        if reticle.isCenteredIndicator {
+            let vRect = AgenticHUDCoordinateMapper.videoRect(
+                in: bounds.size,
+                deviceWidth: deviceWidth,
+                deviceHeight: deviceHeight
+            )
+            targetPt = CGPoint(x: vRect.midX, y: vRect.midY)
+        } else {
+            targetPt = AgenticHUDCoordinateMapper.viewPoint(
+                deviceX: reticle.x,
+                deviceY: reticle.y,
+                in: bounds.size,
+                videoWidth: deviceWidth,
+                videoHeight: deviceHeight,
+                inputWidth: inputWidth,
+                inputHeight: inputHeight
+            )
+        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        applyTelemetryPalette(reticle.telemetryMode)
 
         if isSwipeVector(reticle), let sx = reticle.startX, let sy = reticle.startY {
             // Render a directional swipe trajectory + chevron instead of a tap crosshair at endPt
@@ -678,7 +851,7 @@ public final class AgenticCrosshairNSView: NSView {
         CATransaction.commit()
     }
 
-    private func start120HzPulseAnimations(isSwipe: Bool) {
+    private func start120HzPulseAnimations(isSwipe: Bool, mode: AgenticHUDTelemetryMode) {
         pulseHaloLayer.removeAllAnimations()
         innerRingLayer.removeAllAnimations()
         reticleContainerLayer.removeAllAnimations()
@@ -709,7 +882,7 @@ public final class AgenticCrosshairNSView: NSView {
             return
         }
 
-        // Outer ripple ring expansion (120Hz)
+        // Outer ripple ring expansion (120Hz) — repeat continuously while awaiting chat/biometrics
         let haloScale = CABasicAnimation(keyPath: "transform.scale")
         haloScale.fromValue = 0.55
         haloScale.toValue = 2.10
@@ -720,8 +893,8 @@ public final class AgenticCrosshairNSView: NSView {
 
         let haloGroup = CAAnimationGroup()
         haloGroup.animations = [haloScale, haloOpacity]
-        haloGroup.duration = 0.62
-        haloGroup.repeatCount = 2
+        haloGroup.duration = mode == .autonomous ? 0.62 : 1.05
+        haloGroup.repeatCount = mode == .autonomous ? 2 : .infinity
         haloGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
         haloGroup.isRemovedOnCompletion = false
         haloGroup.fillMode = .forwards
@@ -768,6 +941,8 @@ public struct AgenticStatusToastView: View {
     private var accentColor: Color {
         switch phase {
         case .executing: return Color(nsColor: .systemRed)
+        case .awaitingConfirmation: return Color(nsColor: .systemYellow)
+        case .awaitingBiometrics: return Color(nsColor: .systemBlue)
         case .completed: return Color(nsColor: .systemGreen)
         case .failed: return Color(nsColor: .systemOrange)
         case .idle: return .secondary
@@ -856,7 +1031,7 @@ public struct AgenticHUDLayer: View {
     }
 
     private var shouldDockToastAtTop: Bool {
-        viewModel.toastPhase == .executing && viewModel.prefersTopToastDock
+        (viewModel.toastPhase == .executing || viewModel.toastPhase == .awaitingConfirmation) && viewModel.prefersTopToastDock
     }
 
     public var body: some View {
