@@ -412,12 +412,26 @@ object DaemonMain {
                             }
                         }
                         is InboundCommand.Unknown -> {
+                            val nowMs = System.currentTimeMillis()
+                            if (command.id != null && (command.cmd == "tap" || command.cmd == "swipe" || command.cmd == "keyevent")) {
+                                server.sendInputResult(
+                                    session,
+                                    WireInputResult(
+                                        id = command.id,
+                                        cmd = command.cmd,
+                                        ok = false,
+                                        error = command.reason,
+                                        elapsedMs = 0L,
+                                        timestampMs = nowMs
+                                    )
+                                )
+                            }
                             server.sendError(
                                 session,
                                 WireError(
                                     code = "invalid_command",
                                     message = command.reason,
-                                    timestampMs = System.currentTimeMillis()
+                                    timestampMs = nowMs
                                 )
                             )
                         }

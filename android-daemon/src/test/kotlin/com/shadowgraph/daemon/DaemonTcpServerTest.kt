@@ -340,4 +340,122 @@ class DaemonTcpServerTest {
             server.close()
         }
     }
+
+    @Test
+    fun `preserves queued input_result control frames across diff queue overflow`() {
+        val snap = sampleSnapshot(seq = 1L)
+        val connectedLatch = CountDownLatch(1)
+        val resyncLatch = CountDownLatch(1)
+        val sessionRef = java.util.concurrent.atomic.AtomicReference<ClientSession?>()
+
+        lateinit var server: DaemonTcpServer
+        server = DaemonTcpServer(
+            port = 0,
+            queueCapacity = 3,
+            encoder = NdjsonWireEncoder(),
+            listener = object : DaemonTcpServer.Listener {
+                override fun onClientConnected(session: ClientSession) {
+                    sessionRef.set(session)
+                    connectedLatch.countDown()
+                }
+
+                override fun onCommand(session: ClientSession, command: InboundCommand) {}
+
+                override fun onResyncRequested(session: ClientSession) {
+                    resyncLatch.countDown()
+                    server.sendSnapshot(session, snap, "resync")
+                }
+
+                override fun onServerError(error: Throwable) {}
+            }
+        )
+
+        server.start()
+        try {
+            val client = Socket(InetAddress.getByName("127.0.0.1"), server.boundPort)
+            client.receiveBufferSize = 1024
+            client.soTimeout = 3000
+            try {
+                assertTrue(connectedLatch.await(3, TimeUnit.SECONDS))
+                val session = sessionRef.get()!!
+
+                val largeNodes = (1..200).map { i ->
+                    ShadowNode(
+                        nodeId = i.toLong(),
+                        parentId = null,
+                        windowId = 1,
+                        index = i,
+                        childIndex = i,
+                        depth = 1,
+                        packageName = "com.example",
+                        className = "TextView",
+                        resourceId = "id/$i",
+                        text = "Item $i ".repeat(20),
+                        contentDesc = "",
+                        left = 0,
+                        top = i * 10,
+                        right = 500,
+                        bottom = i * 10 + 50,
+                        clickable = true,
+                        scrollable = false,
+                        editable = false,
+                        focused = false,
+                        checked = false,
+                        enabled = true,
+                        visible = true
+                    )
+                }
+
+                // Enqueue a burst of diffs + a critical input_result ACK + more diffs to trigger overflow
+                for (seq in 2L..25L) {
+                    if (seq == 12L) {
+                        server.sendInputResult(
+                            session,
+                            WireInputResult(
+                                id = 4242L,
+                                cmd = "tap",
+                                ok = true,
+                                elapsedMs = 5L,
+                                timestampMs = 1700000000100L
+                            )
+                        )
+                    }
+                    val diff = TreeDiffResult.IncrementalDiff(
+                        baseSeq = seq - 1,
+                        seq = seq,
+                        timestampMs = 1700000000000L + seq,
+                        activePackage = "com.example",
+                        activeWindowId = 1,
+                        inserted = largeNodes,
+                        updated = emptyList(),
+                        removedIds = emptyList()
+                    )
+                    server.broadcastDiff(diff)
+                }
+
+                assertTrue(resyncLatch.await(3, TimeUnit.SECONDS), "Expected overflow resync to trigger")
+
+                // Drain client frames and verify input_result id=4242 was NEVER dropped by overflow
+                val reader = BufferedReader(InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))
+                var sawInputResult = false
+                var sawResyncSnap = false
+                val deadline = System.currentTimeMillis() + 2500L
+                while (System.currentTimeMillis() < deadline && (!sawInputResult || !sawResyncSnap)) {
+                    val line = reader.readLine() ?: break
+                    if (line.contains("\"type\":\"input_result\"") && line.contains("\"id\":4242")) {
+                        sawInputResult = true
+                    }
+                    if (line.contains("\"type\":\"snapshot\"") && line.contains("\"reason\":\"resync\"")) {
+                        sawResyncSnap = true
+                    }
+                }
+                assertTrue(sawInputResult, "Expected queued input_result id=4242 to survive diff queue overflow")
+                assertTrue(sawResyncSnap, "Expected resync snapshot after diff overflow")
+            } finally {
+                client.close()
+            }
+        } finally {
+            server.close()
+        }
+    }
 }

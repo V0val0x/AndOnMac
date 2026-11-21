@@ -97,4 +97,56 @@ class InputInjectorTest {
             )
         }
     }
+
+    @Test
+    fun `handles zero-distance and short swipes without NaN or primer overshoot`() {
+        // Zero-distance swipe must never divide by zero or produce NaN
+        val zeroSteps = InputInjector.planSwipeSteps(
+            x1 = 540f,
+            y1 = 1200f,
+            x2 = 540f,
+            y2 = 1200f,
+            durationMs = 145L,
+            holdMs = 25L
+        )
+        assertTrue(zeroSteps.all { it.x == 540f && it.y == 1200f && !it.x.isNaN() && !it.y.isNaN() })
+
+        // Short swipe (< 1.5x touch slop primer) must stay monotonically within [1000, 980]
+        val shortSteps = InputInjector.planSwipeSteps(
+            x1 = 540f,
+            y1 = 1000f,
+            x2 = 540f,
+            y2 = 980f,
+            durationMs = 100L,
+            holdMs = 25L
+        )
+        assertTrue(shortSteps.all { it.y in 980f..1000f }, "Short swipe must never overshoot endpoints")
+        assertEquals(980f, shortSteps.last().y)
+    }
+
+    @Test
+    fun `stationary hold step preserves full holdMs even when prior drag move finished late`() {
+        val steps = InputInjector.planSwipeSteps(
+            x1 = 540f,
+            y1 = 1900f,
+            x2 = 540f,
+            y2 = 450f,
+            durationMs = 145L,
+            holdMs = 25L
+        )
+        val finalDrag = steps[steps.size - 3]
+        val holdMove = steps[steps.size - 2]
+
+        // Suppose downTime=1000, and due to CPU/IPC jitter finalDrag actually landed 35ms late at uptime=1180.
+        // Without relative hold anchoring, downTime+170=1170 would skip the hold completely (sleepMs <= 0).
+        val target = InputInjector.computeStepTargetUptimeMs(
+            downTime = 1000L,
+            prevEventTime = 1180L,
+            prevStepOffsetMs = finalDrag.offsetMs,
+            step = holdMove,
+            prevX = finalDrag.x,
+            prevY = finalDrag.y
+        )
+        assertEquals(1205L, target, "Stationary hold must guarantee full 25ms pause after late final drag move")
+    }
 }

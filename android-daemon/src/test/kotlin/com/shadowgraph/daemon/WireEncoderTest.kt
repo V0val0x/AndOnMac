@@ -286,5 +286,19 @@ class WireEncoderTest {
         assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"keyevent\",\"keycode\":0}"))
         assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"keyevent\",\"keycode\":2000}"))
         assertIs<InboundCommand.Unknown>(CommandParser.parseLine("{\"cmd\":\"tap\",\"id\":-5,\"x\":10,\"y\":20}"))
+
+        // Invalid input commands carrying an explicit id preserve (id, cmd) so daemon can reply fail-fast input_result
+        val badTapWithId = assertIs<InboundCommand.Unknown>(
+            CommandParser.parseLine("{\"cmd\":\"tap\",\"id\":777,\"x\":99999,\"y\":10}")
+        )
+        assertEquals(777L, badTapWithId.id)
+        assertEquals("tap", badTapWithId.cmd)
+        assertEquals("missing_or_invalid_x", badTapWithId.reason)
+
+        val badKeyWithId = assertIs<InboundCommand.Unknown>(
+            CommandParser.parseLine("{\"cmd\":\"keyevent\",\"id\":778,\"keycode\":0}")
+        )
+        assertEquals(778L, badKeyWithId.id)
+        assertEquals("keyevent", badKeyWithId.cmd)
     }
 }

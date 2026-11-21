@@ -76,5 +76,10 @@ sealed class InboundCommand {
         val holdMs: Long
     ) : InboundCommand()
     data class Keyevent(val id: Long, val keycode: Int) : InboundCommand()
-    data class Unknown(val raw: String, val reason: String) : InboundCommand()
+    data class Unknown(
+        val raw: String,
+        val reason: String,
+        val id: Long? = null,
+        val cmd: String? = null
+    ) : InboundCommand()
 }

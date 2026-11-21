@@ -16,13 +16,15 @@ fun resolveAndroidSdkRoot(): File {
     val candidates = listOfNotNull(
         System.getenv("ANDROID_HOME"),
         System.getenv("ANDROID_SDK_ROOT"),
-        File(System.getProperty("user.home"), "Library/Android/sdk").absolutePath
+        File(System.getProperty("user.home"), "Library/Android/sdk").absolutePath,
+        File(System.getProperty("user.home"), "Android/Sdk").absolutePath,
+        System.getenv("LOCALAPPDATA")?.let { File(it, "Android/Sdk").absolutePath }
     )
     return candidates
         .map { File(it) }
         .firstOrNull { it.isDirectory }
         ?: throw GradleException(
-            "Android SDK not found. Set ANDROID_HOME or install SDK at ~/Library/Android/sdk"
+            "Android SDK not found. Set ANDROID_HOME or install SDK at ~/Library/Android/sdk or ~/Android/Sdk"
         )
 }
 

@@ -185,12 +185,41 @@ object InputInjector {
         return steps
     }
 
+    /**
+     * Computes the target uptime for [step] during swipe playback.
+     * For stationary terminal hold steps (`MOVE` at the same `(x, y)` with a later `offsetMs`),
+     * guarantees at least `step.offsetMs - prevStepOffsetMs` after `prevEventTime` so mid-swipe
+     * CPU/IPC jitter never truncates or eliminates the zero-fling hold pause.
+     */
+    internal fun computeStepTargetUptimeMs(
+        downTime: Long,
+        prevEventTime: Long,
+        prevStepOffsetMs: Long,
+        step: SwipeStep,
+        prevX: Float,
+        prevY: Float
+    ): Long {
+        val scheduledUptime = downTime + step.offsetMs
+        val isStationaryHold = step.action == STEP_ACTION_MOVE
+            && step.x == prevX
+            && step.y == prevY
+            && step.offsetMs > prevStepOffsetMs
+        return if (isStationaryHold) {
+            max(scheduledUptime, prevEventTime + (step.offsetMs - prevStepOffsetMs))
+        } else {
+            scheduledUptime
+        }
+    }
+
     fun injectTap(uia: UiAutomation, x: Int, y: Int): InputExecutionResult {
         val startNs = System.nanoTime()
+        var downSent = false
+        var upSent = false
+        var downTime = 0L
+        val fx = x.toFloat()
+        val fy = y.toFloat()
         return try {
-            val downTime = SystemClock.uptimeMillis()
-            val fx = x.toFloat()
-            val fy = y.toFloat()
+            downTime = SystemClock.uptimeMillis()
 
             val okDown = injectTouchEvent(uia, downTime, downTime, MotionEvent.ACTION_DOWN, fx, fy, 1.0f, sync = true)
             if (!okDown) {
@@ -200,6 +229,7 @@ object InputInjector {
                     elapsedMs = elapsedMs(startNs)
                 )
             }
+            downSent = true
 
             val upTime = max(downTime, SystemClock.uptimeMillis())
             val okUp = injectTouchEvent(uia, downTime, upTime, MotionEvent.ACTION_UP, fx, fy, 0.0f, sync = true)
@@ -210,6 +240,7 @@ object InputInjector {
                     elapsedMs = elapsedMs(startNs)
                 )
             }
+            upSent = true
 
             InputExecutionResult(ok = true, error = null, elapsedMs = elapsedMs(startNs))
         } catch (t: Throwable) {
@@ -218,6 +249,14 @@ object InputInjector {
                 error = "${t.javaClass.simpleName}: ${t.message ?: "unknown"}",
                 elapsedMs = elapsedMs(startNs)
             )
+        } finally {
+            if (downSent && !upSent) {
+                try {
+                    val cancelTime = max(downTime, SystemClock.uptimeMillis())
+                    injectTouchEvent(uia, downTime, cancelTime, MotionEvent.ACTION_CANCEL, fx, fy, 0.0f, sync = true)
+                } catch (_: Throwable) {
+                }
+            }
         }
     }
 
@@ -249,10 +288,18 @@ object InputInjector {
         return try {
             downTime = SystemClock.uptimeMillis()
             var prevEventTime = downTime
+            var prevStepOffsetMs = 0L
 
             for (step in steps) {
                 if (step.offsetMs > 0L) {
-                    val targetUptime = downTime + step.offsetMs
+                    val targetUptime = computeStepTargetUptimeMs(
+                        downTime = downTime,
+                        prevEventTime = prevEventTime,
+                        prevStepOffsetMs = prevStepOffsetMs,
+                        step = step,
+                        prevX = lastX,
+                        prevY = lastY
+                    )
                     val sleepMs = targetUptime - SystemClock.uptimeMillis()
                     if (sleepMs > 0L) {
                         Thread.sleep(sleepMs)
@@ -261,6 +308,7 @@ object InputInjector {
 
                 val eventTime = max(prevEventTime, SystemClock.uptimeMillis())
                 prevEventTime = eventTime
+                prevStepOffsetMs = step.offsetMs
                 lastX = step.x
                 lastY = step.y
 
@@ -284,7 +332,7 @@ object InputInjector {
                 if (step.action == STEP_ACTION_DOWN && ok) {
                     downSent = true
                 }
-                if (step.action == STEP_ACTION_UP) {
+                if (step.action == STEP_ACTION_UP && ok) {
                     upSent = true
                 }
                 if (!ok) {

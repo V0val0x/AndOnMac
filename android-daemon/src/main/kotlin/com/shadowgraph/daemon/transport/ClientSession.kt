@@ -78,20 +78,26 @@ class ClientSession(
                 return
             }
             if (!queue.offer(frame)) {
-                // Queue is full: evict oldest frame(s) and request snapshot resync if dropping state
-                val evicted = queue.poll()
-                if (evicted != null && (evicted.isDiff || evicted.isSnapshot || frame.isDiff)) {
-                    if (needsResync.compareAndSet(false, true)) {
-                        triggerResync = true
-                    }
-                }
                 if (frame.isDiff) {
-                    // Don't enqueue orphaned diff after overflow; wait for resync snapshot
-                    queue.clear()
+                    // Don't enqueue orphaned diff after overflow; drop only stale state frames
+                    // so control/ACK frames (input_result, hello, pong, secure_screen, error) are never lost.
+                    queue.removeIf { it.isDiff || it.isSnapshot }
                     if (needsResync.compareAndSet(false, true)) {
                         triggerResync = true
                     }
                 } else {
+                    // Prefer evicting the oldest diff/snapshot so control/ACK frames survive bursts.
+                    val stateVictim = queue.firstOrNull { it.isDiff || it.isSnapshot }
+                    val evicted = if (stateVictim != null && queue.remove(stateVictim)) {
+                        stateVictim
+                    } else {
+                        queue.poll()
+                    }
+                    if (evicted != null && (evicted.isDiff || evicted.isSnapshot)) {
+                        if (needsResync.compareAndSet(false, true)) {
+                            triggerResync = true
+                        }
+                    }
                     queue.offer(frame)
                 }
             }

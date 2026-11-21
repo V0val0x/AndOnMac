@@ -72,26 +72,34 @@ object CommandParser {
     }
 
     private fun parseTap(line: String, fields: Map<String, Any?>): InboundCommand {
-        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
-        val x = parseCoord(fields, "x") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x")
-        val y = parseCoord(fields, "y") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y")
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id", cmd = "tap")
+        val replyId = if (fields.containsKey("id") && fields["id"] != null) id else null
+        val x = parseCoord(fields, "x")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_x", id = replyId, cmd = "tap")
+        val y = parseCoord(fields, "y")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_y", id = replyId, cmd = "tap")
         return InboundCommand.Tap(id = id, x = x, y = y)
     }
 
     private fun parseSwipe(line: String, fields: Map<String, Any?>): InboundCommand {
-        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
-        val x1 = parseCoord(fields, "x1") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x1")
-        val y1 = parseCoord(fields, "y1") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y1")
-        val x2 = parseCoord(fields, "x2") ?: return InboundCommand.Unknown(line, "missing_or_invalid_x2")
-        val y2 = parseCoord(fields, "y2") ?: return InboundCommand.Unknown(line, "missing_or_invalid_y2")
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id", cmd = "swipe")
+        val replyId = if (fields.containsKey("id") && fields["id"] != null) id else null
+        val x1 = parseCoord(fields, "x1")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_x1", id = replyId, cmd = "swipe")
+        val y1 = parseCoord(fields, "y1")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_y1", id = replyId, cmd = "swipe")
+        val x2 = parseCoord(fields, "x2")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_x2", id = replyId, cmd = "swipe")
+        val y2 = parseCoord(fields, "y2")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_y2", id = replyId, cmd = "swipe")
 
         val durationMs = if (!fields.containsKey("duration_ms") || fields["duration_ms"] == null) {
             InputInjector.DEFAULT_SWIPE_DURATION_MS
         } else {
             val raw = fields["duration_ms"] as? Long
-                ?: return InboundCommand.Unknown(line, "invalid_duration_ms")
+                ?: return InboundCommand.Unknown(line, "invalid_duration_ms", id = replyId, cmd = "swipe")
             if (raw !in MIN_SWIPE_DURATION_MS..MAX_SWIPE_DURATION_MS) {
-                return InboundCommand.Unknown(line, "duration_ms_out_of_range")
+                return InboundCommand.Unknown(line, "duration_ms_out_of_range", id = replyId, cmd = "swipe")
             }
             raw
         }
@@ -100,9 +108,9 @@ object CommandParser {
             InputInjector.DEFAULT_SWIPE_HOLD_MS
         } else {
             val raw = fields["hold_ms"] as? Long
-                ?: return InboundCommand.Unknown(line, "invalid_hold_ms")
+                ?: return InboundCommand.Unknown(line, "invalid_hold_ms", id = replyId, cmd = "swipe")
             if (raw !in 0L..MAX_SWIPE_HOLD_MS) {
-                return InboundCommand.Unknown(line, "hold_ms_out_of_range")
+                return InboundCommand.Unknown(line, "hold_ms_out_of_range", id = replyId, cmd = "swipe")
             }
             raw
         }
@@ -119,11 +127,12 @@ object CommandParser {
     }
 
     private fun parseKeyevent(line: String, fields: Map<String, Any?>): InboundCommand {
-        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id")
+        val id = parseOptionalId(fields) ?: return InboundCommand.Unknown(line, "invalid_id", cmd = "keyevent")
+        val replyId = if (fields.containsKey("id") && fields["id"] != null) id else null
         val rawCode = fields["keycode"] as? Long
-            ?: return InboundCommand.Unknown(line, "missing_or_invalid_keycode")
+            ?: return InboundCommand.Unknown(line, "missing_or_invalid_keycode", id = replyId, cmd = "keyevent")
         if (rawCode !in MIN_KEYCODE.toLong()..MAX_KEYCODE.toLong()) {
-            return InboundCommand.Unknown(line, "keycode_out_of_range")
+            return InboundCommand.Unknown(line, "keycode_out_of_range", id = replyId, cmd = "keyevent")
         }
         return InboundCommand.Keyevent(id = id, keycode = rawCode.toInt())
     }
