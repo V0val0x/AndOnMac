@@ -88,14 +88,14 @@ public enum AndroidMCPTools {
         ),
         MCPToolDefinition(
             name: "android_keyevent",
-            description: "Send a system navigation or media keyevent (BACK, HOME, RECENTS, ENTER, DELETE, VOLUME_UP, VOLUME_DOWN, WAKEUP).",
+            description: "Send a system navigation or media keyevent (e.g. BACK, HOME, RECENTS/APP_SWITCH, ENTER, DELETE, TAB, SPACE, ESCAPE, VOLUME_UP, VOLUME_DOWN, WAKEUP, KEYCODE_*, or numeric Android keycode).",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "serial": .object(["type": .string("string")]),
                     "key": .object([
                         "type": .string("string"),
-                        "enum": .array([.string("BACK"), .string("HOME"), .string("RECENTS"), .string("ENTER"), .string("DELETE"), .string("VOLUME_UP"), .string("VOLUME_DOWN"), .string("WAKEUP")])
+                        "description": .string("Key name (BACK, HOME, RECENTS, APP_SWITCH, ENTER, DELETE, TAB, SPACE, ESCAPE, VOLUME_UP, VOLUME_DOWN, POWER, WAKEUP, KEYCODE_*) or integer keycode (0-999).")
                     ])
                 ]),
                 "required": .array([.string("key")])
@@ -157,43 +157,47 @@ public enum AndroidMCPTools {
         )
     ]
 
+    private static func requestedSerial(from arguments: [String: MCPJSONValue]) -> String? {
+        arguments["serial"]?.stringValue ?? arguments["device_serial"]?.stringValue
+    }
+
     public static func execute(name: String, arguments: [String: MCPJSONValue]) async -> MCPToolResult {
         do {
             switch name {
             case "android_list_devices":
                 return try await listDevices()
             case "android_get_ui_tree":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 let nodes = try await fetchUITree(serial: serial)
                 return .text(try encodeJSON(nodes))
             case "android_screenshot":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await captureScreenshot(serial: serial)
             case "android_tap_element":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await tapElement(serial: serial, args: arguments)
             case "android_swipe":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await swipe(serial: serial, args: arguments)
             case "android_type_text":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await typeText(serial: serial, args: arguments)
             case "android_keyevent":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await sendKeyevent(serial: serial, args: arguments)
             case "android_launch_app":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await launchApp(serial: serial, args: arguments)
             case "android_get_notifications":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 let output = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "dumpsys", "notification", "--noredact"], timeoutSeconds: 8.0)
                 let items = parseNotifications(from: output)
                 return .text(try encodeJSON(items))
             case "android_navigate_to_node":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await navigateToNode(serial: serial, args: arguments)
             case "android_explore_and_click":
-                let serial = try await resolveSerial(arguments["serial"]?.stringValue)
+                let serial = try await resolveSerial(requestedSerial(from: arguments))
                 return try await exploreAndClick(serial: serial, args: arguments)
             default:
                 return .text("Unknown tool: \(name)", isError: true)
@@ -250,6 +254,14 @@ public enum AndroidMCPTools {
         ) {
             return cached
         }
+        let port = ShadowGraphManager.shared.bridge.client.configuration.port
+        if await ShadowGraphManager.shared.recoverDaemonAndAwaitStream(serial: serial, port: port),
+           let recovered = await ShadowGraphManager.shared.fastCompactTreeIfFresh(
+               maxWaitSeconds: 0.35,
+               maxAgeSeconds: 15.0
+           ) {
+            return recovered
+        }
         var xml = (try? await ADBService.shared.execute(arguments: ["-s", serial, "exec-out", "uiautomator", "dump", "/dev/tty"], timeoutSeconds: 8.0)) ?? ""
         if !xml.contains("<hierarchy") {
             let remoteDump = "/sdcard/window_dump.xml"
@@ -303,9 +315,8 @@ public enum AndroidMCPTools {
         if let x = args["x"]?.intValue, let y = args["y"]?.intValue {
             await ShadowGraphManager.shared.ensureStarted(serial: serial)
             _ = await ShadowGraphManager.shared.bridge.client.waitForHello(maxWaitMs: 150)
-            await ShadowGraphManager.shared.recordAction(
-                AttributedUIAction(kind: .tap, targetDescription: "(\(x),\(y))", x: x, y: y)
-            )
+            let attributed = await ShadowGraphManager.shared.resolveTapAction(atX: x, y: y)
+            await ShadowGraphManager.shared.recordAction(attributed)
             try await ShadowGraphManager.shared.actionExecutor().dispatchTap(serial: serial, x: x, y: y)
             return .text("Tapped at (\(x), \(y)).")
         }
@@ -459,7 +470,7 @@ public enum AndroidMCPTools {
         if !cmd.useClipboard {
             _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "input", "text", cmd.quotedArg], timeoutSeconds: 6.0)
         } else {
-            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", cmd.quotedArg], timeoutSeconds: 4.0)
+            _ = try await ADBService.shared.execute(arguments: ["-s", serial, "shell", "cmd", "clipboard", "set", "text", cmd.quotedArg], timeoutSeconds: 4.0)
             try await executor.dispatchKeyeventCode(serial: serial, keyCode: "279")
         }
 
@@ -469,30 +480,52 @@ public enum AndroidMCPTools {
         return .text("Typed \(text.count) characters\(pressEnter ? " + ENTER" : "").")
     }
 
-    private static func sendKeyevent(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
-        guard let key = args["key"]?.stringValue else {
-            return .text("Missing 'key' parameter.", isError: true)
-        }
+    public static func resolveKeyCode(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !trimmed.isEmpty else { return nil }
+        let normalized = trimmed.hasPrefix("KEYCODE_") ? String(trimmed.dropFirst(8)) : trimmed
         let map: [String: String] = [
             "BACK": "4",
             "HOME": "3",
             "RECENTS": "187",
+            "APP_SWITCH": "187",
             "ENTER": "66",
             "DELETE": "67",
+            "DEL": "67",
+            "TAB": "61",
+            "SPACE": "62",
+            "ESCAPE": "111",
             "VOLUME_UP": "24",
             "VOLUME_DOWN": "25",
+            "POWER": "26",
             "WAKEUP": "224"
         ]
-        guard let code = map[key.uppercased()] else {
+        if let mapped = map[normalized] {
+            return mapped
+        }
+        if normalized.allSatisfy({ $0.isASCII && $0.isNumber }),
+           let numeric = Int(normalized),
+           numeric >= 0 && numeric <= 999 {
+            return String(numeric)
+        }
+        return nil
+    }
+
+    private static func sendKeyevent(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
+        guard let key = args["key"]?.stringValue ?? args["keycode"]?.stringValue else {
+            return .text("Missing 'key' parameter.", isError: true)
+        }
+        guard let code = resolveKeyCode(key) else {
             return .text("Unsupported keyevent: \(key)", isError: true)
         }
+        let displayKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         await ShadowGraphManager.shared.ensureStarted(serial: serial)
         _ = await ShadowGraphManager.shared.bridge.client.waitForHello(maxWaitMs: 150)
         await ShadowGraphManager.shared.recordAction(
-            AttributedUIAction(kind: .keyevent, targetDescription: key.uppercased())
+            AttributedUIAction(kind: .keyevent, targetDescription: displayKey)
         )
         try await ShadowGraphManager.shared.actionExecutor().dispatchKeyeventCode(serial: serial, keyCode: code)
-        return .text("Sent keyevent \(key.uppercased()) (\(code)).")
+        return .text("Sent keyevent \(displayKey) (\(code)).")
     }
 
     private static func launchApp(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {

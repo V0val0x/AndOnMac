@@ -98,7 +98,15 @@ public final class MCPHTTPServer: @unchecked Sendable {
                 let headerData = buffer.subdata(in: buffer.startIndex..<headerRange.lowerBound)
                 let bodyStart = headerRange.upperBound
                 let headerText = String(data: headerData, encoding: .utf8) ?? ""
-                let contentLength = Self.extractContentLength(from: headerText)
+                guard let contentLength = Self.parseContentLength(from: headerText) else {
+                    self.sendHTTPResponse(
+                        connection: connection,
+                        status: "400 Bad Request",
+                        contentType: "application/json",
+                        body: Data("{\"error\":\"Invalid Content-Length\"}".utf8)
+                    )
+                    return
+                }
                 let bodyAvailable = buffer.count - bodyStart
 
                 if bodyAvailable >= contentLength {
@@ -127,16 +135,18 @@ public final class MCPHTTPServer: @unchecked Sendable {
             return
         }
 
-        if let expectedToken = bearerToken, !expectedToken.isEmpty {
-            guard Self.validateBearerToken(headers: headers, expectedToken: expectedToken) else {
-                sendHTTPResponse(connection: connection, status: "401 Unauthorized", contentType: "application/json", body: Data("{\"error\":\"Unauthorized\"}".utf8))
-                return
-            }
-        }
+        let allowedOrigin = Self.validatedLoopbackOrigin(from: headers)
 
         if method == "OPTIONS" {
-            sendHTTPResponse(connection: connection, status: "204 No Content", contentType: "text/plain", body: Data())
+            sendHTTPResponse(connection: connection, status: "204 No Content", contentType: "text/plain", body: Data(), allowedOrigin: allowedOrigin)
             return
+        }
+
+        if let expectedToken = bearerToken, !expectedToken.isEmpty {
+            guard Self.validateBearerToken(headers: headers, expectedToken: expectedToken) else {
+                sendHTTPResponse(connection: connection, status: "401 Unauthorized", contentType: "application/json", body: Data("{\"error\":\"Unauthorized\"}".utf8), allowedOrigin: allowedOrigin)
+                return
+            }
         }
 
         if method == "GET" && path.hasPrefix("/sse") {
@@ -156,9 +166,12 @@ public final class MCPHTTPServer: @unchecked Sendable {
                 }
             }
 
+            let corsHeaders = Self.corsHeaderBlock(for: allowedOrigin)
             let handshake = "HTTP/1.1 200 OK\r\n" +
                 "Content-Type: text/event-stream\r\n" +
                 "Cache-Control: no-cache\r\n" +
+                "X-Content-Type-Options: nosniff\r\n" +
+                corsHeaders +
                 "Connection: keep-alive\r\n\r\n" +
                 "event: endpoint\ndata: /message?sessionId=\(sessionId)\n\n"
             connection.send(content: Data(handshake.utf8), completion: .contentProcessed { _ in })
@@ -175,18 +188,18 @@ public final class MCPHTTPServer: @unchecked Sendable {
                    let jsonString = String(data: respData, encoding: .utf8) {
                     let sseEvent = "event: message\ndata: \(jsonString)\n\n"
                     sseConn.send(content: Data(sseEvent.utf8), completion: .contentProcessed { _ in })
-                    self.sendHTTPResponse(connection: connection, status: "202 Accepted", contentType: "application/json", body: Data("{\"ok\":true}".utf8))
+                    self.sendHTTPResponse(connection: connection, status: "202 Accepted", contentType: "application/json", body: Data("{\"ok\":true}".utf8), allowedOrigin: allowedOrigin)
                 } else if let respData = responseData {
-                    self.sendHTTPResponse(connection: connection, status: "200 OK", contentType: "application/json", body: respData)
+                    self.sendHTTPResponse(connection: connection, status: "200 OK", contentType: "application/json", body: respData, allowedOrigin: allowedOrigin)
                 } else {
-                    self.sendHTTPResponse(connection: connection, status: "202 Accepted", contentType: "application/json", body: Data())
+                    self.sendHTTPResponse(connection: connection, status: "202 Accepted", contentType: "application/json", body: Data(), allowedOrigin: allowedOrigin)
                 }
             }
             return
         }
 
         let health = "{\"server\":\"AndOnMac MCP\",\"protocol\":\"\(MCPServerCore.protocolVersion)\",\"status\":\"running\"}"
-        sendHTTPResponse(connection: connection, status: "200 OK", contentType: "application/json", body: Data(health.utf8))
+        sendHTTPResponse(connection: connection, status: "200 OK", contentType: "application/json", body: Data(health.utf8), allowedOrigin: allowedOrigin)
     }
 
     private func getSSEConnection(for sessionId: String) -> NWConnection? {
@@ -208,11 +221,19 @@ public final class MCPHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func sendHTTPResponse(connection: NWConnection, status: String, contentType: String, body: Data) {
+    private func sendHTTPResponse(
+        connection: NWConnection,
+        status: String,
+        contentType: String,
+        body: Data,
+        allowedOrigin: String? = nil
+    ) {
+        let corsHeaders = Self.corsHeaderBlock(for: allowedOrigin)
         let header = "HTTP/1.1 \(status)\r\n" +
             "Content-Type: \(contentType)\r\n" +
             "Content-Length: \(body.count)\r\n" +
             "X-Content-Type-Options: nosniff\r\n" +
+            corsHeaders +
             "Connection: close\r\n\r\n"
         var full = Data(header.utf8)
         full.append(body)
@@ -221,26 +242,118 @@ public final class MCPHTTPServer: @unchecked Sendable {
         })
     }
 
-    /// Validates `Host` (must be loopback `127.0.0.1` / `localhost` / `[::1]` if present) and `Origin`
-    /// (must be absent or exact loopback host) to block browser CSRF and DNS-rebinding attacks.
-    public static func validateOriginAndHost(headers: String) -> Bool {
+    private static func corsHeaderBlock(for allowedOrigin: String?) -> String {
+        guard let origin = allowedOrigin,
+              !origin.isEmpty,
+              !origin.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+            return ""
+        }
+        return "Access-Control-Allow-Origin: \(origin)\r\n" +
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
+            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n" +
+            "Vary: Origin\r\n"
+    }
+
+    private static func isValidLoopbackHost(_ raw: String) -> Bool {
+        guard !raw.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+            return false
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace || $0 == "@" || $0 == "/" || $0 == "?" || $0 == "#" || $0 == "\\" }) else {
+            return false
+        }
+        let host: String
+        if trimmed.hasPrefix("[") {
+            guard let closeIdx = trimmed.firstIndex(of: "]") else { return false }
+            let inner = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closeIdx])
+            let tail = String(trimmed[trimmed.index(after: closeIdx)...])
+            if !tail.isEmpty {
+                guard tail.hasPrefix(":") else { return false }
+                let portStr = String(tail.dropFirst())
+                guard !portStr.isEmpty,
+                      portStr.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let port = UInt16(portStr), port > 0 else {
+                    return false
+                }
+            }
+            host = inner
+        } else if let colonIdx = trimmed.firstIndex(of: ":") {
+            let portStr = String(trimmed[trimmed.index(after: colonIdx)...])
+            guard !portStr.isEmpty,
+                  portStr.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let port = UInt16(portStr), port > 0 else {
+                return false
+            }
+            host = String(trimmed[..<colonIdx])
+        } else {
+            host = trimmed
+        }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+
+    private static func isValidLoopbackOrigin(_ raw: String) -> Bool {
+        guard !raw.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+            return false
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace || $0 == "@" || $0 == "?" || $0 == "#" || $0 == "\\" }) else {
+            return false
+        }
+        let lower = trimmed.lowercased()
+        let rest: String
+        if lower.hasPrefix("http://") {
+            rest = String(lower.dropFirst("http://".count))
+        } else if lower.hasPrefix("https://") {
+            rest = String(lower.dropFirst("https://".count))
+        } else {
+            return false
+        }
+        // Strict RFC 6454 Origin: scheme://host[:port] only (zero path, query, fragment, or userinfo).
+        guard !rest.contains("/") else { return false }
+        return isValidLoopbackHost(rest)
+    }
+
+    /// Returns the raw `Origin` header value only if present (at most once), single-line, and validated as strict loopback.
+    public static func validatedLoopbackOrigin(from headers: String) -> String? {
+        guard validateOriginAndHost(headers: headers) else { return nil }
         for line in headers.components(separatedBy: "\r\n") {
             let parts = line.split(separator: ":", maxSplits: 1)
             guard parts.count == 2 else { continue }
             let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
-            let val = parts[1].trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "origin" {
+                let raw = parts[1].trimmingCharacters(in: .whitespaces)
+                guard isValidLoopbackOrigin(raw) else { return nil }
+                return raw
+            }
+        }
+        return nil
+    }
+
+    /// Validates `Host` (must be strict loopback `127.0.0.1` / `localhost` / `[::1]` if present, no duplicates)
+    /// and `Origin` (must be absent or strict RFC 6454 loopback `scheme://host[:port]`, no duplicates)
+    /// to block browser CSRF, header injection, and DNS-rebinding attacks.
+    public static func validateOriginAndHost(headers: String) -> Bool {
+        var hostCount = 0
+        var originCount = 0
+        for line in headers.components(separatedBy: "\r\n") {
+            if line.contains("\r") || line.contains("\n") || line.contains("\0") {
+                return false
+            }
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            let rawVal = String(parts[1])
 
             if key == "host" {
-                guard let parsedHost = URL(string: "http://\(val)")?.host?.lowercased(),
-                      parsedHost == "127.0.0.1" || parsedHost == "localhost" || parsedHost == "::1" || parsedHost == "[::1]" else {
+                hostCount += 1
+                if hostCount > 1 || !isValidLoopbackHost(rawVal) {
                     return false
                 }
             } else if key == "origin" {
-                guard let url = URL(string: val),
-                      let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https",
-                      let originHost = url.host?.lowercased(),
-                      originHost == "127.0.0.1" || originHost == "localhost" || originHost == "::1" || originHost == "[::1]" else {
+                originCount += 1
+                if originCount > 1 || !isValidLoopbackOrigin(rawVal) {
                     return false
                 }
             }
@@ -275,15 +388,30 @@ public final class MCPHTTPServer: @unchecked Sendable {
         return diff == 0
     }
 
-    private static func extractContentLength(from headers: String) -> Int {
+    /// Strictly parses `Content-Length`: returns `0` when absent, `nil` on negative, non-numeric,
+    /// conflicting duplicate, or >1 MiB values so malformed requests receive `400 Bad Request`.
+    public static func parseContentLength(from headers: String) -> Int? {
+        var found: Int?
         for line in headers.components(separatedBy: "\r\n") {
-            let lower = line.lowercased()
-            if lower.hasPrefix("content-length:") {
-                let val = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                return max(0, Int(val) ?? 0)
+            let parts = line.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "content-length" {
+                let raw = parts[1].trimmingCharacters(in: .whitespaces)
+                guard !raw.isEmpty,
+                      raw.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let parsed = Int(raw),
+                      parsed >= 0,
+                      parsed <= 1_048_576 else {
+                    return nil
+                }
+                if let prev = found, prev != parsed {
+                    return nil
+                }
+                found = parsed
             }
         }
-        return 0
+        return found ?? 0
     }
 
     private static func extractQueryParam(_ key: String, from path: String) -> String? {

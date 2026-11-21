@@ -38,6 +38,8 @@ public actor SpatialGraphEngine {
     }
 
     public var vertexCount: Int { vertices.count }
+    public var seedVertexCount: Int { vertices.values.filter { $0.isSeed }.count }
+    public var hydratedVertexCount: Int { vertices.values.filter { !$0.isSeed }.count }
     public var edgeCount: Int { outgoingEdges.values.reduce(0) { $0 + $1.count } }
 
     /// Records the user/agent UI action just dispatched so the next significant screen shift labels the edge.
@@ -135,7 +137,8 @@ public actor SpatialGraphEngine {
                 lastTraversedAt: now,
                 isHazardous: existing.isHazardous || hazard.isHazardous,
                 hazardReason: hazard.isHazardous ? hazard.reason : existing.hazardReason,
-                consecutiveFailures: 0
+                consecutiveFailures: 0,
+                isSeed: false
             )
             edges[idx] = updated
             committed = updated
@@ -151,12 +154,478 @@ public actor SpatialGraphEngine {
                 lastTraversedAt: now,
                 isHazardous: hazard.isHazardous,
                 hazardReason: hazard.isHazardous ? hazard.reason : nil,
-                consecutiveFailures: 0
+                consecutiveFailures: 0,
+                isSeed: false
             )
             edges.append(edge)
             committed = edge
         }
         outgoingEdges[fromHash] = edges
+        notifyTopologyChanged()
+        return committed
+    }
+
+    @discardableResult
+    private static func mergeAliases(into dst: inout [String], from src: [String]) -> Int {
+        var added = 0
+        for raw in src {
+            let safe = ScreenLayoutHasher.redactPII(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !safe.isEmpty else { continue }
+            if !dst.contains(where: { $0.caseInsensitiveCompare(safe) == .orderedSame }) {
+                dst.append(safe)
+                added += 1
+            }
+        }
+        return added
+    }
+
+    /// Idempotently merges a Zero-PII cross-device Seed Graph into the engine without overwriting
+    /// existing real vertices or edges and without forcing a disk save until real activity occurs.
+    @discardableResult
+    public func mergeSeedGraph(_ seed: SpatialGraphSnapshot) -> SeedMergeReport {
+        var verticesAdded = 0
+        var edgesAdded = 0
+        var aliasesMerged = 0
+        var seedToCanonical: [UInt64: UInt64] = Dictionary(minimumCapacity: seed.vertices.count)
+
+        for rawVertex in seed.vertices {
+            let sv = ScreenStateVertex(
+                layoutHash: rawVertex.layoutHash,
+                activePackage: rawVertex.activePackage,
+                sampleInteractiveLabels: rawVertex.sampleInteractiveLabels.map { ScreenLayoutHasher.redactPII($0) },
+                semanticTokens: rawVertex.semanticTokens,
+                firstSeenAt: rawVertex.firstSeenAt,
+                lastSeenAt: rawVertex.lastSeenAt,
+                visitCount: 0,
+                discoveryParentHash: rawVertex.discoveryParentHash,
+                discoveryDepth: rawVertex.discoveryDepth,
+                isSeed: true,
+                semanticAliases: rawVertex.semanticAliases.map { ScreenLayoutHasher.redactPII($0) }
+            )
+
+            if var existing = vertices[sv.layoutHash] {
+                aliasesMerged += Self.mergeAliases(into: &existing.semanticAliases, from: sv.semanticAliases)
+                vertices[sv.layoutHash] = existing
+                seedToCanonical[sv.layoutHash] = sv.layoutHash
+                continue
+            }
+
+            // If an already-hydrated real vertex matches this seed screen semantically,
+            // link the seed onto that real vertex and inherit aliases instead of duplicating.
+            var matchingRealHash: UInt64?
+            var bestScore: Double = 0.0
+            var bestVisits: Int = -1
+            for v in vertices.values where !v.isSeed && v.activePackage == sv.activePackage {
+                let score = SeedGraphCatalog.seedMatchScore(realVertex: v, seedVertex: sv)
+                guard score >= SeedGraphCatalog.seedMatchThreshold else { continue }
+                let shouldReplace: Bool
+                if let curHash = matchingRealHash {
+                    shouldReplace = score > bestScore
+                        || (score == bestScore && v.visitCount > bestVisits)
+                        || (score == bestScore && v.visitCount == bestVisits && v.layoutHash < curHash)
+                } else {
+                    shouldReplace = true
+                }
+                if shouldReplace {
+                    matchingRealHash = v.layoutHash
+                    bestScore = score
+                    bestVisits = v.visitCount
+                }
+            }
+
+            if let realHash = matchingRealHash, var realV = vertices[realHash] {
+                aliasesMerged += Self.mergeAliases(into: &realV.semanticAliases, from: sv.semanticAliases)
+                vertices[realHash] = realV
+                seedToCanonical[sv.layoutHash] = realHash
+                continue
+            }
+
+            vertices[sv.layoutHash] = sv
+            seedToCanonical[sv.layoutHash] = sv.layoutHash
+            verticesAdded += 1
+        }
+
+        if rootStateHash == nil, let seedRoot = seed.rootStateHash {
+            let mapped = seedToCanonical[seedRoot] ?? seedRoot
+            if vertices[mapped] != nil {
+                rootStateHash = mapped
+            }
+        }
+
+        for rawEdge in seed.edges {
+            let mappedFrom = seedToCanonical[rawEdge.fromHash] ?? rawEdge.fromHash
+            let mappedTo = seedToCanonical[rawEdge.toHash] ?? rawEdge.toHash
+            guard mappedFrom != mappedTo,
+                  vertices[mappedFrom] != nil,
+                  vertices[mappedTo] != nil else {
+                continue
+            }
+            let redactedAction = rawEdge.action?.redactedForStorage()
+            let redactedSig = ScreenLayoutHasher.redactPII(rawEdge.actionSignature)
+            var edges = outgoingEdges[mappedFrom] ?? []
+            let alreadyCovered = edges.contains { existing in
+                existing.toHash == mappedTo
+                    && (existing.actionSignature == redactedSig || !existing.isSeed)
+            }
+            if alreadyCovered { continue }
+
+            let se = ScreenTransitionEdge(
+                id: rawEdge.id,
+                fromHash: mappedFrom,
+                toHash: mappedTo,
+                action: redactedAction,
+                actionSignature: redactedSig,
+                traversalCount: rawEdge.traversalCount,
+                averageTransitionMs: rawEdge.averageTransitionMs,
+                isSpanningTreeEdge: rawEdge.isSpanningTreeEdge,
+                lastTraversedAt: rawEdge.lastTraversedAt,
+                isHazardous: rawEdge.isHazardous,
+                hazardReason: rawEdge.hazardReason,
+                consecutiveFailures: max(0, rawEdge.consecutiveFailures),
+                isSeed: true
+            )
+            edges.append(se)
+            outgoingEdges[mappedFrom] = edges
+            edgesAdded += 1
+        }
+
+        if verticesAdded > 0 || edgesAdded > 0 {
+            rebuildSpanningDAG()
+        }
+
+        return SeedMergeReport(
+            verticesAdded: verticesAdded,
+            edgesAdded: edgesAdded,
+            aliasesMerged: aliasesMerged
+        )
+    }
+
+    private func bestSeedMatch(for fp: ScreenSemanticFingerprint) -> ScreenStateVertex? {
+        var bestVertex: ScreenStateVertex?
+        var bestScore: Double = 0.0
+        for v in vertices.values where v.isSeed && v.activePackage == fp.activePackage {
+            let score = SeedGraphCatalog.seedMatchScore(liveFingerprint: fp, seedVertex: v)
+            guard score >= SeedGraphCatalog.seedMatchThreshold else { continue }
+            if let cur = bestVertex {
+                if score > bestScore || (score == bestScore && v.layoutHash < cur.layoutHash) {
+                    bestVertex = v
+                    bestScore = score
+                }
+            } else {
+                bestVertex = v
+                bestScore = score
+            }
+        }
+        return bestVertex
+    }
+
+    private func hydrateSeedVertexInner(
+        seedHash: UInt64,
+        liveFingerprint liveFp: ScreenSemanticFingerprint,
+        now: Date,
+        incrementExistingVisit: Bool = true
+    ) -> (realHash: UInt64, changed: Bool) {
+        let realHash = liveFp.layoutHash
+        let isSeedPresent = vertices[seedHash]?.isSeed ?? false
+
+        if !isSeedPresent {
+            if var existing = vertices[realHash] {
+                existing.lastSeenAt = now
+                if incrementExistingVisit {
+                    existing.visitCount = max(0, existing.visitCount) + 1
+                } else {
+                    existing.visitCount = max(1, existing.visitCount)
+                }
+                if existing.semanticTokens.isEmpty && !liveFp.tokens.isEmpty {
+                    existing.semanticTokens = liveFp.tokens
+                }
+                vertices[realHash] = existing
+                return (realHash, false)
+            }
+            let parentHash = currentStateHash.flatMap { $0 != realHash ? $0 : nil }
+            let parentDepth = parentHash.flatMap { vertices[$0]?.discoveryDepth }.map { $0 + 1 } ?? 0
+            vertices[realHash] = ScreenStateVertex(
+                layoutHash: realHash,
+                activePackage: liveFp.activePackage,
+                sampleInteractiveLabels: liveFp.sampleInteractiveLabels,
+                semanticTokens: liveFp.tokens,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                visitCount: 1,
+                discoveryParentHash: parentHash,
+                discoveryDepth: parentDepth,
+                isSeed: false,
+                semanticAliases: []
+            )
+            return (realHash, true)
+        }
+
+        if seedHash == realHash, let old = vertices[seedHash] {
+            vertices[seedHash] = ScreenStateVertex(
+                layoutHash: old.layoutHash,
+                activePackage: liveFp.activePackage,
+                sampleInteractiveLabels: liveFp.sampleInteractiveLabels,
+                semanticTokens: liveFp.tokens,
+                firstSeenAt: old.firstSeenAt,
+                lastSeenAt: now,
+                visitCount: max(0, old.visitCount) + 1,
+                discoveryParentHash: old.discoveryParentHash,
+                discoveryDepth: old.discoveryDepth,
+                isSeed: false,
+                semanticAliases: old.semanticAliases
+            )
+            return (realHash, true)
+        }
+
+        guard let seedVertex = vertices.removeValue(forKey: seedHash) else {
+            return (realHash, false)
+        }
+
+        if let existingReal = vertices[realHash] {
+            var mergedAliases = existingReal.semanticAliases
+            Self.mergeAliases(into: &mergedAliases, from: seedVertex.semanticAliases)
+            let mergedLabels = existingReal.sampleInteractiveLabels.isEmpty
+                ? liveFp.sampleInteractiveLabels
+                : existingReal.sampleInteractiveLabels
+            let mergedTokens = existingReal.semanticTokens.isEmpty && !liveFp.tokens.isEmpty
+                ? liveFp.tokens
+                : existingReal.semanticTokens
+            vertices[realHash] = ScreenStateVertex(
+                layoutHash: existingReal.layoutHash,
+                activePackage: existingReal.activePackage,
+                sampleInteractiveLabels: mergedLabels,
+                semanticTokens: mergedTokens,
+                firstSeenAt: existingReal.firstSeenAt,
+                lastSeenAt: now,
+                visitCount: max(0, existingReal.visitCount) + 1,
+                discoveryParentHash: existingReal.discoveryParentHash,
+                discoveryDepth: existingReal.discoveryDepth,
+                isSeed: false,
+                semanticAliases: mergedAliases
+            )
+        } else {
+            var aliases: [String] = []
+            Self.mergeAliases(into: &aliases, from: seedVertex.semanticAliases)
+            let parent = seedVertex.discoveryParentHash.flatMap { ($0 != realHash && $0 != seedHash) ? $0 : nil }
+            vertices[realHash] = ScreenStateVertex(
+                layoutHash: realHash,
+                activePackage: liveFp.activePackage,
+                sampleInteractiveLabels: liveFp.sampleInteractiveLabels,
+                semanticTokens: liveFp.tokens,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                visitCount: 1,
+                discoveryParentHash: parent,
+                discoveryDepth: seedVertex.discoveryDepth,
+                isSeed: false,
+                semanticAliases: aliases
+            )
+        }
+
+        // Rewire outgoing edges from seedHash -> realHash
+        if let seedOut = outgoingEdges.removeValue(forKey: seedHash) {
+            var destOut = outgoingEdges[realHash] ?? []
+            for edge in seedOut {
+                guard edge.toHash != realHash else { continue }
+                let rewired = ScreenTransitionEdge(
+                    id: edge.id,
+                    fromHash: realHash,
+                    toHash: edge.toHash,
+                    action: edge.action,
+                    actionSignature: edge.actionSignature,
+                    traversalCount: edge.traversalCount,
+                    averageTransitionMs: edge.averageTransitionMs,
+                    isSpanningTreeEdge: edge.isSpanningTreeEdge,
+                    lastTraversedAt: edge.lastTraversedAt,
+                    isHazardous: edge.isHazardous,
+                    hazardReason: edge.hazardReason,
+                    consecutiveFailures: edge.consecutiveFailures,
+                    isSeed: edge.isSeed
+                )
+                let duplicate = destOut.contains { e in
+                    e.toHash == rewired.toHash
+                        && (e.actionSignature == rewired.actionSignature || (!e.isSeed && rewired.isSeed))
+                }
+                if !duplicate {
+                    destOut.append(rewired)
+                }
+            }
+            if !destOut.isEmpty {
+                outgoingEdges[realHash] = destOut
+            }
+        }
+
+        // Rewire incoming edges targeting seedHash -> realHash
+        let fromKeys = Array(outgoingEdges.keys)
+        for fk in fromKeys {
+            guard let edges = outgoingEdges[fk] else { continue }
+            var rewritten: [ScreenTransitionEdge] = []
+            rewritten.reserveCapacity(edges.count)
+            for edge in edges {
+                let target = (edge.toHash == seedHash) ? realHash : edge.toHash
+                guard edge.fromHash != target else { continue }
+                let updatedEdge = ScreenTransitionEdge(
+                    id: edge.id,
+                    fromHash: edge.fromHash,
+                    toHash: target,
+                    action: edge.action,
+                    actionSignature: edge.actionSignature,
+                    traversalCount: edge.traversalCount,
+                    averageTransitionMs: edge.averageTransitionMs,
+                    isSpanningTreeEdge: edge.isSpanningTreeEdge,
+                    lastTraversedAt: edge.lastTraversedAt,
+                    isHazardous: edge.isHazardous,
+                    hazardReason: edge.hazardReason,
+                    consecutiveFailures: edge.consecutiveFailures,
+                    isSeed: edge.isSeed
+                )
+                if let idx = rewritten.firstIndex(where: {
+                    $0.toHash == updatedEdge.toHash && $0.actionSignature == updatedEdge.actionSignature
+                }) {
+                    if rewritten[idx].isSeed && !updatedEdge.isSeed {
+                        rewritten[idx] = updatedEdge
+                    }
+                } else {
+                    rewritten.append(updatedEdge)
+                }
+            }
+            if rewritten.isEmpty {
+                outgoingEdges.removeValue(forKey: fk)
+            } else {
+                outgoingEdges[fk] = rewritten
+            }
+        }
+
+        if rootStateHash == seedHash {
+            rootStateHash = realHash
+        }
+        if currentStateHash == seedHash {
+            currentStateHash = realHash
+        }
+
+        rebuildSpanningDAG()
+        return (realHash, true)
+    }
+
+    /// Promotes a Seed Graph vertex (`isSeed == true`) into a real device-calibrated vertex
+    /// while rewiring all remaining unvisited outgoing/incoming seed edges onto the real hash.
+    @discardableResult
+    public func hydrateSeedVertex(
+        seedHash: UInt64,
+        liveFingerprint: ScreenSemanticFingerprint
+    ) -> UInt64 {
+        let now = Date()
+        let outcome = hydrateSeedVertexInner(seedHash: seedHash, liveFingerprint: liveFingerprint, now: now)
+        if outcome.changed {
+            notifyTopologyChanged()
+        }
+        return outcome.realHash
+    }
+
+    /// Promotes a traversed Seed Graph transition (`from -> to`) into a real, coordinate-calibrated,
+    /// device-specific vertex pair and executable edge (`isSeed: false`), rewiring remaining unvisited
+    /// seed branches onto the newly hydrated real vertices.
+    @discardableResult
+    public func hydrateSeedTransition(
+        fromSeedOrRealHash: UInt64,
+        toSeedOrRealHash: UInt64,
+        realFromFingerprint: ScreenSemanticFingerprint,
+        realToFingerprint: ScreenSemanticFingerprint,
+        resolvedAction: AttributedUIAction,
+        transitionMs: Double
+    ) -> ScreenTransitionEdge? {
+        let now = Date()
+        let redacted = resolvedAction.redactedForStorage()
+        let actionSig = redacted.signature
+        let hazard = HazardousActionClassifier.assess(action: redacted, actionSignature: actionSig)
+
+        let realFromHash = hydrateSeedVertexInner(
+            seedHash: fromSeedOrRealHash,
+            liveFingerprint: realFromFingerprint,
+            now: now,
+            incrementExistingVisit: false
+        ).realHash
+        let realToHash = hydrateSeedVertexInner(
+            seedHash: toSeedOrRealHash,
+            liveFingerprint: realToFingerprint,
+            now: now,
+            incrementExistingVisit: false
+        ).realHash
+
+        if realFromHash == realToHash {
+            currentStateHash = realToHash
+            currentFingerprint = realToFingerprint
+            notifyTopologyChanged()
+            return nil
+        }
+
+        var edges = outgoingEdges[realFromHash] ?? []
+        var removedSpanningSeed = false
+        edges.removeAll { e in
+            let dropEdge = (e.toHash == realToHash && (e.isSeed || (e.action == nil && e.actionSignature == "implicit")))
+            if dropEdge && e.isSpanningTreeEdge {
+                removedSpanningSeed = true
+            }
+            return dropEdge
+        }
+
+        let committed: ScreenTransitionEdge
+        if let idx = edges.firstIndex(where: { $0.toHash == realToHash && $0.actionSignature == actionSig }) {
+            let existing = edges[idx]
+            let justRecordedByLivePump = !existing.isSeed
+                && existing.traversalCount >= 1
+                && abs(now.timeIntervalSince(existing.lastTraversedAt)) < 2.0
+            let newCount: Int
+            let newAvgMs: Double
+            if justRecordedByLivePump {
+                newCount = existing.traversalCount
+                newAvgMs = existing.averageTransitionMs
+            } else {
+                let oldCount = Double(max(0, existing.traversalCount))
+                newCount = max(0, existing.traversalCount) + 1
+                newAvgMs = ((existing.averageTransitionMs * oldCount) + transitionMs) / Double(newCount)
+            }
+            let updated = ScreenTransitionEdge(
+                id: existing.id,
+                fromHash: realFromHash,
+                toHash: realToHash,
+                action: redacted,
+                actionSignature: existing.actionSignature,
+                traversalCount: newCount,
+                averageTransitionMs: newAvgMs,
+                isSpanningTreeEdge: existing.isSpanningTreeEdge,
+                lastTraversedAt: now,
+                isHazardous: existing.isHazardous || hazard.isHazardous,
+                hazardReason: hazard.isHazardous ? hazard.reason : existing.hazardReason,
+                consecutiveFailures: 0,
+                isSeed: false
+            )
+            edges[idx] = updated
+            committed = updated
+        } else {
+            let edge = ScreenTransitionEdge(
+                fromHash: realFromHash,
+                toHash: realToHash,
+                action: redacted,
+                actionSignature: actionSig,
+                traversalCount: 1,
+                averageTransitionMs: transitionMs,
+                isSpanningTreeEdge: removedSpanningSeed,
+                lastTraversedAt: now,
+                isHazardous: hazard.isHazardous,
+                hazardReason: hazard.isHazardous ? hazard.reason : nil,
+                consecutiveFailures: 0,
+                isSeed: false
+            )
+            edges.append(edge)
+            committed = edge
+        }
+        outgoingEdges[realFromHash] = edges
+
+        currentStateHash = realToHash
+        currentFingerprint = realToFingerprint
+        lastStateTransitionAt = now
+        rebuildSpanningDAG()
         notifyTopologyChanged()
         return committed
     }
@@ -176,15 +645,30 @@ public actor SpatialGraphEngine {
             if fp.tokens.isEmpty && update.index.orderedNodes.isEmpty {
                 return nil
             }
-            if var exact = vertices[fp.layoutHash] {
-                exact.lastSeenAt = now
-                exact.visitCount += 1
-                vertices[exact.layoutHash] = exact
-                if rootStateHash == nil { rootStateHash = exact.layoutHash }
-                currentStateHash = exact.layoutHash
-                currentFingerprint = canonicalFingerprint(from: exact, fallbackActiveWindowId: fp.activeWindowId)
+            if let exact = vertices[fp.layoutHash] {
+                let wasSeed = exact.isSeed
+                let updated = ScreenStateVertex(
+                    layoutHash: exact.layoutHash,
+                    activePackage: exact.activePackage,
+                    sampleInteractiveLabels: wasSeed ? fp.sampleInteractiveLabels : exact.sampleInteractiveLabels,
+                    semanticTokens: wasSeed ? fp.tokens : exact.semanticTokens,
+                    firstSeenAt: exact.firstSeenAt,
+                    lastSeenAt: now,
+                    visitCount: exact.visitCount + 1,
+                    discoveryParentHash: exact.discoveryParentHash,
+                    discoveryDepth: exact.discoveryDepth,
+                    isSeed: false,
+                    semanticAliases: exact.semanticAliases
+                )
+                vertices[updated.layoutHash] = updated
+                if rootStateHash == nil { rootStateHash = updated.layoutHash }
+                currentStateHash = updated.layoutHash
+                currentFingerprint = canonicalFingerprint(from: updated, fallbackActiveWindowId: fp.activeWindowId)
                 lastStateTransitionAt = now
                 pendingAction = nil
+                if wasSeed {
+                    notifyTopologyChanged()
+                }
                 return nil
             }
             if let canonical = bestCanonicalMatch(for: fp) {
@@ -197,6 +681,20 @@ public actor SpatialGraphEngine {
                 currentFingerprint = canonicalFingerprint(from: updated, fallbackActiveWindowId: fp.activeWindowId)
                 lastStateTransitionAt = now
                 pendingAction = nil
+                return nil
+            }
+            if let seedMatch = bestSeedMatch(for: fp) {
+                let realHash = hydrateSeedVertexInner(
+                    seedHash: seedMatch.layoutHash,
+                    liveFingerprint: fp,
+                    now: now
+                ).realHash
+                if rootStateHash == nil { rootStateHash = realHash }
+                currentStateHash = realHash
+                currentFingerprint = fp
+                lastStateTransitionAt = now
+                pendingAction = nil
+                notifyTopologyChanged()
                 return nil
             }
             let root = ScreenStateVertex(
@@ -250,35 +748,61 @@ public actor SpatialGraphEngine {
             }
         }
 
-        // 6. Cross-app / post-transition canonical deduplication:
-        //    If returning to a previously seen screen (e.g. Home screen after Settings or a mixed transition frame)
-        //    whose structural token set matches an existing same-package vertex at >= canonicalSimilarityThreshold,
-        //    snap to that canonical vertex instead of spawning a duplicate node.
+        // 6. Cross-app / post-transition canonical deduplication & Seed-to-Real hydration
         var resolvedFingerprint = fp
-        if !isAlreadyKnownVertex, let canonical = bestCanonicalMatch(for: fp) {
-            if canonical.layoutHash == prevHash {
-                vertices[prevHash]?.lastSeenAt = now
-                return nil
+        var didHydrateSeed = false
+        if !isAlreadyKnownVertex {
+            if let canonical = bestCanonicalMatch(for: fp) {
+                if canonical.layoutHash == prevHash {
+                    vertices[prevHash]?.lastSeenAt = now
+                    return nil
+                }
+                resolvedFingerprint = canonicalFingerprint(
+                    from: canonical,
+                    fallbackActiveWindowId: fp.activeWindowId
+                )
+            } else if let seedMatch = bestSeedMatch(for: fp), seedMatch.layoutHash != prevHash {
+                _ = hydrateSeedVertexInner(
+                    seedHash: seedMatch.layoutHash,
+                    liveFingerprint: fp,
+                    now: now
+                )
+                didHydrateSeed = true
             }
-            resolvedFingerprint = canonicalFingerprint(
-                from: canonical,
-                fallbackActiveWindowId: fp.activeWindowId
-            )
         }
 
         let attributedAction = consumeValidPendingAction(now: now)?.redactedForStorage()
         let transitionMs = max(0, (now.timeIntervalSince(attributedAction?.timestamp ?? lastStateTransitionAt ?? now)) * 1000.0)
 
         let isNewDiscovery: Bool
-        var didUpgradeTokens = false
-        if var existing = vertices[resolvedFingerprint.layoutHash] {
-            existing.lastSeenAt = now
-            existing.visitCount += 1
-            if existing.semanticTokens.isEmpty && !resolvedFingerprint.tokens.isEmpty {
-                existing.semanticTokens = resolvedFingerprint.tokens
+        var didUpgradeTokens = didHydrateSeed
+        if let existing = vertices[resolvedFingerprint.layoutHash] {
+            let nextVisits = didHydrateSeed ? existing.visitCount : (existing.visitCount + 1)
+            let wasSeed = existing.isSeed
+            let upgradedLabels = wasSeed ? resolvedFingerprint.sampleInteractiveLabels : existing.sampleInteractiveLabels
+            let upgradedTokens: Set<String>
+            if wasSeed {
+                upgradedTokens = resolvedFingerprint.tokens
                 didUpgradeTokens = true
+            } else if existing.semanticTokens.isEmpty && !resolvedFingerprint.tokens.isEmpty {
+                upgradedTokens = resolvedFingerprint.tokens
+                didUpgradeTokens = true
+            } else {
+                upgradedTokens = existing.semanticTokens
             }
-            vertices[resolvedFingerprint.layoutHash] = existing
+            vertices[resolvedFingerprint.layoutHash] = ScreenStateVertex(
+                layoutHash: existing.layoutHash,
+                activePackage: existing.activePackage,
+                sampleInteractiveLabels: upgradedLabels,
+                semanticTokens: upgradedTokens,
+                firstSeenAt: existing.firstSeenAt,
+                lastSeenAt: now,
+                visitCount: nextVisits,
+                discoveryParentHash: existing.discoveryParentHash,
+                discoveryDepth: existing.discoveryDepth,
+                isSeed: false,
+                semanticAliases: existing.semanticAliases
+            )
             isNewDiscovery = false
         } else {
             let parentDepth = vertices[prevHash]?.discoveryDepth ?? 0
@@ -301,22 +825,33 @@ public actor SpatialGraphEngine {
         let actionSig = attributedAction?.signature ?? "implicit"
         let hazard = HazardousActionClassifier.assess(action: attributedAction, actionSignature: actionSig)
         var edges = outgoingEdges[prevHash, default: []]
+        if attributedAction != nil {
+            edges.removeAll { $0.toHash == resolvedFingerprint.layoutHash && $0.isSeed }
+        }
         let committedEdge: ScreenTransitionEdge
         let isNewEdge: Bool
 
         if let existingIdx = edges.firstIndex(where: { $0.toHash == resolvedFingerprint.layoutHash && $0.actionSignature == actionSig }) {
-            var edge = edges[existingIdx]
-            let prevCount = Double(edge.traversalCount)
-            edge.traversalCount += 1
-            edge.averageTransitionMs = ((edge.averageTransitionMs * prevCount) + transitionMs) / Double(edge.traversalCount)
-            edge.lastTraversedAt = now
-            edge.consecutiveFailures = 0
-            if hazard.isHazardous && !edge.isHazardous {
-                edge.isHazardous = true
-                edge.hazardReason = hazard.reason
-            }
-            edges[existingIdx] = edge
-            committedEdge = edge
+            let old = edges[existingIdx]
+            let prevCount = Double(old.traversalCount)
+            let newCount = old.traversalCount + 1
+            let updatedEdge = ScreenTransitionEdge(
+                id: old.id,
+                fromHash: old.fromHash,
+                toHash: old.toHash,
+                action: attributedAction ?? old.action,
+                actionSignature: old.actionSignature,
+                traversalCount: newCount,
+                averageTransitionMs: ((old.averageTransitionMs * prevCount) + transitionMs) / Double(newCount),
+                isSpanningTreeEdge: old.isSpanningTreeEdge,
+                lastTraversedAt: now,
+                isHazardous: old.isHazardous || hazard.isHazardous,
+                hazardReason: (hazard.isHazardous && !old.isHazardous) ? hazard.reason : old.hazardReason,
+                consecutiveFailures: 0,
+                isSeed: false
+            )
+            edges[existingIdx] = updatedEdge
+            committedEdge = updatedEdge
             isNewEdge = false
         } else {
             let edge = ScreenTransitionEdge(
@@ -330,13 +865,17 @@ public actor SpatialGraphEngine {
                 lastTraversedAt: now,
                 isHazardous: hazard.isHazardous,
                 hazardReason: hazard.isHazardous ? hazard.reason : nil,
-                consecutiveFailures: 0
+                consecutiveFailures: 0,
+                isSeed: false
             )
             edges.append(edge)
             committedEdge = edge
             isNewEdge = true
         }
         outgoingEdges[prevHash] = edges
+        if didHydrateSeed {
+            rebuildSpanningDAG()
+        }
 
         currentStateHash = resolvedFingerprint.layoutHash
         currentFingerprint = resolvedFingerprint
@@ -367,7 +906,8 @@ public actor SpatialGraphEngine {
         var bestSim: Double = 0.0
 
         for vertex in vertices.values {
-            guard vertex.activePackage == fp.activePackage,
+            guard !vertex.isSeed,
+                  vertex.activePackage == fp.activePackage,
                   !vertex.semanticTokens.isEmpty else { continue }
             let sim = ScreenLayoutHasher.jaccardSimilarity(vertex.semanticTokens, fp.tokens)
             guard sim >= threshold else { continue }
@@ -491,7 +1031,9 @@ public actor SpatialGraphEngine {
                 lastSeenAt: rawVertex.lastSeenAt,
                 visitCount: rawVertex.visitCount,
                 discoveryParentHash: rawVertex.discoveryParentHash,
-                discoveryDepth: rawVertex.discoveryDepth
+                discoveryDepth: rawVertex.discoveryDepth,
+                isSeed: rawVertex.isSeed,
+                semanticAliases: rawVertex.semanticAliases.map { ScreenLayoutHasher.redactPII($0) }
             )
             if !vertex.semanticTokens.isEmpty {
                 let canonicalized = Set(
@@ -507,6 +1049,8 @@ public actor SpatialGraphEngine {
                 let latestLast = max(existing.lastSeenAt, vertex.lastSeenAt)
                 let mergedLabels = existing.sampleInteractiveLabels.isEmpty ? vertex.sampleInteractiveLabels : existing.sampleInteractiveLabels
                 let mergedTokens = existing.semanticTokens.isEmpty ? vertex.semanticTokens : existing.semanticTokens
+                var mergedAliases = existing.semanticAliases
+                Self.mergeAliases(into: &mergedAliases, from: vertex.semanticAliases)
                 let keepExistingDiscovery = existing.firstSeenAt <= vertex.firstSeenAt
                 rawVerticesByHash[vertex.layoutHash] = ScreenStateVertex(
                     layoutHash: existing.layoutHash,
@@ -517,7 +1061,9 @@ public actor SpatialGraphEngine {
                     lastSeenAt: latestLast,
                     visitCount: existing.visitCount + max(0, vertex.visitCount),
                     discoveryParentHash: keepExistingDiscovery ? existing.discoveryParentHash : vertex.discoveryParentHash,
-                    discoveryDepth: keepExistingDiscovery ? existing.discoveryDepth : vertex.discoveryDepth
+                    discoveryDepth: keepExistingDiscovery ? existing.discoveryDepth : vertex.discoveryDepth,
+                    isSeed: existing.isSeed && vertex.isSeed,
+                    semanticAliases: mergedAliases
                 )
             } else {
                 rawVerticesByHash[vertex.layoutHash] = vertex
@@ -530,6 +1076,7 @@ public actor SpatialGraphEngine {
             let lhsIsRoot = (lhs.layoutHash == snapshot.rootStateHash)
             let rhsIsRoot = (rhs.layoutHash == snapshot.rootStateHash)
             if lhsIsRoot != rhsIsRoot { return lhsIsRoot }
+            if lhs.isSeed != rhs.isSeed { return !lhs.isSeed }
             if lhs.visitCount != rhs.visitCount { return lhs.visitCount > rhs.visitCount }
             if lhs.firstSeenAt != rhs.firstSeenAt { return lhs.firstSeenAt < rhs.firstSeenAt }
             if lhs.semanticTokens.count != rhs.semanticTokens.count {
@@ -547,9 +1094,10 @@ public actor SpatialGraphEngine {
             var matchedLeaderHash: UInt64?
             var bestSimilarity: Double = 0.0
 
-            if !vertex.semanticTokens.isEmpty, let packageLeaders = leadersByPackage[vertex.activePackage] {
+            if !vertex.isSeed, !vertex.semanticTokens.isEmpty, let packageLeaders = leadersByPackage[vertex.activePackage] {
                 for leaderHash in packageLeaders {
                     guard let leader = canonicalVertices[leaderHash],
+                          !leader.isSeed,
                           !leader.semanticTokens.isEmpty else { continue }
                     let sim = ScreenLayoutHasher.jaccardSimilarity(leader.semanticTokens, vertex.semanticTokens)
                     let isEligible = (min(leader.semanticTokens.count, vertex.semanticTokens.count) >= Self.minimumCanonicalTokenCount && sim >= threshold)
@@ -566,6 +1114,8 @@ public actor SpatialGraphEngine {
                 canonicalMap[vertex.layoutHash] = leaderHash
                 mergedVertexCount += 1
                 let mergedLabels = leader.sampleInteractiveLabels.isEmpty ? vertex.sampleInteractiveLabels : leader.sampleInteractiveLabels
+                var mergedAliases = leader.semanticAliases
+                Self.mergeAliases(into: &mergedAliases, from: vertex.semanticAliases)
                 canonicalVertices[leaderHash] = ScreenStateVertex(
                     layoutHash: leader.layoutHash,
                     activePackage: leader.activePackage,
@@ -575,7 +1125,9 @@ public actor SpatialGraphEngine {
                     lastSeenAt: max(leader.lastSeenAt, vertex.lastSeenAt),
                     visitCount: leader.visitCount + max(0, vertex.visitCount),
                     discoveryParentHash: leader.discoveryParentHash,
-                    discoveryDepth: leader.discoveryDepth
+                    discoveryDepth: leader.discoveryDepth,
+                    isSeed: leader.isSeed && vertex.isSeed,
+                    semanticAliases: mergedAliases
                 )
             } else {
                 canonicalMap[vertex.layoutHash] = vertex.layoutHash
@@ -622,7 +1174,8 @@ public actor SpatialGraphEngine {
                 lastTraversedAt: rawEdge.lastTraversedAt,
                 isHazardous: rawEdge.isHazardous,
                 hazardReason: rawEdge.hazardReason,
-                consecutiveFailures: max(0, rawEdge.consecutiveFailures)
+                consecutiveFailures: max(0, rawEdge.consecutiveFailures),
+                isSeed: rawEdge.isSeed
             )
             guard let mappedFrom = canonicalMap[edge.fromHash],
                   let mappedTo = canonicalMap[edge.toHash],
@@ -672,19 +1225,21 @@ public actor SpatialGraphEngine {
                 let hazard = HazardousActionClassifier.assess(action: newerAction, actionSignature: edge.actionSignature)
                 let mergedHazardous = existing.isHazardous || edge.isHazardous || hazard.isHazardous
                 let mergedReason = existing.hazardReason ?? edge.hazardReason ?? (hazard.isHazardous ? hazard.reason : nil)
+                let mergedIsSeed = existing.isSeed && edge.isSeed
                 deduplicatedEdges[key] = ScreenTransitionEdge(
                     id: existing.id,
                     fromHash: mappedFrom,
                     toHash: mappedTo,
                     action: newerAction,
                     actionSignature: edge.actionSignature,
-                    traversalCount: max(1, totalCount),
+                    traversalCount: mergedIsSeed ? totalCount : max(1, totalCount),
                     averageTransitionMs: mergedAvgMs,
                     isSpanningTreeEdge: existing.isSpanningTreeEdge || edge.isSpanningTreeEdge,
                     lastTraversedAt: max(existing.lastTraversedAt, edge.lastTraversedAt),
                     isHazardous: mergedHazardous,
                     hazardReason: mergedHazardous ? mergedReason : nil,
-                    consecutiveFailures: mergedFailures
+                    consecutiveFailures: mergedFailures,
+                    isSeed: mergedIsSeed
                 )
             } else {
                 let hazard = HazardousActionClassifier.assess(action: edge.action, actionSignature: edge.actionSignature)
@@ -702,7 +1257,8 @@ public actor SpatialGraphEngine {
                     lastTraversedAt: edge.lastTraversedAt,
                     isHazardous: isHaz,
                     hazardReason: isHaz ? hazReason : nil,
-                    consecutiveFailures: max(0, edge.consecutiveFailures)
+                    consecutiveFailures: max(0, edge.consecutiveFailures),
+                    isSeed: edge.isSeed
                 )
                 orderedEdgeKeys.append(key)
             }
@@ -814,7 +1370,9 @@ public actor SpatialGraphEngine {
                 lastSeenAt: startVertex.lastSeenAt,
                 visitCount: startVertex.visitCount,
                 discoveryParentHash: nil,
-                discoveryDepth: 0
+                discoveryDepth: 0,
+                isSeed: startVertex.isSeed,
+                semanticAliases: startVertex.semanticAliases
             )
 
             var componentVisitedOrder: [UInt64] = [startHash]
@@ -833,7 +1391,9 @@ public actor SpatialGraphEngine {
                     lastSeenAt: vVertex.lastSeenAt,
                     visitCount: vVertex.visitCount,
                     discoveryParentHash: u,
-                    discoveryDepth: uDepth + 1
+                    discoveryDepth: uDepth + 1,
+                    isSeed: vVertex.isSeed,
+                    semanticAliases: vVertex.semanticAliases
                 )
                 newSpanningChildren[u, default: []].append(v)
                 spanningEdgeIDs.insert(edge.id)
@@ -921,7 +1481,8 @@ public actor SpatialGraphEngine {
                     lastTraversedAt: edge.lastTraversedAt,
                     isHazardous: edge.isHazardous,
                     hazardReason: edge.hazardReason,
-                    consecutiveFailures: edge.consecutiveFailures
+                    consecutiveFailures: edge.consecutiveFailures,
+                    isSeed: edge.isSeed
                 )
             }
         }
@@ -948,16 +1509,17 @@ public actor SpatialGraphEngine {
         let q = trimmed.lowercased()
         let normalizedQ = ScreenLayoutHasher.normalizeLabel(trimmed).lowercased()
 
-        // Track incoming executable edges whose action label/selector matches the query
+        // Track incoming executable edges whose action label/selector/aliases match the query
         var incomingScoreBoost: [UInt64: Int] = [:]
         for edge in edges {
             guard let action = edge.action else { continue }
-            let candidates = [
+            var candidates = [
                 action.targetDescription,
                 action.selectorText ?? "",
                 action.selectorResourceId ?? "",
                 action.selectorContentDesc ?? ""
             ]
+            candidates.append(contentsOf: action.selectorAliases)
             var boost = 0
             for raw in candidates where !raw.isEmpty {
                 let lower = raw.lowercased()
@@ -986,6 +1548,18 @@ public actor SpatialGraphEngine {
                 baseScore = max(baseScore, 500)
             } else if pkg.contains(q) {
                 baseScore = max(baseScore, 220)
+            }
+
+            // 1b. Multilingual / cross-OEM semantic aliases match
+            for alias in vertex.semanticAliases where !alias.isEmpty {
+                let lower = alias.lowercased()
+                if lower == q {
+                    baseScore = max(baseScore, 860)
+                } else if lower.hasPrefix(q) {
+                    baseScore = max(baseScore, 460)
+                } else if lower.contains(q) {
+                    baseScore = max(baseScore, 210)
+                }
             }
 
             // 2. Sample interactive labels match (outbound clickable/resourceId elements)
@@ -1057,6 +1631,7 @@ public actor SpatialGraphEngine {
 
         matches.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.vertex.isSeed != rhs.vertex.isSeed { return !lhs.vertex.isSeed }
             if lhs.vertex.visitCount != rhs.vertex.visitCount { return lhs.vertex.visitCount > rhs.vertex.visitCount }
             if lhs.vertex.lastSeenAt != rhs.vertex.lastSeenAt { return lhs.vertex.lastSeenAt > rhs.vertex.lastSeenAt }
             return lhs.vertex.layoutHash < rhs.vertex.layoutHash

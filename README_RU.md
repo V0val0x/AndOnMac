@@ -8,7 +8,7 @@
 [![CI](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml/badge.svg)](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)
 
-[English](README.md) | **Русский** · [Подробная документация и архитектура](docs/FEATURES_RU.md)
+[English](README.md) | **Русский** · [Подробная документация и архитектура](docs/FEATURES_RU.md) · [Политика безопасности](SECURITY.md) · [История изменений](CHANGELOG.md)
 
 | Персистентный A* UI-роутер ([DroidPath](https://github.com/V0val0x/DroidPath)) |
 | :---: |
@@ -25,7 +25,7 @@
 - **Окна приложений и файлы:** запуск Android-приложений в отдельных окнах macOS, drag-and-drop фото (`Cmd+4`), файловый менеджер (`Cmd+5`) и синхронизация буфера обмена.
 - **Vision OCR и Recall:** распознавание текста с экрана через Apple Vision (`Cmd+Shift+X`) и локальный поиск по истории экрана на SQLite FTS5 (`Cmd+Shift+F`).
 - **Рамки и Ambilight:** векторные рамки с вырезами камер для Pixel, Galaxy S, Nothing Phone и OnePlus, подсветка краёв и жесты трекпада.
-- **A*-роутинг и MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Kotlin-демон `android-daemon` работает строго по loopback `127.0.0.1`, маскирует пароли (`isPassword -> "***"`), выполняет нативный ввод `tap`/`swipe`/`keyevent` через `UiAutomation` (с zero-fling 120Hz свайпами и авто-fallback на `adb`) и стримит Shadow DOM и события `FLAG_SECURE` по ADB TCP (`:27189`) в персистентный граф `shadow_graph.json` (с нормализацией часов, дат, цен `<PRICE>`, `<ETA>`, `<WEIGHT>`, карт по Луну `<CARD>`, кодов `<OTP>`, фильтрацией баннеров и маскированием `systemui`). `android_navigate_to_node` (с `auto_explore: true`) и `android_explore_and_click` строят A*-маршруты и достраивают граф на лету с forward-skip, размоткой стека `Back-to-Root`, `Smart Scroll-to-Selector`, деградацией и автоочисткой нестабильных рёбер (`consecutiveFailures`), автозакрытием попапов, Human-in-the-Loop подтверждением опасных шагов (`requires_confirmation` / `confirmed: true`), паузой на биометрии (`FLAG_SECURE`), трёхцветным 120Hz Agentic HUD (**Красный** — автономный шаг, **Жёлтый** — ожидание подтверждения, **Синий** — ожидание биометрии), записью макросов (`Cmd+Shift+M`) и встроенными правилами LLM (`.cursorrules`, `CLAUDE.md`, `GEMINI.md`, `docs/system_prompt.md`).
+- **A*-роутинг и MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Kotlin-демон `android-daemon` работает строго по loopback `127.0.0.1`, маскирует пароли (`isPassword -> "***"`), выполняет нативный ввод `tap`/`swipe`/`keyevent` через `UiAutomation` (с zero-fling 120Hz свайпами и авто-fallback на `adb`) и стримит Shadow DOM и события `FLAG_SECURE` по ADB TCP (`:27189`) в персистентный граф `shadow_graph.json` (с нормализацией часов, дат, цен `<PRICE>`, `<ETA>`, `<WEIGHT>`, карт по Луну `<CARD>`, кодов `<OTP>`, фильтрацией баннеров и маскированием `systemui`), предзаполненный **Zero-PII кросс-девайсным Seed Graph для Android Settings** (20 экранов, 19 детерминированных рёбер, EN/RU и cross-OEM алиасы, побитово совместим с Rust `DroidPath`), который автоматически **гидрируется (Seed-to-Real)** при первом реальном проходе. `android_navigate_to_node` (с `auto_explore: true`) и `android_explore_and_click` строят A*-маршруты и достраивают граф на лету с forward-skip, размоткой стека `Back-to-Root`, `Smart Scroll-to-Selector`, деградацией и автоочисткой нестабильных рёбер (`consecutiveFailures`), автозакрытием попапов, Human-in-the-Loop подтверждением опасных шагов (`requires_confirmation` / `confirmed: true`), паузой на биометрии (`FLAG_SECURE`), трёхцветным 120Hz Agentic HUD (**Красный** — автономный шаг, **Жёлтый** — ожидание подтверждения, **Синий** — ожидание биометрии), записью макросов (`Cmd+Shift+M`) и встроенными правилами LLM (`.cursorrules`, `CLAUDE.md`, `GEMINI.md`, `docs/system_prompt.md`).
 
 Настройка MCP, безопасность, все шорткаты и архитектура: [docs/FEATURES_RU.md](docs/FEATURES_RU.md).
 
@@ -48,7 +48,10 @@ brew install --cask V0val0x/andonmac/andonmac
 Обновление: `brew upgrade --cask andonmac`.
 
 ### Установщик `.dmg`
-1. Скачайте `AndOnMac.dmg` со страницы [GitHub Releases](https://github.com/V0val0x/AndOnMac/releases).
+1. Скачайте `AndOnMac.dmg` и `checksums.txt` со страницы [GitHub Releases](https://github.com/V0val0x/AndOnMac/releases) и проверьте целостность:
+   ```bash
+   shasum -a 256 -c checksums.txt
+   ```
 2. Перетащите **AndOnMac.app** в `/Applications` и снимите карантин Gatekeeper (приложение без платной подписи Apple):
    ```bash
    xattr -cr /Applications/AndOnMac.app
@@ -79,7 +82,7 @@ chmod +x scripts/*.sh && ./scripts/create_dmg.sh
 
 | Репозиторий | Назначение | Платформа / Подключение |
 | :--- | :--- | :--- |
-| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Кроссплатформенный A* UI-роутер на Rust, Tauri v2 Desktop HUD, 1-клик CLI `npx droidpath` и Kotlin Shadow DOM демон (100% совместимость `shadow_graph.json` с AndOnMac) | Windows · Linux · macOS (`npx droidpath` / Rust / Tauri v2) |
+| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Кроссплатформенный A* UI-роутер на Rust, Tauri v2 Desktop HUD, нативные установщики с SHA-256 проверкой (`install.sh` / `install.ps1`) и Kotlin Shadow DOM демон (100% совместимость `shadow_graph.json` с AndOnMac) | Windows · Linux · macOS (Rust / Tauri v2) |
 | [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | VideoToolbox H.264/HEVC декодер, рендерер на `CAMetalLayer` и ABR | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
 | [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Swift ADB SDK: USB, QR Wi-Fi, Bonjour и обход изоляции (Hotspot / BT PAN) | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
 | [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | MCP-сервер (`stdio` / SSE), Visual-to-MCP макросы и CLI `android-mcp` | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |

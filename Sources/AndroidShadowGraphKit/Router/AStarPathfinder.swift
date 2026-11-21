@@ -304,7 +304,9 @@ public struct AStarPathfinder: Sendable {
         let latencyTerm = configuration.latencyWeightPerSecond * (cappedMs / 1000.0)
         // Slight smoothing preference for battle-tested edges without ever going below minStepCost
         let reliabilityTerm = edge.traversalCount >= 3 ? 0.0 : (0.03 / Double(max(1, edge.traversalCount)))
-        let baseCost = configuration.minStepCost + latencyTerm + reliabilityTerm
+        // Prefer device-hydrated real edges over coordinate-free Seed Graph edges
+        let seedPenalty = edge.isSeed ? (0.25 * configuration.minStepCost) : 0.0
+        let baseCost = configuration.minStepCost + latencyTerm + reliabilityTerm + seedPenalty
         let decayMultiplier = 1.0 + 0.75 * Double(max(0, edge.consecutiveFailures))
         return baseCost * decayMultiplier
     }

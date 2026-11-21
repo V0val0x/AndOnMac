@@ -569,6 +569,22 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
                 }
             }
 
+            // Cross-package Zero-PII Seed Graph entry bridge:
+            // When starting outside `com.android.settings` (e.g. Home launcher on a brand-new phone)
+            // and routing to a seeded Android Settings screen, prepend a `launchApp("com.android.settings")`
+            // edge into the Settings root so cold-start navigation succeeds in 1 call and hydrates the graph.
+            if searchResult == nil
+                && currentFp.activePackage != SeedGraphCatalog.androidSettingsPackage
+                && maxSteps >= 1 {
+                searchResult = Self.synthesizeSettingsSeedEntryRoute(
+                    startHash: startHash,
+                    topGoals: topGoals,
+                    allGoals: allGoals,
+                    snapshot: snapshot,
+                    maxSteps: maxSteps
+                )
+            }
+
             // Universal Dismiss Auto-Recovery on no_route (#4)
             guard let route = searchResult else {
                 if enableAutoRecovery && recoveryAttempt < maxRecoveryAttempts,
@@ -881,6 +897,28 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
                     lastObservedPackage: lastPkg,
                     timeoutMs: timeoutMs
                 )
+            } catch PathDeviationError.actionDispatchFailed(let stepIdx, let actionSig, let underlyingMsg) {
+                let failedSeed = (stepIdx >= 0 && stepIdx < route.edges.count && route.edges[stepIdx].isSeed)
+                if autoExplore,
+                   failedSeed,
+                   let trimmedTarget = targetHint?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !trimmedTarget.isEmpty {
+                    return try await fallbackToAutoExplore(
+                        target: trimmedTarget,
+                        serial: serial,
+                        executor: executor,
+                        stepTimeoutMs: stepTimeoutMs,
+                        postSettleQuiescenceMs: postSettleQuiescenceMs,
+                        settleSimilarityThreshold: settleSimilarityThreshold,
+                        confirmed: confirmed,
+                        secureHandoffTimeoutSeconds: secureHandoffTimeoutSeconds
+                    )
+                }
+                throw PathDeviationError.actionDispatchFailed(
+                    stepIndex: stepIdx,
+                    actionSignature: actionSig,
+                    underlyingMessage: underlyingMsg
+                )
             }
         }
     }
@@ -956,6 +994,79 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         return settled
     }
 
+    private static func synthesizeSettingsSeedEntryRoute(
+        startHash: UInt64,
+        topGoals: Set<UInt64>,
+        allGoals: Set<UInt64>,
+        snapshot: SpatialGraphSnapshot,
+        maxSteps: Int
+    ) -> AStarSearchResult? {
+        let hasSettingsGoal = snapshot.vertices.contains { v in
+            v.activePackage == SeedGraphCatalog.androidSettingsPackage
+                && (topGoals.contains(v.layoutHash) || allGoals.contains(v.layoutHash))
+        }
+        guard hasSettingsGoal else { return nil }
+        let settingsRoot = snapshot.vertices
+            .filter { v in
+                v.activePackage == SeedGraphCatalog.androidSettingsPackage
+                    && ((v.isSeed && v.discoveryDepth == 0)
+                        || v.semanticAliases.contains(where: { $0.caseInsensitiveCompare("com.android.settings") == .orderedSame }))
+            }
+            .min { lhs, rhs in
+                if lhs.isSeed != rhs.isSeed { return !lhs.isSeed }
+                if lhs.discoveryDepth != rhs.discoveryDepth { return lhs.discoveryDepth < rhs.discoveryDepth }
+                return lhs.layoutHash < rhs.layoutHash
+            }
+
+        guard let settingsRoot else { return nil }
+
+        let remainingSteps = max(0, maxSteps - 1)
+        let launchAction = AttributedUIAction(
+            kind: .launchApp,
+            targetDescription: SeedGraphCatalog.androidSettingsPackage
+        )
+        let entryEdge = ScreenTransitionEdge(
+            fromHash: startHash,
+            toHash: settingsRoot.layoutHash,
+            action: launchAction,
+            actionSignature: launchAction.signature,
+            traversalCount: 0,
+            averageTransitionMs: 450.0,
+            isSpanningTreeEdge: false,
+            lastTraversedAt: Date(),
+            isHazardous: false,
+            hazardReason: nil,
+            consecutiveFailures: 0,
+            isSeed: true
+        )
+
+        if topGoals.contains(settingsRoot.layoutHash) {
+            return AStarSearchResult(
+                startHash: startHash,
+                targetHash: settingsRoot.layoutHash,
+                edges: [entryEdge],
+                totalCost: 1.25,
+                expandedNodeCount: 1
+            )
+        }
+        guard remainingSteps > 0 else { return nil }
+
+        let innerPf = AStarPathfinder(configuration: AStarCostConfiguration(maxSteps: remainingSteps))
+        var innerRoute = innerPf.findShortestPath(from: settingsRoot.layoutHash, toAnyOf: topGoals, in: snapshot)
+        if innerRoute == nil && allGoals != topGoals {
+            innerRoute = innerPf.findShortestPath(from: settingsRoot.layoutHash, toAnyOf: allGoals, in: snapshot)
+        }
+        guard let innerRoute else { return nil }
+
+        return AStarSearchResult(
+            startHash: startHash,
+            targetHash: innerRoute.targetHash,
+            edges: [entryEdge] + innerRoute.edges,
+            totalCost: innerRoute.totalCost + 1.25,
+            expandedNodeCount: innerRoute.expandedNodeCount + 1
+        )
+    }
+
     private static func semanticAliases(
         for currentFp: ScreenSemanticFingerprint,
         excluding startHash: UInt64,
@@ -963,22 +1074,33 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         threshold: Double
     ) -> [(hash: UInt64, similarity: Double)] {
         vertices
-            .compactMap { vertex -> (hash: UInt64, similarity: Double)? in
+            .compactMap { vertex -> (hash: UInt64, similarity: Double, isSeed: Bool)? in
                 guard vertex.layoutHash != startHash,
-                      vertex.activePackage == currentFp.activePackage,
-                      !vertex.semanticTokens.isEmpty else {
+                      vertex.activePackage == currentFp.activePackage else {
+                    return nil
+                }
+                if vertex.isSeed {
+                    let score = SeedGraphCatalog.seedMatchScore(liveFingerprint: currentFp, seedVertex: vertex)
+                    guard score >= SeedGraphCatalog.seedMatchThreshold else { return nil }
+                    return (vertex.layoutHash, score, true)
+                }
+                guard !vertex.semanticTokens.isEmpty else {
                     return nil
                 }
                 let sim = ScreenLayoutHasher.jaccardSimilarity(currentFp.tokens, vertex.semanticTokens)
                 guard sim >= threshold else { return nil }
-                return (vertex.layoutHash, sim)
+                return (vertex.layoutHash, sim, false)
             }
             .sorted { lhs, rhs in
+                if lhs.isSeed != rhs.isSeed {
+                    return !lhs.isSeed
+                }
                 if lhs.similarity != rhs.similarity {
                     return lhs.similarity > rhs.similarity
                 }
                 return lhs.hash < rhs.hash
             }
+            .map { ($0.hash, $0.similarity) }
     }
 
     private static func matchesAnyGoal(
@@ -991,8 +1113,14 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
             return true
         }
         for vertex in snapshot.vertices where goals.contains(vertex.layoutHash) {
-            guard vertex.activePackage == fingerprint.activePackage,
-                  !vertex.semanticTokens.isEmpty else { continue }
+            guard vertex.activePackage == fingerprint.activePackage else { continue }
+            if vertex.isSeed {
+                if SeedGraphCatalog.seedMatchScore(liveFingerprint: fingerprint, seedVertex: vertex) >= SeedGraphCatalog.seedMatchThreshold {
+                    return true
+                }
+                continue
+            }
+            guard !vertex.semanticTokens.isEmpty else { continue }
             if ScreenLayoutHasher.jaccardSimilarity(fingerprint.tokens, vertex.semanticTokens) >= threshold {
                 return true
             }
@@ -1326,12 +1454,13 @@ public final class ShadowGraphBridge: ShadowTreeProviding, @unchecked Sendable {
         }
         let arrivedViaMatchingAction = snapshot.edges.contains { edge in
             guard edge.toHash == startHash, let action = edge.action else { return false }
-            let fields: [String?] = [
+            var fields: [String?] = [
                 action.targetDescription,
                 action.selectorText,
                 action.selectorContentDesc,
                 action.selectorResourceId,
             ]
+            fields.append(contentsOf: action.selectorAliases.map { Optional($0) })
             return fields.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
                 .contains { !$0.isEmpty && ($0 == q || $0.contains(q)) }
         }

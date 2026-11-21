@@ -8,7 +8,7 @@ Native macOS app (SwiftUI, VideoToolbox, Metal) for mirroring, controlling, and 
 [![CI](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml/badge.svg)](https://github.com/V0val0x/AndOnMac/actions/workflows/ci.yml)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/kirillzaitsev)
 
-**English** | [Русская версия](README_RU.md) · [Feature Guide & Architecture](docs/FEATURES.md)
+**English** | [Русская версия](README_RU.md) · [Feature Guide & Architecture](docs/FEATURES.md) · [Security Policy](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 | Persistent A* Symbolic UI Router ([DroidPath](https://github.com/V0val0x/DroidPath)) |
 | :---: |
@@ -25,7 +25,7 @@ Native macOS app (SwiftUI, VideoToolbox, Metal) for mirroring, controlling, and 
 - **App Windows & File Transfer:** Launch individual Android apps in separate macOS windows, drag and drop photos (`Cmd+4`), browse files (`Cmd+5`), and sync clipboard text and screenshots.
 - **On-Device OCR & Recall:** Grab unselectable text with Apple Vision (`Cmd+Shift+X`) and search local screen history with SQLite FTS5 (`Cmd+Shift+F`).
 - **Device Frames & Ambilight:** Vector bezels with camera cutouts for Pixel, Galaxy S, Nothing Phone, and OnePlus devices, paired with CoreImage edge lighting and trackpad gestures.
-- **Agentic Routing & MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Headless Kotlin `android-daemon` binds strictly to `127.0.0.1` loopback, masks `isPassword` fields to `"***"`, injects native `UiAutomation` `tap`/`swipe`/`keyevent` gestures (with zero-fling 120Hz swipes and automatic `adb` fallback), and streams Shadow DOM updates and `FLAG_SECURE` events over ADB TCP (`:27189`) into a persistent Spatial Graph (`shadow_graph.json`, normalized across clocks, dates, prices `<PRICE>`, `<ETA>`, `<WEIGHT>`, Luhn card numbers `<CARD>`, OTP codes `<OTP>`, decorative banners, and `systemui` overlays). `android_navigate_to_node` (with `auto_explore: true`) and `android_explore_and_click` run A* pathfinding and cold-start UI exploration locally with forward-skip, `Back-to-Root` task-stack drift recovery, `Smart Scroll-to-Selector`, `consecutiveFailures` edge decay/self-pruning, universal popup dismissal, Human-in-the-Loop confirmation (`requires_confirmation` / `confirmed: true`) for payment/destructive steps, `FLAG_SECURE` biometric handoff, a 3-color 120Hz Agentic HUD (**Red** autonomous, **Yellow** awaiting confirmation, **Blue** awaiting biometrics), Visual-to-MCP macros (`Cmd+Shift+M`), and bundled LLM onboarding rules (`.cursorrules`, `CLAUDE.md`, `GEMINI.md`, `docs/system_prompt.md`).
+- **Agentic Routing & MCP ([DroidPath](https://github.com/V0val0x/DroidPath)):** Headless Kotlin `android-daemon` binds strictly to `127.0.0.1` loopback, masks `isPassword` fields to `"***"`, injects native `UiAutomation` `tap`/`swipe`/`keyevent` gestures (with zero-fling 120Hz swipes and automatic `adb` fallback), and streams Shadow DOM updates and `FLAG_SECURE` events over ADB TCP (`:27189`) into a persistent Spatial Graph (`shadow_graph.json`, normalized across clocks, dates, prices `<PRICE>`, `<ETA>`, `<WEIGHT>`, Luhn card numbers `<CARD>`, OTP codes `<OTP>`, decorative banners, and `systemui` overlays) pre-populated with a **Zero-PII Cross-Device Android Settings Seed Graph** (20 screens, 19 deterministic edges, EN/RU + cross-OEM aliases, bit-exact with Rust `DroidPath`) that automatically **hydrates Seed-to-Real** on first live traversal. `android_navigate_to_node` (with `auto_explore: true`) and `android_explore_and_click` run A* pathfinding and cold-start UI exploration locally with forward-skip, `Back-to-Root` task-stack drift recovery, `Smart Scroll-to-Selector`, `consecutiveFailures` edge decay/self-pruning, universal popup dismissal, Human-in-the-Loop confirmation (`requires_confirmation` / `confirmed: true`) for payment/destructive steps, `FLAG_SECURE` biometric handoff, a 3-color 120Hz Agentic HUD (**Red** autonomous, **Yellow** awaiting confirmation, **Blue** awaiting biometrics), Visual-to-MCP macros (`Cmd+Shift+M`), and bundled LLM onboarding rules (`.cursorrules`, `CLAUDE.md`, `GEMINI.md`, `docs/system_prompt.md`).
 
 Details on MCP setup, security, shortcuts, and architecture: [docs/FEATURES.md](docs/FEATURES.md).
 
@@ -48,7 +48,10 @@ brew install --cask V0val0x/andonmac/andonmac
 Update: `brew upgrade --cask andonmac`.
 
 ### `.dmg` Release
-1. Download `AndOnMac.dmg` from [GitHub Releases](https://github.com/V0val0x/AndOnMac/releases).
+1. Download `AndOnMac.dmg` and `checksums.txt` from [GitHub Releases](https://github.com/V0val0x/AndOnMac/releases) and verify integrity:
+   ```bash
+   shasum -a 256 -c checksums.txt
+   ```
 2. Move **AndOnMac.app** to `/Applications` and clear Gatekeeper quarantine (the app is unsigned):
    ```bash
    xattr -cr /Applications/AndOnMac.app
@@ -79,7 +82,7 @@ Cross-platform companion and standalone Swift packages (`macOS 14+`, MIT):
 
 | Repository | Purpose | Platform / Integration |
 | :--- | :--- | :--- |
-| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Cross-platform Rust A* UI router, Tauri v2 Desktop HUD, `npx droidpath` 1-click CLI & Kotlin Shadow DOM daemon (100% `shadow_graph.json` compatible with AndOnMac) | Windows · Linux · macOS (`npx droidpath` / Rust / Tauri v2) |
+| [**DroidPath**](https://github.com/V0val0x/DroidPath) | Cross-platform Rust A* UI router, Tauri v2 Desktop HUD, 1-click SHA-256 verified installers (`install.sh` / `install.ps1`) & Kotlin Shadow DOM daemon (100% `shadow_graph.json` compatible with AndOnMac) | Windows · Linux · macOS (Rust / Tauri v2) |
 | [**MetalScrcpyKit**](https://github.com/V0val0x/MetalScrcpyKit) | VideoToolbox H.264/HEVC decoder, `CAMetalLayer` renderer & ABR engine | `.package(url: "https://github.com/V0val0x/MetalScrcpyKit.git", from: "1.0.0")` |
 | [**ADBConnectKit**](https://github.com/V0val0x/ADBConnectKit) | Swift ADB SDK: USB, Wi-Fi QR pairing, Bonjour & Hotspot/BT PAN bypass | `.package(url: "https://github.com/V0val0x/ADBConnectKit.git", from: "1.0.0")` |
 | [**AndroidMCPKit**](https://github.com/V0val0x/AndroidMCPKit) | MCP Server (`stdio` / SSE), Visual-to-MCP macros & `android-mcp` CLI | `.package(url: "https://github.com/V0val0x/AndroidMCPKit.git", from: "1.0.0")` |

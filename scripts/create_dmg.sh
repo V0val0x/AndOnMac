@@ -24,4 +24,11 @@ echo "==> Generating disk image ${DMG_PATH}..."
 hdiutil create -volname "${APP_NAME}" -srcfolder "${TEMP_DMG_DIR}" -ov -format UDZO "${DMG_PATH}"
 
 rm -rf "${TEMP_DMG_DIR}"
-echo "✅ DMG successfully generated at ${DMG_PATH}"
+
+echo "==> Generating SHA-256 checksums.txt..."
+(
+    cd "${DIST_DIR}"
+    shasum -a 256 "${DMG_NAME}" > checksums.txt
+    shasum -a 256 -c checksums.txt
+)
+echo "✅ DMG successfully generated at ${DMG_PATH} (SHA-256 manifest at ${DIST_DIR}/checksums.txt)"

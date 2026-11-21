@@ -142,6 +142,11 @@ public actor MacroExecutionEngine {
                 }
 
                 let edge = path[stepIndex]
+                let stepFromFp: ScreenSemanticFingerprint = if let idx = await domState.currentIndex {
+                    hasher.fingerprint(for: idx)
+                } else {
+                    initialFp
+                }
 
                 // Pre-step settlement / forward-skip scan (#1):
                 // Scan furthest suffix step down to current stepIndex so apps that restore scroll/state
@@ -158,6 +163,13 @@ public actor MacroExecutionEngine {
                         through: scanCeiling,
                         threshold: configuration.settleSimilarityThreshold
                     ) {
+                        if expectedVertices[matchedJumpIdx]?.isSeed == true {
+                            _ = await graphEngine.hydrateSeedVertex(
+                                seedHash: path[matchedJumpIdx].toHash,
+                                liveFingerprint: liveFp
+                            )
+                            recoveredSteps.append("seed_hydrated:skip_\(matchedJumpIdx)")
+                        }
                         lastSettledHash = liveFp.layoutHash
                         if matchedJumpIdx > stepIndex {
                             let detail = "Skipped steps \(stepIndex + 1)...\(matchedJumpIdx + 1) (already at screen \(matchedJumpIdx + 1)/\(path.count))"
@@ -193,9 +205,10 @@ public actor MacroExecutionEngine {
                 let resolved = await resolveLiveActionWithNode(rawAction)
                 var resolvedAction = resolved.action
                 var matchedNode = resolved.node
+                var didSmartScroll = false
 
                 // Smart Scroll-to-Selector: if tap selector is off-screen inside a scrollable container,
-                // perform up to 2 search scrolls (down / reverse up at bottom) to reveal & lock onto the node.
+                // perform bounded search scrolls (down / reverse up at bottom) to reveal & lock onto the node.
                 if configuration.enableSmartScrollToSelector && matchedNode == nil && rawAction.kind == .tap {
                     if let scrolled = try await smartScrollToSelector(
                         rawAction: rawAction,
@@ -204,7 +217,34 @@ public actor MacroExecutionEngine {
                     ) {
                         resolvedAction = scrolled.action
                         matchedNode = scrolled.node
+                        didSmartScroll = true
                     }
+                }
+
+                // Calibrate seed action descriptor/selectors from the matched live node BEFORE
+                // recording pendingAction so live SpatialGraphEngine.process() and hydrateSeedTransition()
+                // share the exact same actionSignature and never create duplicate edges.
+                if edge.isSeed, let node = matchedNode {
+                    let nextText = !node.text.isEmpty ? node.text : resolvedAction.selectorText
+                    let nextDesc = (node.text.isEmpty && !node.contentDesc.isEmpty) ? node.contentDesc : resolvedAction.selectorContentDesc
+                    let nextTarget = !node.text.isEmpty ? node.text : (!node.contentDesc.isEmpty ? node.contentDesc : resolvedAction.targetDescription)
+                    let nextRid = !node.resourceId.isEmpty ? node.resourceId : resolvedAction.selectorResourceId
+                    resolvedAction = AttributedUIAction(
+                        kind: resolvedAction.kind,
+                        targetDescription: nextTarget,
+                        x: resolvedAction.x,
+                        y: resolvedAction.y,
+                        endX: resolvedAction.endX,
+                        endY: resolvedAction.endY,
+                        durationMs: resolvedAction.durationMs,
+                        textInput: resolvedAction.textInput,
+                        pressEnter: resolvedAction.pressEnter,
+                        selectorResourceId: nextRid,
+                        selectorText: nextText,
+                        selectorContentDesc: nextDesc,
+                        selectorAliases: resolvedAction.selectorAliases,
+                        timestamp: Date()
+                    )
                 }
 
                 // Hazardous / irreversible transaction HITL check (#2, Variant A):
@@ -343,6 +383,55 @@ public actor MacroExecutionEngine {
 
                 let elapsedMs = Self.elapsedMilliseconds(since: stepStart)
                 lastSettledHash = settledHash
+
+                // Seed-to-Real Hydration: promote traversed seed vertices & coordinate-free seed edges
+                // into real device-calibrated vertices and executable edges with exact coordinates/selectors.
+                let fromWasSeed = graphVertices[edge.fromHash]?.isSeed == true
+                let toWasSeed = expectedVertices[matchedIdx]?.isSeed == true
+                if edge.isSeed || fromWasSeed || toWasSeed {
+                    if let liveSettledIdx = await domState.currentIndex {
+                        let settledFp = hasher.fingerprint(for: liveSettledIdx)
+                        let hydratedAction: AttributedUIAction
+                        if let node = matchedNode {
+                            let nextText = !node.text.isEmpty ? node.text : resolvedAction.selectorText
+                            let nextDesc = (node.text.isEmpty && !node.contentDesc.isEmpty) ? node.contentDesc : resolvedAction.selectorContentDesc
+                            let nextTarget = !node.text.isEmpty ? node.text : (!node.contentDesc.isEmpty ? node.contentDesc : resolvedAction.targetDescription)
+                            let nextRid = !node.resourceId.isEmpty ? node.resourceId : resolvedAction.selectorResourceId
+                            // If the node was revealed only after scrolling away from `stepFromFp`,
+                            // keep the hydrated edge coordinate-free so subsequent runs from the
+                            // un-scrolled top screen always re-scroll instead of clicking stale (x, y).
+                            let hydratedX: Int? = didSmartScroll ? nil : node.centerX
+                            let hydratedY: Int? = didSmartScroll ? nil : node.centerY
+                            hydratedAction = AttributedUIAction(
+                                kind: resolvedAction.kind,
+                                targetDescription: nextTarget,
+                                x: hydratedX,
+                                y: hydratedY,
+                                endX: resolvedAction.endX,
+                                endY: resolvedAction.endY,
+                                durationMs: resolvedAction.durationMs,
+                                textInput: resolvedAction.textInput,
+                                pressEnter: resolvedAction.pressEnter,
+                                selectorResourceId: nextRid,
+                                selectorText: nextText,
+                                selectorContentDesc: nextDesc,
+                                selectorAliases: resolvedAction.selectorAliases,
+                                timestamp: Date()
+                            )
+                        } else {
+                            hydratedAction = resolvedAction
+                        }
+                        _ = await graphEngine.hydrateSeedTransition(
+                            fromSeedOrRealHash: edge.fromHash,
+                            toSeedOrRealHash: path[matchedIdx].toHash,
+                            realFromFingerprint: stepFromFp,
+                            realToFingerprint: settledFp,
+                            resolvedAction: hydratedAction,
+                            transitionMs: Double(elapsedMs)
+                        )
+                        recoveredSteps.append("seed_hydrated:step_\(stepIndex)")
+                    }
+                }
 
                 let primaryReport = MacroStepReport(
                     stepIndex: stepIndex,
@@ -562,6 +651,13 @@ public actor MacroExecutionEngine {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch let deviation as PathDeviationError {
+                    if case .actionDispatchFailed(let idx, let sig, let msg) = deviation, idx < 0 {
+                        throw PathDeviationError.actionDispatchFailed(
+                            stepIndex: stepIndex,
+                            actionSignature: sig,
+                            underlyingMessage: msg
+                        )
+                    }
                     throw deviation
                 } catch {
                     throw PathDeviationError.actionDispatchFailed(
@@ -950,18 +1046,23 @@ public actor MacroExecutionEngine {
         let hasText = rawAction.selectorText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let hasRid = rawAction.selectorResourceId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let hasDesc = rawAction.selectorContentDesc?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        guard hasText || hasRid || hasDesc else { return nil }
+        let hasAliases = rawAction.selectorAliases.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard hasText || hasRid || hasDesc || hasAliases else { return nil }
 
-        // Phase 1: Scroll downward (up to 2 attempts, stopping early on bottom boundary).
+        // Coordinate-free semantic taps get a wider scroll budget (4) so deep settings
+        // items like "System" or "About phone" are always discovered cleanly.
+        let downBudget = (rawAction.x == nil && rawAction.y == nil) ? 4 : 2
+
+        // Phase 1: Scroll downward (stopping early on bottom boundary).
         var downMoves = 0
-        for attempt in 1...2 {
+        for attempt in 1...downBudget {
             try Task.checkCancellation()
             switch try await performSmartScrollStep(
                 rawAction: rawAction,
                 serial: serial,
                 scrollingDown: true,
                 attempt: attempt,
-                budget: 2
+                budget: downBudget
             ) {
             case .found(let updatedAction, let foundNode):
                 recoveredSteps.append("smart_scroll_to_selector:down:\(attempt)")
@@ -1136,7 +1237,8 @@ public actor MacroExecutionEngine {
         let hasRid = rid?.isEmpty == false
         let hasText = text?.isEmpty == false
         let hasDesc = desc?.isEmpty == false
-        guard hasRid || hasText || hasDesc else {
+        let hasAliases = action.selectorAliases.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard hasRid || hasText || hasDesc || hasAliases else {
             if let x = action.x, let y = action.y, let liveNode = (await domState.currentIndex)?.resolveNode(atX: x, y: y) {
                 return (action, liveNode)
             }
@@ -1160,14 +1262,16 @@ public actor MacroExecutionEngine {
         if !visibleNodes.isEmpty {
             // 1. Prefer a visible node matching ALL recorded selectors simultaneously.
             //    This prevents generic RecyclerView IDs (e.g. "android:id/title") from matching the wrong row.
-            let jointCandidates = visibleNodes.filter { node in
-                if let rid, !rid.isEmpty, !Self.node(node, matchesResourceId: rid) { return false }
-                if let text, !text.isEmpty, !node.text.localizedCaseInsensitiveContains(text) { return false }
-                if let desc, !desc.isEmpty, !node.contentDesc.localizedCaseInsensitiveContains(desc) { return false }
-                return true
-            }
-            if !jointCandidates.isEmpty {
-                matchedNode = Self.bestLiveCandidate(in: jointCandidates, expectedText: text, expectedDesc: desc)
+            if hasRid || hasText || hasDesc {
+                let jointCandidates = visibleNodes.filter { node in
+                    if let rid, !rid.isEmpty, !Self.node(node, matchesResourceId: rid) { return false }
+                    if let text, !text.isEmpty, !node.text.localizedCaseInsensitiveContains(text) { return false }
+                    if let desc, !desc.isEmpty, !node.contentDesc.localizedCaseInsensitiveContains(desc) { return false }
+                    return true
+                }
+                if !jointCandidates.isEmpty {
+                    matchedNode = Self.bestLiveCandidate(in: jointCandidates, expectedText: text, expectedDesc: desc)
+                }
             }
 
             // 2. If joint match failed, try text / contentDesc (more specific than shared ViewHolder IDs)
@@ -1180,7 +1284,40 @@ public actor MacroExecutionEngine {
                 matchedNode = Self.bestLiveCandidate(in: descCandidates, expectedText: text, expectedDesc: desc)
             }
 
-            // 3. Only fall back to resourceId alone if it uniquely identifies a single visible node on screen
+            // 3. Semantic selectorAliases fallback (cross-OEM / multilingual Seed Graph selectors)
+            if matchedNode == nil && hasAliases {
+                let normalizedAliases = action.selectorAliases
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { !$0.isEmpty }
+
+                // Pass A: exact text / contentDesc match across all aliases
+                for alias in normalizedAliases {
+                    let exactCands = visibleNodes.filter {
+                        $0.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == alias
+                            || $0.contentDesc.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == alias
+                    }
+                    if !exactCands.isEmpty {
+                        matchedNode = Self.bestLiveCandidate(in: exactCands, expectedText: alias, expectedDesc: alias)
+                        break
+                    }
+                }
+
+                // Pass B: substring match for multi-character aliases
+                if matchedNode == nil {
+                    for alias in normalizedAliases where alias.count >= 3 {
+                        let subCands = visibleNodes.filter {
+                            $0.text.lowercased().contains(alias)
+                                || $0.contentDesc.lowercased().contains(alias)
+                        }
+                        if !subCands.isEmpty {
+                            matchedNode = Self.bestLiveCandidate(in: subCands, expectedText: alias, expectedDesc: alias)
+                            break
+                        }
+                    }
+                }
+            }
+
+            // 4. Only fall back to resourceId alone if it uniquely identifies a single visible node on screen
             if matchedNode == nil, let rid, !rid.isEmpty {
                 let ridCandidates = visibleNodes.filter { Self.node($0, matchesResourceId: rid) }
                 if ridCandidates.count == 1 {
@@ -1206,6 +1343,7 @@ public actor MacroExecutionEngine {
             selectorResourceId: action.selectorResourceId,
             selectorText: action.selectorText,
             selectorContentDesc: action.selectorContentDesc,
+            selectorAliases: action.selectorAliases,
             timestamp: Date()
         )
         return (updatedAction, node)
@@ -1287,8 +1425,14 @@ public actor MacroExecutionEngine {
             return (true, true)
         }
         guard let expected = expectedVertex,
-              !expected.semanticTokens.isEmpty,
               fingerprint.activePackage == expected.activePackage else {
+            return (false, false)
+        }
+        if expected.isSeed {
+            let score = SeedGraphCatalog.seedMatchScore(liveFingerprint: fingerprint, seedVertex: expected)
+            return (score >= SeedGraphCatalog.seedMatchThreshold, false)
+        }
+        guard !expected.semanticTokens.isEmpty else {
             return (false, false)
         }
         let sim = ScreenLayoutHasher.jaccardSimilarity(fingerprint.tokens, expected.semanticTokens)

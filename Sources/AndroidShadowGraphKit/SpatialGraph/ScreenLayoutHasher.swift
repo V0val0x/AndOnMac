@@ -660,7 +660,7 @@ public struct ScreenLayoutHasher: Sendable {
     }
 
     /// Process-independent deterministic FNV-1a 64-bit hash.
-    private static func fnv1a64(activePackage: String, sortedTokens: [String]) -> UInt64 {
+    public static func fnv1a64(activePackage: String, sortedTokens: [String]) -> UInt64 {
         var hash: UInt64 = 14_695_981_039_346_656_037
         let prime: UInt64 = 1_099_511_628_211
 

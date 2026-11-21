@@ -230,7 +230,7 @@ public final class MCPServerCore: @unchecked Sendable {
                 ]),
                 "serverInfo": .object([
                     "name": .string("AndOnMac"),
-                    "version": .string("2.4.1")
+                    "version": .string("2.5.0")
                 ])
             ])
             return MCPJSONRPCResponse(id: id, result: result)
@@ -343,6 +343,11 @@ public final class MCPServerCore: @unchecked Sendable {
                 return "AI Agent: Navigating to '\(target)'..."
             }
             return "AI Agent: Navigating via Shadow Graph..."
+        case "android_explore_and_click":
+            if let target = args["target"]?.stringValue, !target.isEmpty {
+                return "AI Agent: Exploring for '\(target)'..."
+            }
+            return "AI Agent: Exploring Shadow DOM..."
         default:
             return "AI Agent: \(toolName)"
         }

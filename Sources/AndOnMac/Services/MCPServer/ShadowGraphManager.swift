@@ -47,14 +47,16 @@ public final class ShadowGraphManager: @unchecked Sendable {
 
     private actor GraphPersistenceCoordinator {
         private let storageURL: URL?
+        private let seedDefaultGraph: Bool
         private var initTask: Task<Void, Never>?
         private var isSaving = false
         private var needsAnotherSave = false
         private var activeSaveTask: Task<Void, Never>?
         private var lastSavedRevision: UInt64 = 0
 
-        init(storageURL: URL?) {
+        init(storageURL: URL?, seedDefaultGraph: Bool = false) {
             self.storageURL = storageURL
+            self.seedDefaultGraph = seedDefaultGraph
         }
 
         func ensureInitialized(engine: SpatialGraphEngine) async {
@@ -80,6 +82,12 @@ public final class ShadowGraphManager: @unchecked Sendable {
                 } catch {
                     ShadowGraphManager.logStderr("Failed to load persisted shadow graph from \(storageURL.path): \(error.localizedDescription)")
                 }
+            }
+            let envDisabled = ProcessInfo.processInfo.environment["ANDONMAC_DISABLE_SEED_GRAPH"] == "1"
+            if seedDefaultGraph && !envDisabled {
+                _ = await engine.mergeSeedGraph(SeedGraphCatalog.androidSettingsSeedGraph())
+                // Do not bump lastSavedRevision / touch disk until real device activity mutates topology
+                lastSavedRevision = await engine.topologyRevision
             }
             await engine.setOnTopologyChanged { [weak self] in
                 await self?.scheduleSave(engine: engine)
@@ -147,7 +155,8 @@ public final class ShadowGraphManager: @unchecked Sendable {
             bridge: ShadowGraphBridge(),
             portForwarder: nil,
             daemonLauncher: nil,
-            graphStorageURL: storageURL
+            graphStorageURL: storageURL,
+            seedDefaultGraph: !Self.isRunningTests
         )
     }
 
@@ -155,12 +164,16 @@ public final class ShadowGraphManager: @unchecked Sendable {
         bridge: ShadowGraphBridge = ShadowGraphBridge(),
         portForwarder: (@Sendable (String?, UInt16) async -> Void)? = nil,
         daemonLauncher: (@Sendable (String, UInt16) async throws -> Void)? = nil,
-        graphStorageURL: URL? = nil
+        graphStorageURL: URL? = nil,
+        seedDefaultGraph: Bool = false
     ) {
         self.bridge = bridge
         self.portForwarder = portForwarder
         self.daemonLauncher = daemonLauncher
-        self.persistence = GraphPersistenceCoordinator(storageURL: graphStorageURL)
+        self.persistence = GraphPersistenceCoordinator(
+            storageURL: graphStorageURL,
+            seedDefaultGraph: seedDefaultGraph
+        )
 
         bridge.setDaemonRecoveryHook { [weak self] serial, port in
             guard let self else { return false }
