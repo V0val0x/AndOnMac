@@ -1,6 +1,6 @@
 cask "andonmac" do
   version "2.5.0"
-  sha256 :no_check # Replace with the SHA-256 from release checksums.txt for a pinned release
+  sha256 "91a569144ab020002c7b0b4b0d97f51d98a06fe574231806b45d3124e02c95c7"
 
   url "https://github.com/V0val0x/AndOnMac/releases/download/v#{version}/AndOnMac.dmg"
   name "AndOnMac"
