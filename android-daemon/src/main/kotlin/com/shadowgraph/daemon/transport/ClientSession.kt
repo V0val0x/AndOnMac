@@ -68,9 +68,12 @@ class ClientSession(
             if (frame.isSnapshot) {
                 // Snapshot supersedes any stale queued diffs/snapshots and marks stream ready for diffs
                 queue.removeIf { it.isDiff || it.isSnapshot }
-                needsResync.set(false)
-                broadcastReady = true
-                queue.offer(frame)
+                if (queue.offer(frame)) {
+                    needsResync.set(false)
+                    broadcastReady = true
+                } else {
+                    needsResync.set(true)
+                }
                 return
             }
             if (frame.isDiff && needsResync.get()) {

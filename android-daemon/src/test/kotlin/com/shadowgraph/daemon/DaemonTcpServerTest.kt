@@ -3,13 +3,17 @@ package com.shadowgraph.daemon
 import com.shadowgraph.daemon.graph.ShadowNode
 import com.shadowgraph.daemon.graph.ShadowTreeSnapshot
 import com.shadowgraph.daemon.graph.TreeDiffResult
+import com.shadowgraph.daemon.transport.ByteArrayBuffer
 import com.shadowgraph.daemon.transport.ClientSession
 import com.shadowgraph.daemon.transport.DaemonTcpServer
 import com.shadowgraph.daemon.transport.InboundCommand
 import com.shadowgraph.daemon.transport.NdjsonWireEncoder
+import com.shadowgraph.daemon.transport.OutboundFrame
+import com.shadowgraph.daemon.transport.WireDiff
 import com.shadowgraph.daemon.transport.WireHello
 import com.shadowgraph.daemon.transport.WireInputResult
 import com.shadowgraph.daemon.transport.WirePong
+import com.shadowgraph.daemon.transport.WireSnapshot
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
@@ -343,119 +347,181 @@ class DaemonTcpServerTest {
 
     @Test
     fun `preserves queued input_result control frames across diff queue overflow`() {
+        val encoder = NdjsonWireEncoder()
         val snap = sampleSnapshot(seq = 1L)
-        val connectedLatch = CountDownLatch(1)
-        val resyncLatch = CountDownLatch(1)
-        val sessionRef = java.util.concurrent.atomic.AtomicReference<ClientSession?>()
+        val writerBlocked = CountDownLatch(1)
+        val releaseWriter = CountDownLatch(1)
+        val written = java.io.ByteArrayOutputStream()
+        val writeCount = AtomicInteger(0)
 
-        lateinit var server: DaemonTcpServer
-        server = DaemonTcpServer(
-            port = 0,
-            queueCapacity = 3,
-            encoder = NdjsonWireEncoder(),
-            listener = object : DaemonTcpServer.Listener {
-                override fun onClientConnected(session: ClientSession) {
-                    sessionRef.set(session)
-                    connectedLatch.countDown()
-                }
-
-                override fun onCommand(session: ClientSession, command: InboundCommand) {}
-
-                override fun onResyncRequested(session: ClientSession) {
-                    resyncLatch.countDown()
-                    server.sendSnapshot(session, snap, "resync")
-                }
-
-                override fun onServerError(error: Throwable) {}
+        // Deterministic blocking OutputStream: parks writerThread on the first write so queue overflow
+        // is guaranteed independent of OS kernel TCP buffer sizes or SO_RCVBUF autotuning.
+        val gatedOut = object : java.io.OutputStream() {
+            override fun write(b: Int) {
+                synchronized(written) { written.write(b) }
             }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (writeCount.incrementAndGet() == 1) {
+                    writerBlocked.countDown()
+                    releaseWriter.await(5, TimeUnit.SECONDS)
+                }
+                synchronized(written) { written.write(b, off, len) }
+            }
+        }
+
+        val pipeOut = java.io.PipedOutputStream()
+        val pipeIn = java.io.PipedInputStream(pipeOut)
+
+        val stubSocket = object : Socket() {
+            override fun setTcpNoDelay(on: Boolean) {}
+            override fun getOutputStream(): java.io.OutputStream = gatedOut
+            override fun getInputStream(): java.io.InputStream = pipeIn
+            override fun close() {
+                try { pipeOut.close() } catch (_: Exception) {}
+                try { pipeIn.close() } catch (_: Exception) {}
+            }
+        }
+
+        fun encodeFrame(
+            block: (ByteArrayBuffer) -> Unit,
+            isDiff: Boolean,
+            isSnapshot: Boolean = false
+        ): OutboundFrame {
+            val buf = ByteArrayBuffer(1024)
+            block(buf)
+            return OutboundFrame(buf.toByteArray(), isDiff = isDiff, isSnapshot = isSnapshot)
+        }
+
+        val resyncCount = AtomicInteger(0)
+        lateinit var session: ClientSession
+        session = ClientSession(
+            id = 1L,
+            socket = stubSocket,
+            queueCapacity = 3,
+            initialBroadcastReady = true,
+            onCommand = { _, _ -> },
+            onResyncRequested = { s ->
+                resyncCount.incrementAndGet()
+                s.enqueue(
+                    encodeFrame(
+                        { encoder.encodeSnapshot(WireSnapshot(snap, "resync"), it) },
+                        isDiff = false,
+                        isSnapshot = true
+                    )
+                )
+            },
+            onClosed = {}
         )
 
-        server.start()
+        session.start()
         try {
-            val client = Socket(InetAddress.getByName("127.0.0.1"), server.boundPort)
-            client.receiveBufferSize = 1024
-            client.soTimeout = 3000
-            try {
-                assertTrue(connectedLatch.await(3, TimeUnit.SECONDS))
-                val session = sessionRef.get()!!
-
-                val largeNodes = (1..200).map { i ->
-                    ShadowNode(
-                        nodeId = i.toLong(),
-                        parentId = null,
-                        windowId = 1,
-                        index = i,
-                        childIndex = i,
-                        depth = 1,
-                        packageName = "com.example",
-                        className = "TextView",
-                        resourceId = "id/$i",
-                        text = "Item $i ".repeat(20),
-                        contentDesc = "",
-                        left = 0,
-                        top = i * 10,
-                        right = 500,
-                        bottom = i * 10 + 50,
-                        clickable = true,
-                        scrollable = false,
-                        editable = false,
-                        focused = false,
-                        checked = false,
-                        enabled = true,
-                        visible = true
+            fun diffFrame(seq: Long): OutboundFrame = encodeFrame(
+                {
+                    encoder.encodeDiff(
+                        WireDiff(
+                            TreeDiffResult.IncrementalDiff(
+                                baseSeq = seq - 1,
+                                seq = seq,
+                                timestampMs = 1700000000000L + seq,
+                                activePackage = "com.example",
+                                activeWindowId = 1,
+                                inserted = emptyList(),
+                                updated = emptyList(),
+                                removedIds = listOf(seq)
+                            )
+                        ),
+                        it
                     )
-                }
+                },
+                isDiff = true
+            )
 
-                // Enqueue a burst of diffs + a critical input_result ACK + more diffs to trigger overflow
-                for (seq in 2L..25L) {
-                    if (seq == 12L) {
-                        server.sendInputResult(
-                            session,
+            // Frame 1 enters writerLoop and blocks on releaseWriter, guaranteeing queue backlog.
+            session.enqueue(diffFrame(2L), isBroadcast = true)
+            assertTrue(writerBlocked.await(3, TimeUnit.SECONDS), "Expected writer thread to block on first frame")
+
+            // Fill queue to capacity (3): [diff(3), diff(4), input_result(4242)]
+            session.enqueue(diffFrame(3L), isBroadcast = true)
+            session.enqueue(diffFrame(4L), isBroadcast = true)
+            session.enqueue(
+                encodeFrame(
+                    {
+                        encoder.encodeInputResult(
                             WireInputResult(
                                 id = 4242L,
                                 cmd = "tap",
                                 ok = true,
                                 elapsedMs = 5L,
                                 timestampMs = 1700000000100L
-                            )
+                            ),
+                            it
                         )
-                    }
-                    val diff = TreeDiffResult.IncrementalDiff(
-                        baseSeq = seq - 1,
-                        seq = seq,
-                        timestampMs = 1700000000000L + seq,
-                        activePackage = "com.example",
-                        activeWindowId = 1,
-                        inserted = largeNodes,
-                        updated = emptyList(),
-                        removedIds = emptyList()
-                    )
-                    server.broadcastDiff(diff)
-                }
+                    },
+                    isDiff = false
+                )
+            )
 
-                assertTrue(resyncLatch.await(3, TimeUnit.SECONDS), "Expected overflow resync to trigger")
+            // Overflow with diff(5): must evict diff(3), diff(4), preserve input_result(4242), and enqueue resync snapshot
+            session.enqueue(diffFrame(5L), isBroadcast = true)
+            assertTrue(resyncCount.get() >= 1, "Expected overflow resync to trigger on diff(5)")
 
-                // Drain client frames and verify input_result id=4242 was NEVER dropped by overflow
-                val reader = BufferedReader(InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))
-                var sawInputResult = false
-                var sawResyncSnap = false
-                val deadline = System.currentTimeMillis() + 2500L
-                while (System.currentTimeMillis() < deadline && (!sawInputResult || !sawResyncSnap)) {
-                    val line = reader.readLine() ?: break
-                    if (line.contains("\"type\":\"input_result\"") && line.contains("\"id\":4242")) {
-                        sawInputResult = true
-                    }
-                    if (line.contains("\"type\":\"snapshot\"") && line.contains("\"reason\":\"resync\"")) {
-                        sawResyncSnap = true
-                    }
+            // Queue is now [input_result(4242), snap(resync)]; add diff(6) -> full (3/3)
+            session.enqueue(diffFrame(6L), isBroadcast = true)
+
+            // Enqueue second control frame input_result(4243) while full -> must evict state victim, NOT input_result(4242)
+            session.enqueue(
+                encodeFrame(
+                    {
+                        encoder.encodeInputResult(
+                            WireInputResult(
+                                id = 4243L,
+                                cmd = "swipe",
+                                ok = true,
+                                elapsedMs = 180L,
+                                timestampMs = 1700000000200L
+                            ),
+                            it
+                        )
+                    },
+                    isDiff = false
+                )
+            )
+
+            // Release writer and wait until all surviving frames drain
+            releaseWriter.countDown()
+            val deadline = System.currentTimeMillis() + 3000L
+            var outputText = ""
+            while (System.currentTimeMillis() < deadline) {
+                outputText = synchronized(written) { written.toString(StandardCharsets.UTF_8) }
+                if (outputText.contains("\"id\":4242") &&
+                    outputText.contains("\"id\":4243") &&
+                    outputText.contains("\"reason\":\"resync\"")
+                ) {
+                    break
                 }
-                assertTrue(sawInputResult, "Expected queued input_result id=4242 to survive diff queue overflow")
-                assertTrue(sawResyncSnap, "Expected resync snapshot after diff overflow")
-            } finally {
-                client.close()
+                Thread.sleep(10)
             }
+
+            assertTrue(
+                outputText.contains("\"type\":\"input_result\"") && outputText.contains("\"id\":4242"),
+                "Expected queued input_result id=4242 to survive diff queue overflow; got:\n$outputText"
+            )
+            assertTrue(
+                outputText.contains("\"type\":\"input_result\"") && outputText.contains("\"id\":4243"),
+                "Expected second control frame input_result id=4243 to survive full-queue state eviction; got:\n$outputText"
+            )
+            assertTrue(
+                outputText.contains("\"type\":\"snapshot\"") && outputText.contains("\"reason\":\"resync\""),
+                "Expected resync snapshot after diff overflow; got:\n$outputText"
+            )
+            assertTrue(
+                !outputText.contains("\"seq\":3") && !outputText.contains("\"seq\":4"),
+                "Expected stale overflowed diffs (seq 3, 4) to have been evicted"
+            )
         } finally {
-            server.close()
+            releaseWriter.countDown()
+            session.close()
         }
     }
 }
