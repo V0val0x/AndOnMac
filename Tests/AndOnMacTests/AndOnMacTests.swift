@@ -3022,4 +3022,54 @@ final class AndOnMacTests: XCTestCase {
         let matches = await verifier.resolveTargetVertices(matching: "Display and touch")
         XCTAssertEqual(matches.count, 1)
     }
+
+    func testADBMacroActionExecutorKeycodeParityAndCancellationRethrow() async throws {
+        // Cross-platform shadow_graph.json parity with Rust DroidPathAdbRunner::resolve_key_code
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("BACK"), "4")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("KEYCODE_BACK"), "4")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("keycode_home"), "3")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("APP_SWITCH"), "187")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("KEYCODE_APP_SWITCH"), "187")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("NOTIFICATION"), "83")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("PASTE"), "279")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("KEYCODE_279"), "279")
+        XCTAssertEqual(ADBMacroActionExecutor.resolveKeyCode("4"), "4")
+        XCTAssertNil(ADBMacroActionExecutor.resolveKeyCode(""))
+        XCTAssertNil(ADBMacroActionExecutor.resolveKeyCode("UNKNOWN_KEY"))
+
+        // Cancelled task MUST throw CancellationError immediately instead of falling back to ADB
+        let executor = ADBMacroActionExecutor()
+        let tapTask = Task<Void, Error> {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await executor.dispatchTap(serial: "NONEXISTENT_SERIAL", x: 540, y: 1200)
+        }
+        do {
+            try await tapTask.value
+            XCTFail("Expected CancellationError from cancelled dispatchTap")
+        } catch is CancellationError {
+            // expected
+        }
+
+        let swipeTask = Task<Void, Error> {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await executor.dispatchSwipe(serial: "NONEXISTENT_SERIAL", x1: 540, y1: 1900, x2: 540, y2: 450, durationMs: 145)
+        }
+        do {
+            try await swipeTask.value
+            XCTFail("Expected CancellationError from cancelled dispatchSwipe")
+        } catch is CancellationError {
+            // expected
+        }
+
+        let keyTask = Task<Void, Error> {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await executor.dispatchKeyeventCode(serial: "NONEXISTENT_SERIAL", keyCode: "4")
+        }
+        do {
+            try await keyTask.value
+            XCTFail("Expected CancellationError from cancelled dispatchKeyeventCode")
+        } catch is CancellationError {
+            // expected
+        }
+    }
 }

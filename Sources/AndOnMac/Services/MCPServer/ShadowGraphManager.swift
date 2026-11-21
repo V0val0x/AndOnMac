@@ -630,11 +630,18 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
     }
 
     public func dispatchTap(serial: String, x: Int, y: Int) async throws {
+        try Task.checkCancellation()
         if let client = await daemonClientForSerial(serial) {
-            if (try? await client.injectTap(x: x, y: y)) != nil {
+            do {
+                _ = try await client.injectTap(x: x, y: y)
                 return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Fall back to ADB on daemon error / disconnect / timeout
             }
         }
+        try Task.checkCancellation()
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "tap", "\(x)", "\(y)"],
             timeoutSeconds: 5.0
@@ -650,20 +657,27 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
         durationMs: Int?,
         holdMs: Int = defaultZeroFlingHoldMs
     ) async throws {
+        try Task.checkCancellation()
         if let client = await daemonClientForSerial(serial) {
             let daemonDur = max(20, min(5000, durationMs ?? Self.defaultDaemonSwipeDurationMs))
             let clampedHold = max(0, min(1000, holdMs))
-            if (try? await client.injectSwipe(
-                x1: x1,
-                y1: y1,
-                x2: x2,
-                y2: y2,
-                durationMs: daemonDur,
-                holdMs: clampedHold
-            )) != nil {
+            do {
+                _ = try await client.injectSwipe(
+                    x1: x1,
+                    y1: y1,
+                    x2: x2,
+                    y2: y2,
+                    durationMs: daemonDur,
+                    holdMs: clampedHold
+                )
                 return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Fall back to ADB on daemon error / disconnect / timeout
             }
         }
+        try Task.checkCancellation()
         let duration = max(50, min(3000, durationMs ?? 300))
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "swipe", "\(x1)", "\(y1)", "\(x2)", "\(y2)", "\(duration)"],
@@ -672,11 +686,18 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
     }
 
     public func dispatchKeyeventCode(serial: String, keyCode: String) async throws {
+        try Task.checkCancellation()
         if let kcNum = Int(keyCode), let client = await daemonClientForSerial(serial) {
-            if (try? await client.injectKeyevent(keycode: kcNum)) != nil {
+            do {
+                _ = try await client.injectKeyevent(keycode: kcNum)
                 return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Fall back to ADB on daemon error / disconnect / timeout
             }
         }
+        try Task.checkCancellation()
         _ = try await ADBService.shared.execute(
             arguments: ["-s", serial, "shell", "input", "keyevent", keyCode],
             timeoutSeconds: 4.0
@@ -776,20 +797,25 @@ public struct ADBMacroActionExecutor: MacroActionExecutor {
         }
     }
 
-    private static func resolveKeyCode(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if !trimmed.isEmpty, trimmed.allSatisfy(\.isNumber) {
+    internal static func resolveKeyCode(_ raw: String) -> String? {
+        let upper = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let trimmed = upper.hasPrefix("KEYCODE_") ? String(upper.dropFirst("KEYCODE_".count)) : upper
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.allSatisfy(\.isNumber) {
             return trimmed
         }
         let map: [String: String] = [
             "BACK": "4",
             "HOME": "3",
             "RECENTS": "187",
+            "APP_SWITCH": "187",
             "ENTER": "66",
             "DELETE": "67",
             "VOLUME_UP": "24",
             "VOLUME_DOWN": "25",
-            "WAKEUP": "224"
+            "WAKEUP": "224",
+            "NOTIFICATION": "83",
+            "PASTE": "279"
         ]
         return map[trimmed]
     }

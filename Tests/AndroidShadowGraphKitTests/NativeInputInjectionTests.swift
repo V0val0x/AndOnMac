@@ -517,4 +517,125 @@ final class NativeInputInjectionTests: XCTestCase {
         XCTAssertEqual(report.steps.count, 2)
         XCTAssertEqual(report.finalHash, hGoal)
     }
+
+    func testTCPClientCancellationFailsFastWithoutSendingAndWaitForHelloEnablesColdStart() async throws {
+        let tcpOpts = NWProtocolTCP.Options()
+        tcpOpts.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcpOpts)
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: params, on: .any)
+        let queue = DispatchQueue(label: "test.native.input.cancel.listener")
+
+        final class MockHarness: @unchecked Sendable {
+            let lock = NSLock()
+            var receivedLines: [String] = []
+            var buffer = Data()
+        }
+        let harness = MockHarness()
+
+        let readyExp = expectation(description: "listener ready")
+        listener.stateUpdateHandler = { st in
+            if case .ready = st { readyExp.fulfill() }
+        }
+
+        listener.newConnectionHandler = { conn in
+            conn.start(queue: queue)
+            let hello = #"{"type":"hello","protocol_version":1,"format":"ndjson/1","sdk_int":37,"device_model":"MockPixel","pid":88,"capabilities":["input"]}"# + "\n"
+            conn.send(content: Data(hello.utf8), completion: .contentProcessed { _ in })
+
+            // Record inbound lines without replying so mid-flight cancellation can be tested deterministically
+            func readLoop() {
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, error in
+                    if let data, !data.isEmpty {
+                        harness.lock.withLock {
+                            harness.buffer.append(data)
+                            while let nl = harness.buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                                let lineData = harness.buffer.prefix(upTo: nl)
+                                harness.buffer.removeSubrange(...nl)
+                                let line = String(decoding: lineData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !line.isEmpty {
+                                    harness.receivedLines.append(line)
+                                }
+                            }
+                        }
+                    }
+                    if !isComplete && error == nil {
+                        readLoop()
+                    }
+                }
+            }
+            readLoop()
+        }
+
+        listener.start(queue: queue)
+        await fulfillment(of: [readyExp], timeout: 3.0)
+        defer { listener.cancel() }
+
+        let port = try XCTUnwrap(listener.port?.rawValue)
+        let client = DaemonTCPClient(configuration: DaemonEndpointConfiguration(host: "127.0.0.1", port: port))
+        await client.start()
+        defer { Task { await client.stop() } }
+
+        // 1. waitForHello unlocks cold-start native input promptly
+        let gotHello = await client.waitForHello(maxWaitMs: 500)
+        XCTAssertTrue(gotHello)
+        let supported = await client.supportsNativeInput
+        XCTAssertTrue(supported)
+
+        // 2. Pre-cancelled Task must throw CancellationError immediately WITHOUT sending any frame over TCP
+        let preCancelled = Task<Void, Error> {
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = try await client.injectTap(x: 111, y: 222)
+        }
+        let t0 = Date()
+        do {
+            try await preCancelled.value
+            XCTFail("Expected CancellationError on pre-cancelled task")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.3)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(
+            harness.lock.withLock { harness.receivedLines.isEmpty },
+            "Pre-cancelled injectTap must never write a command to the socket"
+        )
+
+        // 3. Mid-flight cancellation while daemon has not replied must throw CancellationError promptly (<300ms)
+        let inFlight = Task<Void, Error> {
+            _ = try await client.injectTap(x: 333, y: 444)
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        let t1 = Date()
+        inFlight.cancel()
+        do {
+            try await inFlight.value
+            XCTFail("Expected CancellationError on cancelled in-flight tap")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(t1), 0.3)
+
+        await client.stop()
+
+        // 4. waitForHello on closed port fails fast
+        let closedParams = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+        closedParams.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
+        let closedListener = try NWListener(using: closedParams, on: .any)
+        closedListener.newConnectionHandler = { $0.cancel() }
+        let closedExp = expectation(description: "closed listener ready")
+        closedListener.stateUpdateHandler = { st in
+            if case .ready = st { closedExp.fulfill() }
+        }
+        closedListener.start(queue: queue)
+        await fulfillment(of: [closedExp], timeout: 3.0)
+        let closedPort = try XCTUnwrap(closedListener.port?.rawValue)
+        closedListener.cancel()
+
+        let deadClient = DaemonTCPClient(configuration: DaemonEndpointConfiguration(host: "127.0.0.1", port: closedPort))
+        await deadClient.start()
+        let deadHello = await deadClient.waitForHello(maxWaitMs: 300)
+        XCTAssertFalse(deadHello)
+        await deadClient.stop()
+    }
 }

@@ -19,7 +19,7 @@ DURATION_SEC=8
 FPS=15
 MAX_WIDTH=800
 MAX_GIF_BYTES=5000000
-OUTPUT_GIF="${REPO_ROOT}/assets/demo-layer3-agentic-hud.gif"
+OUTPUT_GIF="${REPO_ROOT}/assets/demo-droidpath-presentation.gif"
 MANUAL_TRIGGER=false
 KEEP_MP4=false
 

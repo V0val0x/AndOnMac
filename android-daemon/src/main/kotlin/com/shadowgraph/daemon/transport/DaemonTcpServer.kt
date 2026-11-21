@@ -179,7 +179,7 @@ class DaemonTcpServer(
             clientCount = sessions.size
         )
         val bytes = encode { encoder.encodeHeartbeat(hb, it) }
-        val frame = OutboundFrame(bytes, isDiff = false)
+        val frame = OutboundFrame(bytes, isDiff = false, isSnapshot = false, isHeartbeat = true)
         for (session in sessions) {
             session.enqueue(frame, isBroadcast = true)
         }

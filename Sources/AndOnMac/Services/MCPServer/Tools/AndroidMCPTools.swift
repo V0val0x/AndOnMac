@@ -302,6 +302,7 @@ public enum AndroidMCPTools {
     private static func tapElement(serial: String, args: [String: MCPJSONValue]) async throws -> MCPToolResult {
         if let x = args["x"]?.intValue, let y = args["y"]?.intValue {
             await ShadowGraphManager.shared.ensureStarted(serial: serial)
+            _ = await ShadowGraphManager.shared.bridge.client.waitForHello(maxWaitMs: 150)
             await ShadowGraphManager.shared.recordAction(
                 AttributedUIAction(kind: .tap, targetDescription: "(\(x),\(y))", x: x, y: y)
             )
@@ -395,6 +396,7 @@ public enum AndroidMCPTools {
         }
 
         await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        _ = await ShadowGraphManager.shared.bridge.client.waitForHello(maxWaitMs: 150)
         let executor = ShadowGraphManager.shared.actionExecutor()
         let zeroFling = await executor.supportsZeroFlingSwipes(serial: serial)
         let duration = explicitDuration ?? (zeroFling ? ADBMacroActionExecutor.defaultDaemonSwipeDurationMs : 300)
@@ -485,6 +487,7 @@ public enum AndroidMCPTools {
             return .text("Unsupported keyevent: \(key)", isError: true)
         }
         await ShadowGraphManager.shared.ensureStarted(serial: serial)
+        _ = await ShadowGraphManager.shared.bridge.client.waitForHello(maxWaitMs: 150)
         await ShadowGraphManager.shared.recordAction(
             AttributedUIAction(kind: .keyevent, targetDescription: key.uppercased())
         )

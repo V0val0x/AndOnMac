@@ -10,6 +10,7 @@ import com.shadowgraph.daemon.transport.InboundCommand
 import com.shadowgraph.daemon.transport.NdjsonWireEncoder
 import com.shadowgraph.daemon.transport.OutboundFrame
 import com.shadowgraph.daemon.transport.WireDiff
+import com.shadowgraph.daemon.transport.WireHeartbeat
 import com.shadowgraph.daemon.transport.WireHello
 import com.shadowgraph.daemon.transport.WireInputResult
 import com.shadowgraph.daemon.transport.WirePong
@@ -518,6 +519,176 @@ class DaemonTcpServerTest {
             assertTrue(
                 !outputText.contains("\"seq\":3") && !outputText.contains("\"seq\":4"),
                 "Expected stale overflowed diffs (seq 3, 4) to have been evicted"
+            )
+        } finally {
+            releaseWriter.countDown()
+            session.close()
+        }
+    }
+
+    @Test
+    fun `promotes pending resync snapshot without deadlocking when queue is saturated with control frames and heartbeats`() {
+        val encoder = NdjsonWireEncoder()
+        val snap = sampleSnapshot(seq = 10L)
+        val writerBlocked = CountDownLatch(1)
+        val releaseWriter = CountDownLatch(1)
+        val written = java.io.ByteArrayOutputStream()
+        val writeCount = AtomicInteger(0)
+
+        val gatedOut = object : java.io.OutputStream() {
+            override fun write(b: Int) {
+                synchronized(written) { written.write(b) }
+            }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (writeCount.incrementAndGet() == 1) {
+                    writerBlocked.countDown()
+                    releaseWriter.await(5, TimeUnit.SECONDS)
+                }
+                synchronized(written) { written.write(b, off, len) }
+            }
+        }
+
+        val pipeOut = java.io.PipedOutputStream()
+        val pipeIn = java.io.PipedInputStream(pipeOut)
+        val stubSocket = object : Socket() {
+            override fun setTcpNoDelay(on: Boolean) {}
+            override fun getOutputStream(): java.io.OutputStream = gatedOut
+            override fun getInputStream(): java.io.InputStream = pipeIn
+            override fun close() {
+                try { pipeOut.close() } catch (_: Exception) {}
+                try { pipeIn.close() } catch (_: Exception) {}
+            }
+        }
+
+        fun encodeFrame(
+            block: (ByteArrayBuffer) -> Unit,
+            isDiff: Boolean = false,
+            isSnapshot: Boolean = false,
+            isHeartbeat: Boolean = false
+        ): OutboundFrame {
+            val buf = ByteArrayBuffer(1024)
+            block(buf)
+            return OutboundFrame(
+                buf.toByteArray(),
+                isDiff = isDiff,
+                isSnapshot = isSnapshot,
+                isHeartbeat = isHeartbeat
+            )
+        }
+
+        fun diffFrame(seq: Long): OutboundFrame = encodeFrame(
+            {
+                encoder.encodeDiff(
+                    WireDiff(
+                        TreeDiffResult.IncrementalDiff(
+                            baseSeq = seq - 1,
+                            seq = seq,
+                            timestampMs = 1700000000000L + seq,
+                            activePackage = "com.example",
+                            activeWindowId = 1,
+                            inserted = emptyList(),
+                            updated = emptyList(),
+                            removedIds = listOf(seq)
+                        )
+                    ),
+                    it
+                )
+            },
+            isDiff = true
+        )
+
+        fun inputResultFrame(id: Long): OutboundFrame = encodeFrame({
+            encoder.encodeInputResult(
+                WireInputResult(id = id, cmd = "tap", ok = true, elapsedMs = 4L, timestampMs = 1700000000000L + id),
+                it
+            )
+        })
+
+        fun heartbeatFrame(seq: Long): OutboundFrame = encodeFrame(
+            {
+                encoder.encodeHeartbeat(
+                    WireHeartbeat(seq = seq, timestampMs = 1700000000000L + seq, uptimeMs = 500L, activePackage = "com.example", activeWindowId = 1, clientCount = 1),
+                    it
+                )
+            },
+            isHeartbeat = true
+        )
+
+        val resyncCount = AtomicInteger(0)
+        lateinit var session: ClientSession
+        session = ClientSession(
+            id = 2L,
+            socket = stubSocket,
+            queueCapacity = 2,
+            initialBroadcastReady = true,
+            onCommand = { _, _ -> },
+            onResyncRequested = { s ->
+                resyncCount.incrementAndGet()
+                s.enqueue(
+                    encodeFrame(
+                        { encoder.encodeSnapshot(WireSnapshot(snap, "resync"), it) },
+                        isSnapshot = true
+                    )
+                )
+            },
+            onClosed = {}
+        )
+
+        session.start()
+        try {
+            // Park writer on initial heartbeat
+            session.enqueue(heartbeatFrame(1L), isBroadcast = true)
+            assertTrue(writerBlocked.await(3, TimeUnit.SECONDS))
+
+            // Fill capacity (2) with 1 heartbeat + 1 control frame, then enqueue a 2nd control frame:
+            // heartbeat must be evicted instead of input_result(100)
+            session.enqueue(heartbeatFrame(2L), isBroadcast = true)
+            session.enqueue(inputResultFrame(100L))
+            session.enqueue(inputResultFrame(101L))
+
+            // Queue is now 100% full of control frames [input_result(100), input_result(101)].
+            // Additional heartbeats must be dropped silently without evicting control frames.
+            session.enqueue(heartbeatFrame(3L), isBroadcast = true)
+
+            // Diff overflow triggers onResyncRequested -> sendSnapshot cannot fit immediately,
+            // so it must stash pendingSnapshot instead of permanently deadlocking needsResync=true.
+            session.enqueue(diffFrame(11L), isBroadcast = true)
+            assertEquals(1, resyncCount.get(), "Expected resync callback on control-saturated diff overflow")
+
+            // Release writer so control frames drain and writerLoop promotes pendingSnapshot.
+            releaseWriter.countDown()
+            val deadline1 = System.currentTimeMillis() + 3000L
+            var outputText = ""
+            while (System.currentTimeMillis() < deadline1) {
+                outputText = synchronized(written) { written.toString(StandardCharsets.UTF_8) }
+                if (outputText.contains("\"id\":100") &&
+                    outputText.contains("\"id\":101") &&
+                    outputText.contains("\"reason\":\"resync\"")
+                ) {
+                    break
+                }
+                Thread.sleep(10)
+            }
+
+            assertTrue(outputText.contains("\"id\":100"), "Expected input_result 100 preserved; got:\n$outputText")
+            assertTrue(outputText.contains("\"id\":101"), "Expected input_result 101 preserved; got:\n$outputText")
+            assertTrue(
+                outputText.contains("\"type\":\"snapshot\"") && outputText.contains("\"reason\":\"resync\""),
+                "Expected pending resync snapshot promoted after drain; got:\n$outputText"
+            )
+
+            // Subsequent diffs MUST flow again (proving needsResync cleared and did not deadlock!)
+            session.enqueue(diffFrame(12L), isBroadcast = true)
+            val deadline2 = System.currentTimeMillis() + 3000L
+            while (System.currentTimeMillis() < deadline2) {
+                outputText = synchronized(written) { written.toString(StandardCharsets.UTF_8) }
+                if (outputText.contains("\"seq\":12")) break
+                Thread.sleep(10)
+            }
+            assertTrue(
+                outputText.contains("\"type\":\"diff\"") && outputText.contains("\"seq\":12"),
+                "Expected subsequent diff seq=12 to resume after pending resync snapshot promotion; got:\n$outputText"
             )
         } finally {
             releaseWriter.countDown()

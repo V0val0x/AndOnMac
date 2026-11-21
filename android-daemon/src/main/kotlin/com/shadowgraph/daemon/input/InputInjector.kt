@@ -36,6 +36,8 @@ object InputInjector {
     const val STEP_ACTION_DOWN = 0
     const val STEP_ACTION_MOVE = 1
     const val STEP_ACTION_UP = 2
+    const val STEP_ACTION_CANCEL = 3
+    private const val KEY_FLAG_CANCELED = 0x20
 
     const val DEFAULT_SWIPE_DURATION_MS = 145L
     const val DEFAULT_SWIPE_HOLD_MS = 25L
@@ -211,17 +213,51 @@ object InputInjector {
         }
     }
 
-    fun injectTap(uia: UiAutomation, x: Int, y: Int): InputExecutionResult {
+    fun injectTap(uia: UiAutomation, x: Int, y: Int): InputExecutionResult =
+        injectTapWith(
+            x = x,
+            y = y,
+            uptimeMillis = { SystemClock.uptimeMillis() },
+            injectTouch = { downTime, eventTime, stepAction, tx, ty, pressure, sync ->
+                injectTouchEvent(
+                    uia = uia,
+                    downTime = downTime,
+                    eventTime = eventTime,
+                    action = toAndroidMotionAction(stepAction),
+                    x = tx,
+                    y = ty,
+                    pressure = pressure,
+                    sync = sync
+                )
+            }
+        )
+
+    internal fun injectTapWith(
+        x: Int,
+        y: Int,
+        uptimeMillis: () -> Long,
+        injectTouch: (
+            downTime: Long,
+            eventTime: Long,
+            stepAction: Int,
+            x: Float,
+            y: Float,
+            pressure: Float,
+            sync: Boolean
+        ) -> Boolean
+    ): InputExecutionResult {
         val startNs = System.nanoTime()
         var downSent = false
         var upSent = false
         var downTime = 0L
+        var prevEventTime = 0L
         val fx = x.toFloat()
         val fy = y.toFloat()
         return try {
-            downTime = SystemClock.uptimeMillis()
+            downTime = uptimeMillis()
+            prevEventTime = downTime
 
-            val okDown = injectTouchEvent(uia, downTime, downTime, MotionEvent.ACTION_DOWN, fx, fy, 1.0f, sync = true)
+            val okDown = injectTouch(downTime, downTime, STEP_ACTION_DOWN, fx, fy, 1.0f, true)
             if (!okDown) {
                 return InputExecutionResult(
                     ok = false,
@@ -231,8 +267,9 @@ object InputInjector {
             }
             downSent = true
 
-            val upTime = max(downTime, SystemClock.uptimeMillis())
-            val okUp = injectTouchEvent(uia, downTime, upTime, MotionEvent.ACTION_UP, fx, fy, 0.0f, sync = true)
+            val upTime = max(prevEventTime, uptimeMillis())
+            prevEventTime = upTime
+            val okUp = injectTouch(downTime, upTime, STEP_ACTION_UP, fx, fy, 0.0f, true)
             if (!okUp) {
                 return InputExecutionResult(
                     ok = false,
@@ -244,6 +281,9 @@ object InputInjector {
 
             InputExecutionResult(ok = true, error = null, elapsedMs = elapsedMs(startNs))
         } catch (t: Throwable) {
+            if (t is InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
             InputExecutionResult(
                 ok = false,
                 error = "${t.javaClass.simpleName}: ${t.message ?: "unknown"}",
@@ -252,8 +292,8 @@ object InputInjector {
         } finally {
             if (downSent && !upSent) {
                 try {
-                    val cancelTime = max(downTime, SystemClock.uptimeMillis())
-                    injectTouchEvent(uia, downTime, cancelTime, MotionEvent.ACTION_CANCEL, fx, fy, 0.0f, sync = true)
+                    val cancelTime = max(prevEventTime, uptimeMillis())
+                    injectTouch(downTime, cancelTime, STEP_ACTION_CANCEL, fx, fy, 0.0f, true)
                 } catch (_: Throwable) {
                 }
             }
@@ -268,6 +308,48 @@ object InputInjector {
         y2: Int,
         durationMs: Long = DEFAULT_SWIPE_DURATION_MS,
         holdMs: Long = DEFAULT_SWIPE_HOLD_MS
+    ): InputExecutionResult =
+        injectSwipeWith(
+            x1 = x1,
+            y1 = y1,
+            x2 = x2,
+            y2 = y2,
+            durationMs = durationMs,
+            holdMs = holdMs,
+            uptimeMillis = { SystemClock.uptimeMillis() },
+            sleepMs = { ms -> Thread.sleep(ms) },
+            injectTouch = { downTime, eventTime, stepAction, tx, ty, pressure, sync ->
+                injectTouchEvent(
+                    uia = uia,
+                    downTime = downTime,
+                    eventTime = eventTime,
+                    action = toAndroidMotionAction(stepAction),
+                    x = tx,
+                    y = ty,
+                    pressure = pressure,
+                    sync = sync
+                )
+            }
+        )
+
+    internal fun injectSwipeWith(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long = DEFAULT_SWIPE_DURATION_MS,
+        holdMs: Long = DEFAULT_SWIPE_HOLD_MS,
+        uptimeMillis: () -> Long,
+        sleepMs: (Long) -> Unit,
+        injectTouch: (
+            downTime: Long,
+            eventTime: Long,
+            stepAction: Int,
+            x: Float,
+            y: Float,
+            pressure: Float,
+            sync: Boolean
+        ) -> Boolean
     ): InputExecutionResult {
         val startNs = System.nanoTime()
         val steps = planSwipeSteps(
@@ -282,12 +364,13 @@ object InputInjector {
         var downSent = false
         var upSent = false
         var downTime = 0L
+        var prevEventTime = 0L
         var lastX = x1.toFloat()
         var lastY = y1.toFloat()
 
         return try {
-            downTime = SystemClock.uptimeMillis()
-            var prevEventTime = downTime
+            downTime = uptimeMillis()
+            prevEventTime = downTime
             var prevStepOffsetMs = 0L
 
             for (step in steps) {
@@ -300,33 +383,28 @@ object InputInjector {
                         prevX = lastX,
                         prevY = lastY
                     )
-                    val sleepMs = targetUptime - SystemClock.uptimeMillis()
-                    if (sleepMs > 0L) {
-                        Thread.sleep(sleepMs)
+                    val waitMs = targetUptime - uptimeMillis()
+                    if (waitMs > 0L) {
+                        sleepMs(waitMs)
                     }
                 }
 
-                val eventTime = max(prevEventTime, SystemClock.uptimeMillis())
+                val eventTime = max(prevEventTime, uptimeMillis())
                 prevEventTime = eventTime
                 prevStepOffsetMs = step.offsetMs
                 lastX = step.x
                 lastY = step.y
 
-                val (androidAction, pressure) = when (step.action) {
-                    STEP_ACTION_DOWN -> MotionEvent.ACTION_DOWN to 1.0f
-                    STEP_ACTION_UP -> MotionEvent.ACTION_UP to 0.0f
-                    else -> MotionEvent.ACTION_MOVE to 1.0f
-                }
+                val pressure = if (step.action == STEP_ACTION_UP) 0.0f else 1.0f
 
-                val ok = injectTouchEvent(
-                    uia = uia,
-                    downTime = downTime,
-                    eventTime = eventTime,
-                    action = androidAction,
-                    x = step.x,
-                    y = step.y,
-                    pressure = pressure,
-                    sync = step.sync
+                val ok = injectTouch(
+                    downTime,
+                    eventTime,
+                    step.action,
+                    step.x,
+                    step.y,
+                    pressure,
+                    step.sync
                 )
 
                 if (step.action == STEP_ACTION_DOWN && ok) {
@@ -346,6 +424,9 @@ object InputInjector {
 
             InputExecutionResult(ok = true, error = null, elapsedMs = elapsedMs(startNs))
         } catch (t: Throwable) {
+            if (t is InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
             InputExecutionResult(
                 ok = false,
                 error = "${t.javaClass.simpleName}: ${t.message ?: "unknown"}",
@@ -355,16 +436,15 @@ object InputInjector {
             // Never leave a stuck pointer down if interrupted mid-swipe.
             if (downSent && !upSent) {
                 try {
-                    val cancelTime = max(downTime, SystemClock.uptimeMillis())
-                    injectTouchEvent(
-                        uia = uia,
-                        downTime = downTime,
-                        eventTime = cancelTime,
-                        action = MotionEvent.ACTION_CANCEL,
-                        x = lastX,
-                        y = lastY,
-                        pressure = 0.0f,
-                        sync = true
+                    val cancelTime = max(prevEventTime, uptimeMillis())
+                    injectTouch(
+                        downTime,
+                        cancelTime,
+                        STEP_ACTION_CANCEL,
+                        lastX,
+                        lastY,
+                        0.0f,
+                        true
                     )
                 } catch (_: Throwable) {
                 }
@@ -372,44 +452,56 @@ object InputInjector {
         }
     }
 
-    fun injectKeyevent(uia: UiAutomation, keycode: Int): InputExecutionResult {
+    fun injectKeyevent(uia: UiAutomation, keycode: Int): InputExecutionResult =
+        injectKeyeventWith(
+            keycode = keycode,
+            uptimeMillis = { SystemClock.uptimeMillis() },
+            injectKey = { downTime, eventTime, isDown, code, flags ->
+                val event = KeyEvent(
+                    downTime,
+                    eventTime,
+                    if (isDown) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
+                    code,
+                    0,
+                    0,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD,
+                    0,
+                    flags,
+                    InputDevice.SOURCE_KEYBOARD
+                )
+                uia.injectInputEvent(event, true)
+            }
+        )
+
+    internal fun injectKeyeventWith(
+        keycode: Int,
+        uptimeMillis: () -> Long,
+        injectKey: (
+            downTime: Long,
+            eventTime: Long,
+            isDown: Boolean,
+            keycode: Int,
+            flags: Int
+        ) -> Boolean
+    ): InputExecutionResult {
         val startNs = System.nanoTime()
+        var downSent = false
+        var upAttempted = false
+        var downTime = 0L
         return try {
-            val downTime = SystemClock.uptimeMillis()
-            val down = KeyEvent(
-                downTime,
-                downTime,
-                KeyEvent.ACTION_DOWN,
-                keycode,
-                0,
-                0,
-                KeyCharacterMap.VIRTUAL_KEYBOARD,
-                0,
-                0,
-                InputDevice.SOURCE_KEYBOARD
-            )
-            if (!uia.injectInputEvent(down, true)) {
+            downTime = uptimeMillis()
+            if (!injectKey(downTime, downTime, true, keycode, 0)) {
                 return InputExecutionResult(
                     ok = false,
                     error = "inject_key_down_returned_false",
                     elapsedMs = elapsedMs(startNs)
                 )
             }
+            downSent = true
 
-            val upTime = max(downTime, SystemClock.uptimeMillis())
-            val up = KeyEvent(
-                downTime,
-                upTime,
-                KeyEvent.ACTION_UP,
-                keycode,
-                0,
-                0,
-                KeyCharacterMap.VIRTUAL_KEYBOARD,
-                0,
-                0,
-                InputDevice.SOURCE_KEYBOARD
-            )
-            if (!uia.injectInputEvent(up, true)) {
+            val upTime = max(downTime, uptimeMillis())
+            upAttempted = true
+            if (!injectKey(downTime, upTime, false, keycode, 0)) {
                 return InputExecutionResult(
                     ok = false,
                     error = "inject_key_up_returned_false",
@@ -419,12 +511,30 @@ object InputInjector {
 
             InputExecutionResult(ok = true, error = null, elapsedMs = elapsedMs(startNs))
         } catch (t: Throwable) {
+            if (t is InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
             InputExecutionResult(
                 ok = false,
                 error = "${t.javaClass.simpleName}: ${t.message ?: "unknown"}",
                 elapsedMs = elapsedMs(startNs)
             )
+        } finally {
+            if (downSent && !upAttempted) {
+                try {
+                    val cancelTime = max(downTime, uptimeMillis())
+                    injectKey(downTime, cancelTime, false, keycode, KEY_FLAG_CANCELED)
+                } catch (_: Throwable) {
+                }
+            }
         }
+    }
+
+    private fun toAndroidMotionAction(stepAction: Int): Int = when (stepAction) {
+        STEP_ACTION_DOWN -> MotionEvent.ACTION_DOWN
+        STEP_ACTION_UP -> MotionEvent.ACTION_UP
+        STEP_ACTION_CANCEL -> MotionEvent.ACTION_CANCEL
+        else -> MotionEvent.ACTION_MOVE
     }
 
     private fun injectTouchEvent(

@@ -216,6 +216,54 @@ public actor DaemonTCPClient {
         return false
     }
 
+    /// Waits briefly for an in-progress handshake (`.connecting` or `.connected(hello: nil)`)
+    /// to deliver `WireHello` so cold-start MCP calls can use native TCP input instead of
+    /// falling back to ADB while `hello` is still in flight. Returns immediately if already
+    /// ready or if disconnected/waiting to reconnect/stopped.
+    public func waitForHello(maxWaitMs: Int = 150) async -> Bool {
+        switch state {
+        case .connected(.some):
+            return true
+        case .disconnected, .waitingToReconnect, .stopped:
+            return false
+        case .connecting, .connected(.none):
+            break
+        }
+        guard maxWaitMs > 0 else { return false }
+
+        let stream = connectionStates
+        let deadline = Date().addingTimeInterval(Double(maxWaitMs) / 1000.0)
+        return await withTaskGroup(of: Bool?.self) { group in
+            group.addTask {
+                for await s in stream {
+                    switch s {
+                    case .connected(.some):
+                        return true
+                    case .disconnected, .waitingToReconnect, .stopped:
+                        return false
+                    case .connecting, .connected(.none):
+                        continue
+                    }
+                }
+                return false
+            }
+            group.addTask {
+                let remaining = max(0.0, deadline.timeIntervalSinceNow)
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            if let resolved = first {
+                return resolved
+            }
+            if case .connected(.some) = self.state {
+                return true
+            }
+            return false
+        }
+    }
+
     public func injectTap(x: Int, y: Int) async throws -> WireInputResultPayload {
         let id = allocateInputId()
         return try await sendInputAndAwait(id: id, command: .tap(id: id, x: x, y: y), timeoutMs: 1500)
@@ -269,6 +317,7 @@ public actor DaemonTCPClient {
         command: DaemonCommand,
         timeoutMs: Int
     ) async throws -> WireInputResultPayload {
+        try Task.checkCancellation()
         guard !isStopped else {
             throw DaemonClientError.stopped
         }
@@ -282,9 +331,14 @@ public actor DaemonTCPClient {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 self.pendingInputWaiters[id] = continuation
                 self.pendingInputTimeouts[id] = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(timeoutMs))
+                    guard !Task.isCancelled else { return }
                     await self?.failPendingInput(id: id, error: DaemonClientError.inputTimeout)
                 }
                 conn.send(content: payload, completion: .contentProcessed { [weak self] error in

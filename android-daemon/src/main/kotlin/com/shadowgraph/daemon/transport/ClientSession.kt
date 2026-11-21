@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class OutboundFrame(
     val payload: ByteArray,
     val isDiff: Boolean,
-    val isSnapshot: Boolean = false
+    val isSnapshot: Boolean = false,
+    val isHeartbeat: Boolean = false
 )
 
 /**
@@ -34,6 +35,7 @@ class ClientSession(
     @Volatile
     private var broadcastReady: Boolean = initialBroadcastReady
     private val enqueueLock = Any()
+    private var pendingSnapshot: OutboundFrame? = null
 
     val isClosed: Boolean
         get() = closed.get()
@@ -66,33 +68,45 @@ class ClientSession(
                 return
             }
             if (frame.isSnapshot) {
-                // Snapshot supersedes any stale queued diffs/snapshots and marks stream ready for diffs
-                queue.removeIf { it.isDiff || it.isSnapshot }
+                // Snapshot supersedes any stale queued diffs/snapshots/heartbeats and marks stream ready for diffs.
+                queue.removeIf { it.isDiff || it.isSnapshot || it.isHeartbeat }
+                pendingSnapshot = null
                 if (queue.offer(frame)) {
                     needsResync.set(false)
                     broadcastReady = true
                 } else {
+                    // Queue is 100% saturated with high-priority control frames (e.g. input_result).
+                    // Stash latest snapshot so writerLoop promotes it immediately when a slot frees,
+                    // avoiding permanent needsResync deadlock without dropping control frames.
+                    pendingSnapshot = frame
                     needsResync.set(true)
                 }
                 return
             }
-            if (frame.isDiff && needsResync.get()) {
+            if (frame.isHeartbeat) {
+                // Heartbeats are low-priority liveness probes: drop on congestion rather than
+                // evicting control/ACK frames or triggering resync.
+                queue.offer(frame)
+                return
+            }
+            if (frame.isDiff && (needsResync.get() || pendingSnapshot != null)) {
                 // Drop incremental diffs until resync snapshot is delivered
                 return
             }
             if (!queue.offer(frame)) {
                 if (frame.isDiff) {
-                    // Don't enqueue orphaned diff after overflow; drop only stale state frames
+                    // Don't enqueue orphaned diff after overflow; drop only stale state/heartbeat frames
                     // so control/ACK frames (input_result, hello, pong, secure_screen, error) are never lost.
-                    queue.removeIf { it.isDiff || it.isSnapshot }
+                    queue.removeIf { it.isDiff || it.isSnapshot || it.isHeartbeat }
                     if (needsResync.compareAndSet(false, true)) {
                         triggerResync = true
                     }
                 } else {
-                    // Prefer evicting the oldest diff/snapshot so control/ACK frames survive bursts.
-                    val stateVictim = queue.firstOrNull { it.isDiff || it.isSnapshot }
-                    val evicted = if (stateVictim != null && queue.remove(stateVictim)) {
-                        stateVictim
+                    // Prefer evicting oldest heartbeat, then oldest diff/snapshot, so control/ACK frames survive bursts.
+                    val victim = queue.firstOrNull { it.isHeartbeat }
+                        ?: queue.firstOrNull { it.isDiff || it.isSnapshot }
+                    val evicted = if (victim != null && queue.remove(victim)) {
+                        victim
                     } else {
                         queue.poll()
                     }
@@ -110,11 +124,28 @@ class ClientSession(
         }
     }
 
+    private fun promotePendingSnapshotLocked() {
+        val pending = pendingSnapshot ?: return
+        if (closed.get()) {
+            pendingSnapshot = null
+            return
+        }
+        queue.removeIf { it.isDiff || it.isSnapshot || it.isHeartbeat }
+        if (queue.offer(pending)) {
+            pendingSnapshot = null
+            needsResync.set(false)
+            broadcastReady = true
+        }
+    }
+
     private fun writerLoop(out: OutputStream) {
         try {
             while (!closed.get()) {
                 val frame = queue.take()
                 if (frame === POISON_FRAME || closed.get()) break
+                synchronized(enqueueLock) {
+                    promotePendingSnapshotLocked()
+                }
                 out.write(frame.payload)
                 // Coalesce flush if more frames are already queued
                 if (queue.isEmpty()) {
@@ -147,8 +178,11 @@ class ClientSession(
 
     fun close() {
         if (!closed.compareAndSet(false, true)) return
-        queue.clear()
-        queue.offer(POISON_FRAME)
+        synchronized(enqueueLock) {
+            pendingSnapshot = null
+            queue.clear()
+            queue.offer(POISON_FRAME)
+        }
         try {
             socket.close()
         } catch (_: IOException) {

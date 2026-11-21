@@ -149,4 +149,189 @@ class InputInjectorTest {
         )
         assertEquals(1205L, target, "Stationary hold must guarantee full 25ms pause after late final drag move")
     }
+
+    @Test
+    fun `injectTapWith emits ACTION_CANCEL only when DOWN succeeded and UP failed`() {
+        // Case 1: DOWN returns false -> must NOT send ACTION_CANCEL
+        val events1 = mutableListOf<Int>()
+        val res1 = InputInjector.injectTapWith(
+            x = 200,
+            y = 400,
+            uptimeMillis = { 1000L },
+            injectTouch = { _, _, action, _, _, _, _ ->
+                events1.add(action)
+                false
+            }
+        )
+        assertFalse(res1.ok)
+        assertEquals("inject_down_returned_false", res1.error)
+        assertEquals(listOf(InputInjector.STEP_ACTION_DOWN), events1)
+
+        // Case 2: DOWN returns true, UP returns false -> MUST send ACTION_CANCEL with monotonic eventTime
+        data class RecordedTouch(val downTime: Long, val eventTime: Long, val action: Int, val x: Float, val y: Float)
+        val events2 = mutableListOf<RecordedTouch>()
+        var clock = 2000L
+        val res2 = InputInjector.injectTapWith(
+            x = 200,
+            y = 400,
+            uptimeMillis = { clock.also { clock += 3L } },
+            injectTouch = { downTime, eventTime, action, x, y, _, _ ->
+                events2.add(RecordedTouch(downTime, eventTime, action, x, y))
+                action != InputInjector.STEP_ACTION_UP
+            }
+        )
+        assertFalse(res2.ok)
+        assertEquals("inject_up_returned_false", res2.error)
+        assertEquals(
+            listOf(
+                InputInjector.STEP_ACTION_DOWN,
+                InputInjector.STEP_ACTION_UP,
+                InputInjector.STEP_ACTION_CANCEL
+            ),
+            events2.map { it.action }
+        )
+        assertTrue(events2[2].eventTime >= events2[1].eventTime, "ACTION_CANCEL eventTime must be monotonic")
+    }
+
+    @Test
+    fun `injectSwipeWith emits monotonic ACTION_CANCEL on mid-stroke failure, UP failure, and interrupt while preserving hold pause under jitter`() {
+        // Case 1: Mid-stroke MOVE returns false -> aborts and emits ACTION_CANCEL at last coordinates with eventTime >= prevEventTime
+        data class TouchEvt(val eventTime: Long, val action: Int, val x: Float, val y: Float)
+        val midEvents = mutableListOf<TouchEvt>()
+        var clock1 = 5000L
+        var callIdx = 0
+        val resMid = InputInjector.injectSwipeWith(
+            x1 = 540,
+            y1 = 1900,
+            x2 = 540,
+            y2 = 450,
+            durationMs = 145L,
+            holdMs = 25L,
+            uptimeMillis = { clock1 },
+            sleepMs = { ms -> clock1 += ms },
+            injectTouch = { _, eventTime, action, x, y, _, _ ->
+                midEvents.add(TouchEvt(eventTime, action, x, y))
+                callIdx++
+                callIdx != 4
+            }
+        )
+        assertFalse(resMid.ok)
+        assertEquals("inject_swipe_step_returned_false", resMid.error)
+        assertEquals(InputInjector.STEP_ACTION_CANCEL, midEvents.last().action)
+        val failedMove = midEvents[midEvents.size - 2]
+        val cancelEvt = midEvents.last()
+        assertEquals(failedMove.x, cancelEvt.x)
+        assertEquals(failedMove.y, cancelEvt.y)
+        assertTrue(cancelEvt.eventTime >= failedMove.eventTime)
+
+        // Case 2: UP returns false -> emits ACTION_CANCEL (verifies upSent only set when ok == true)
+        val upFailActions = mutableListOf<Int>()
+        var clock2 = 6000L
+        val resUpFail = InputInjector.injectSwipeWith(
+            x1 = 540,
+            y1 = 1900,
+            x2 = 540,
+            y2 = 450,
+            durationMs = 80L,
+            holdMs = 25L,
+            uptimeMillis = { clock2 },
+            sleepMs = { ms -> clock2 += ms },
+            injectTouch = { _, _, action, _, _, _, _ ->
+                upFailActions.add(action)
+                action != InputInjector.STEP_ACTION_UP
+            }
+        )
+        assertFalse(resUpFail.ok)
+        assertEquals(InputInjector.STEP_ACTION_UP, upFailActions[upFailActions.size - 2])
+        assertEquals(InputInjector.STEP_ACTION_CANCEL, upFailActions.last())
+
+        // Case 3: Heavy +40ms jitter before final drag MOVE -> final drag lands late,
+        // and stationary hold MUST still sleep full 25ms after final drag eventTime
+        val sleeps = mutableListOf<Long>()
+        val eventTimes = mutableListOf<Long>()
+        val planned = InputInjector.planSwipeSteps(540f, 1900f, 540f, 450f, durationMs = 145L, holdMs = 25L)
+        val finalDragIndex = planned.size - 3
+        val holdMoveIndex = planned.size - 2
+        var stepIdx = 0
+        var clock3 = 7000L
+        val resJitter = InputInjector.injectSwipeWith(
+            x1 = 540,
+            y1 = 1900,
+            x2 = 540,
+            y2 = 450,
+            durationMs = 145L,
+            holdMs = 25L,
+            uptimeMillis = { clock3 },
+            sleepMs = { ms ->
+                sleeps.add(ms)
+                clock3 += ms
+            },
+            injectTouch = { _, eventTime, _, _, _, _, _ ->
+                eventTimes.add(eventTime)
+                if (stepIdx == finalDragIndex - 1) {
+                    // Simulate 40ms CPU/IPC stall before final drag step so finalDrag lands past downTime+170
+                    clock3 += 40L
+                }
+                stepIdx++
+                true
+            }
+        )
+        assertTrue(resJitter.ok)
+        assertEquals(25L, sleeps.last(), "Stationary hold pause must sleep full 25ms even after late drag stall")
+        assertEquals(
+            25L,
+            eventTimes[holdMoveIndex] - eventTimes[finalDragIndex],
+            "Hold MOVE eventTime must be full 25ms after late final drag MOVE eventTime"
+        )
+
+        // Case 4: InterruptedException mid-sleep -> emits ACTION_CANCEL and restores thread interrupt flag
+        val interruptActions = mutableListOf<Int>()
+        var clock4 = 8000L
+        try {
+            val resInt = InputInjector.injectSwipeWith(
+                x1 = 540,
+                y1 = 1900,
+                x2 = 540,
+                y2 = 450,
+                durationMs = 80L,
+                holdMs = 25L,
+                uptimeMillis = { clock4 },
+                sleepMs = { throw InterruptedException("shutdown") },
+                injectTouch = { _, _, action, _, _, _, _ ->
+                    interruptActions.add(action)
+                    true
+                }
+            )
+            assertFalse(resInt.ok)
+            assertEquals(listOf(InputInjector.STEP_ACTION_DOWN, InputInjector.STEP_ACTION_CANCEL), interruptActions)
+            assertTrue(Thread.currentThread().isInterrupted, "InterruptedException must preserve thread interrupt flag")
+        } finally {
+            // Clear interrupt flag so subsequent tests on this runner thread are unaffected
+            Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun `injectKeyeventWith emits canceled UP when exception occurs after DOWN`() {
+        data class KeyEvt(val isDown: Boolean, val keycode: Int, val flags: Int)
+        val events = mutableListOf<KeyEvt>()
+        var calls = 0
+        val res = InputInjector.injectKeyeventWith(
+            keycode = 4,
+            uptimeMillis = {
+                calls++
+                if (calls == 2) throw IllegalStateException("clock_glitch")
+                1000L
+            },
+            injectKey = { _, _, isDown, code, flags ->
+                events.add(KeyEvt(isDown, code, flags))
+                true
+            }
+        )
+        assertFalse(res.ok)
+        assertEquals(2, events.size)
+        assertTrue(events[0].isDown)
+        assertFalse(events[1].isDown)
+        assertEquals(0x20, events[1].flags)
+    }
 }
