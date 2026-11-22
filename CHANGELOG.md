@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [2.5.0] - 2026-11-22
 
 ### Added
-- **Cross-Device Zero-PII Android Settings Seed Graph (`SeedGraphCatalog`) & Seed-to-Real Hydration:** Pre-populates new graphs with 20 canonical `com.android.settings` screens and 19 deterministic edges (EN/RU + Pixel/AOSP/OneUI/HyperOS/OxygenOS semantic aliases, zero coordinates, zero PII) that automatically hydrate into exact device hashes, selectors, and coordinates on first live traversal (opt-out via `DROIDPATH_DISABLE_SEED_GRAPH=1`). 100% bit-exact `shadow_graph.json` interoperability with cross-platform Rust `DroidPath v2.2.0`.
+- **Cross-Device Zero-PII Android Settings Seed Graph (`SeedGraphCatalog`) & Seed-to-Real Hydration:** Pre-populates new graphs with 20 canonical `com.android.settings` screens and 19 deterministic edges (EN/RU + Pixel/AOSP/OneUI/HyperOS/OxygenOS semantic aliases, zero coordinates, zero PII) that automatically hydrate into exact device hashes, selectors, and coordinates on first live traversal (opt-out via `ANDONMAC_DISABLE_SEED_GRAPH=1`). 100% bit-exact `shadow_graph.json` interoperability with cross-platform Rust `DroidPath v2.2.0`.
 - **Release SHA-256 Integrity Manifest (`checksums.txt`):** `scripts/create_dmg.sh` and GitHub Actions release workflow now generate and publish `checksums.txt` alongside `AndOnMac.dmg`.
 - **Repository Security & Release Hygiene:** Added `SECURITY.md` and `CHANGELOG.md`.
 
