@@ -1,0 +1,80 @@
+name: Bug Report
+description: Report a bug in AndOnMac (Metal mirroring, USB/Wi-Fi pairing, Vision OCR, Recall, or MCP server)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Please verify personal info or device serials are removed from logs before posting.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: Clear description of what happened vs what you expected.
+      placeholder: Screen mirroring froze after USB-to-Wi-Fi handoff...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - 120Hz Metal / VideoToolbox Mirroring
+        - USB / QR Wi-Fi / Hotspot / Bluetooth PAN Connectivity
+        - Vision OCR & SQLite FTS5 Recall
+        - Embedded MCP Server & DroidPath A* Router
+        - Device Frames, Ambilight & App Windows
+        - Photo Transfer / File Browser / Clipboard Sync
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Launch AndOnMac v2.5.0
+        2. Pair Pixel via QR Wireless Debugging
+        3. Press Cmd+Shift+M / call android_navigate_to_node
+    validations:
+      required: true
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS Version & Chip
+      placeholder: macOS 15.2 (Apple M3 Pro)
+    validations:
+      required: true
+  - type: input
+    id: android_device
+    attributes:
+      label: Android Device & OS Version
+      placeholder: Google Pixel 10a (Android 16)
+    validations:
+      required: false
+  - type: input
+    id: app_version
+    attributes:
+      label: AndOnMac Version & Install Method
+      placeholder: v2.5.0 (Homebrew Cask / DMG)
+    validations:
+      required: true
+  - type: dropdown
+    id: connection_mode
+    attributes:
+      label: Connection Mode
+      options:
+        - USB-C
+        - Wi-Fi Debugging (QR / Bonjour)
+        - Personal Hotspot / Routerless Bypass
+        - Bluetooth PAN
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console / Performance HUD Logs
+      description: Relevant error output or MCP JSON response (omit private info).
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,32 @@
+name: Feature Request
+description: Suggest an improvement for AndOnMac mirroring, continuity features, or MCP tools
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Feature Area
+      options:
+        - Mirroring & Metal / Audio Pipeline
+        - Device Frames & Ambilight
+        - Connectivity & Routerless Bypass
+        - Apple Vision OCR & Recall Search
+        - Embedded MCP Server & DroidPath A* Router
+        - UI / Localization / Keyboard Shortcuts
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What workflow or pain point would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the desired UX, shortcut, or MCP behavior.
+    validations:
+      required: true
