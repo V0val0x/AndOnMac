@@ -4,6 +4,15 @@ All notable changes to **AndOnMac** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-11-22
+
+### Added
+- **GitHub Community Standards:** Added `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `ACCESSIBILITY.md`, and structured GitHub Issue/PR templates (`100%` community health profile).
+
+### Fixed
+- **MCP `initialize` Protocol Negotiation:** Negotiates requested `protocolVersion` across `2024-11-05`, `2025-03-26`, and `2025-06-18` (falling back to `2024-11-05`) so both legacy and strict MCP 2025 clients complete handshake cleanly.
+- **Documentation Integrity:** Fixed `ANDONMAC_DISABLE_SEED_GRAPH` env var reference in `CHANGELOG.md` and localized `README_RU.md` heading.
+
 ## [2.5.0] - 2026-11-22
 
 ### Added

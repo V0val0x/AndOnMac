@@ -1,6 +1,6 @@
 cask "andonmac" do
-  version "2.5.0"
-  sha256 "91a569144ab020002c7b0b4b0d97f51d98a06fe574231806b45d3124e02c95c7"
+  version "2.5.1"
+  sha256 "1e01dfed168f4a27ce047d76448bf3cfdc5de6e63c05a1250da9585cf415f133"
 
   url "https://github.com/V0val0x/AndOnMac/releases/download/v#{version}/AndOnMac.dmg"
   name "AndOnMac"

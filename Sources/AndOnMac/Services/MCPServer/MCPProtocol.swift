@@ -223,14 +223,17 @@ public final class MCPServerCore: @unchecked Sendable {
     private func dispatch(request: MCPJSONRPCRequest, id: MCPJSONValue) async -> MCPJSONRPCResponse {
         switch request.method {
         case "initialize":
+            let requested = request.params?["protocolVersion"]?.stringValue
+            let supportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18"]
+            let negotiatedVersion = (requested.flatMap { supportedVersions.contains($0) ? $0 : nil }) ?? Self.protocolVersion
             let result: MCPJSONValue = .object([
-                "protocolVersion": .string(Self.protocolVersion),
+                "protocolVersion": .string(negotiatedVersion),
                 "capabilities": .object([
                     "tools": .object(["listChanged": .bool(true)])
                 ]),
                 "serverInfo": .object([
                     "name": .string("AndOnMac"),
-                    "version": .string("2.5.0")
+                    "version": .string("2.5.1")
                 ])
             ])
             return MCPJSONRPCResponse(id: id, result: result)
